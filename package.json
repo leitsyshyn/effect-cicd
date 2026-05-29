@@ -5,16 +5,18 @@
   "private": true,
   "scripts": {
     "prepare": "effect-language-service patch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@effect/language-service": "^0.86.2",
+    "@effect/vitest": "^4.0.0-beta.74",
     "@types/bun": "latest",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.7"
   },
   "dependencies": {
-    "@effect/cli": "^0.75.1",
-    "@effect/platform": "^0.96.1",
-    "effect": "^3.21.2"
+    "effect": "^4.0.0-beta.74"
   }
 }

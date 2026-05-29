@@ -114,14 +114,26 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 
 ## Effect Best Practices
 
-**IMPORTANT:** Always consult effect-solutions before writing Effect code.
+**IMPORTANT:** Always consult effect-solutions before writing or changing Effect code.
 
 1. Run `effect-solutions list` to see available guides
 2. Run `effect-solutions show <topic>...` for relevant patterns (supports multiple topics)
-3. Search `~/.local/share/effect-solutions/effect` for real implementations
+3. Inspect `~/.local/share/effect-solutions/effect` for real implementations when an API, import path, package boundary, or migration detail is unclear
 
 Topics: quick-start, project-setup, tsconfig, basics, services-and-layers, data-modeling, error-handling, config, testing, cli.
 
-Never guess at Effect patterns - check the guide first.
+This project uses Effect v4 beta patterns. Never guess at Effect APIs - check the guide and local source first.
+
+Local Effect reference paths:
+
+- Source repo: `~/.local/share/effect-solutions/effect`
+- Migration overview: `~/.local/share/effect-solutions/effect/MIGRATION.md`
+- v3 to v4 import/API map: `~/.local/share/effect-solutions/effect/migration/v3-to-v4.md`
+- Schema migration guide: `~/.local/share/effect-solutions/effect/migration/schema.md`
+- Effect package source: `~/.local/share/effect-solutions/effect/packages/effect/src`
+
+Effect v4 consolidates many v3 ecosystem packages into `effect`. Prefer imports from `effect`, `effect/testing`, and `effect/unstable/*` according to the migration guide. Do not add v3-era packages such as `@effect/cli` or `@effect/platform` unless a matching v4 package is explicitly required and verified.
+
+Never downgrade Effect patterns to satisfy stale dependencies. Resolve package/API mismatches using the v4 source and migration docs.
 
 <!-- effect-solutions:end -->
