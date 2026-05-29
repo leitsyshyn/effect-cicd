@@ -1,1 +1,7 @@
 /.markdownlint.json
+/node_modules/
+/dist/
+/.vscode/*
+!/.vscode/settings.json
+/tsconfig.tsbuildinfo
+.DS_Store
