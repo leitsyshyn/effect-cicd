@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import * as Context from "effect/Context"
 
 import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
@@ -50,9 +50,58 @@ export class ExecutorResult extends Schema.Class<ExecutorResult>("ExecutorResult
   diagnostics: Schema.Array(Schema.String),
 }) {}
 
+export interface TestExecutorResultConfig {
+  readonly outcome?: ExecutorOutcome
+  readonly exitCode?: number
+  readonly failure?: ExecutorFailureSummary
+  readonly outputs?: Record<string, unknown>
+  readonly artifacts?: ReadonlyArray<ArtifactMetadata>
+  readonly logs?: ReadonlyArray<LogMetadata>
+  readonly startedAt?: Date
+  readonly finishedAt?: Date
+  readonly diagnostics?: ReadonlyArray<string>
+}
+
+export interface TestExecutorLayerOptions {
+  readonly requests?: Array<DispatchRequest>
+  readonly resultsByUnitId?: Readonly<Record<string, TestExecutorResultConfig>>
+}
+
 export class Executor extends Context.Service<
   Executor,
   {
     readonly execute: (request: DispatchRequest) => Effect.Effect<ExecutorResult, ExecutorFailed>
   }
->()("@effect-cicd/engine/Executor") {}
+>()("@effect-cicd/engine/Executor") {
+  static readonly testLayer = (options: TestExecutorLayerOptions = {}) =>
+    Layer.sync(Executor, () => {
+      const execute = Effect.fn("Executor.execute")(function* (request: DispatchRequest) {
+        options.requests?.push(request)
+
+        const configured = options.resultsByUnitId?.[request.unitId.toString()]
+        const outcome = configured?.outcome ?? "succeeded"
+
+        return new ExecutorResult({
+          runId: request.runId,
+          unitId: request.unitId,
+          attemptId: request.attemptId,
+          attemptNumber: request.attemptNumber,
+          outcome,
+          exitCode: configured?.exitCode ?? (outcome === "succeeded" ? 0 : 1),
+          failure:
+            configured?.failure ??
+            (outcome === "failed"
+              ? new ExecutorFailureSummary({ message: `Configured failure for ${request.unitId}` })
+              : undefined),
+          outputs: configured?.outputs ?? {},
+          artifacts: [...(configured?.artifacts ?? [])],
+          logs: [...(configured?.logs ?? [])],
+          startedAt: configured?.startedAt,
+          finishedAt: configured?.finishedAt,
+          diagnostics: [...(configured?.diagnostics ?? [])],
+        })
+      })
+
+      return { execute }
+    })
+}

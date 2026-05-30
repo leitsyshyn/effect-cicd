@@ -118,7 +118,7 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 
 1. Run `effect-solutions list` to see available guides
 2. Run `effect-solutions show <topic>...` for relevant patterns (supports multiple topics)
-3. Inspect `~/.local/share/effect-solutions/effect` for real implementations when an API, import path, package boundary, or migration detail is unclear
+3. Inspect `~/.local/share/effect-solutions/effect` for real implementations when an API, import path, package boundary, or migration detail is unclear. Do **NOT** grep `node_modules` if unsure about effect code, always prefer reading `~/.local/share/effect-solutions/effect`.
 
 Topics: quick-start, project-setup, tsconfig, basics, services-and-layers, data-modeling, error-handling, config, testing, cli.
 
