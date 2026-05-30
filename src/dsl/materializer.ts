@@ -1,12 +1,194 @@
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import * as Context from "effect/Context"
 
 import { DslMaterializationFailed } from "../domain/errors.ts"
+import { UnitId, WorkflowId } from "../domain/ids.ts"
+import {
+  CancellationPolicyDeclaration,
+  ContainerCommandDeclaration,
+  DependencyDeclaration,
+  NamedDeclaration,
+  RetryPolicyDeclaration,
+  SourceMetadata,
+  TimeoutPolicyDeclaration,
+  UnitDeclaration,
+} from "../domain/workflow-definition.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
+import type {
+  AuthoredContainerCommand,
+  AuthoredNamedDeclaration,
+  AuthoredPolicy,
+  AuthoredSourceMetadata,
+  AuthoredUnit,
+  AuthoredWorkflow,
+} from "./authored-workflow.ts"
 
 export class DslMaterializer extends Context.Service<
   DslMaterializer,
   {
-    readonly materialize: (authored: unknown) => Effect.Effect<NormalizedWorkflowDefinition, DslMaterializationFailed>
+    readonly materialize: (authored: AuthoredWorkflow) => Effect.Effect<NormalizedWorkflowDefinition, DslMaterializationFailed>
   }
->()("@effect-cicd/dsl/DslMaterializer") {}
+>()("@effect-cicd/dsl/DslMaterializer") {
+  static readonly layer = Layer.succeed(DslMaterializer, {
+    materialize: Effect.fn("DslMaterializer.materialize")((authored: AuthoredWorkflow) => materialize(authored)),
+  })
+}
+
+const schemaVersion = "0.1.0"
+
+const materialize = Effect.fn("dsl.materialize")(function* (authored: AuthoredWorkflow) {
+  if (authored.workflowId.trim().length === 0) {
+    return yield* fail("Workflow id is required")
+  }
+
+  if (authored.name.trim().length === 0) {
+    return yield* fail("Workflow name must be non-empty")
+  }
+
+  if (authored.units.length === 0) {
+    return yield* fail("Workflow must declare at least one unit")
+  }
+
+  const unitIds = new Set<string>()
+  for (const authoredUnit of authored.units) {
+    if (unitIds.has(authoredUnit.unitId)) {
+      return yield* fail(`Duplicate unit id: ${authoredUnit.unitId}`)
+    }
+
+    unitIds.add(authoredUnit.unitId)
+
+    if (authoredUnit.name.trim().length === 0) {
+      return yield* fail(`Unit ${authoredUnit.unitId} name must be non-empty`)
+    }
+
+    yield* validateCommand(authoredUnit)
+    yield* validatePolicies(authoredUnit)
+  }
+
+  const dependencies = new Array<DependencyDeclaration>()
+  const dependencyIds = new Set<string>()
+
+  for (const authoredUnit of authored.units) {
+    for (const dependencyTarget of authoredUnit.dependsOn ?? []) {
+      if (!unitIds.has(dependencyTarget)) {
+        return yield* fail(`Dependency target does not reference an existing unit: ${dependencyTarget}`)
+      }
+
+      if (dependencyTarget === authoredUnit.unitId) {
+        return yield* fail(`Unit ${authoredUnit.unitId} cannot depend on itself`)
+      }
+
+      const dependencyId = dependencyKey(authoredUnit.unitId, dependencyTarget)
+      if (dependencyIds.has(dependencyId)) {
+        return yield* fail(`Duplicate dependency: ${authoredUnit.unitId} -> ${dependencyTarget}`)
+      }
+
+      dependencyIds.add(dependencyId)
+      dependencies.push(
+        new DependencyDeclaration({
+          from: UnitId.make(dependencyTarget),
+          to: UnitId.make(authoredUnit.unitId),
+          metadata: {},
+        }),
+      )
+    }
+  }
+
+  return new NormalizedWorkflowDefinition({
+    schemaVersion,
+    workflowId: WorkflowId.make(authored.workflowId),
+    name: authored.name,
+    metadata: toMetadata(authored.metadata),
+    units: authored.units.map(toUnitDeclaration),
+    dependencies,
+    inputs: toNamedDeclarations(authored.inputs),
+    outputs: toNamedDeclarations(authored.outputs),
+    artifacts: toNamedDeclarations(authored.artifacts),
+    reports: toNamedDeclarations(authored.reports),
+    source: toSourceMetadata(authored.source),
+  })
+})
+
+const validateCommand = (authoredUnit: AuthoredUnit) => {
+  if (authoredUnit.command._tag !== "ContainerCommand") {
+    return fail(`Unit ${authoredUnit.unitId} uses an unsupported command declaration`)
+  }
+
+  return Effect.void
+}
+
+const validatePolicies = Effect.fn("dsl.validatePolicies")(function* (authoredUnit: AuthoredUnit) {
+  for (const policy of authoredUnit.policies ?? []) {
+    switch (policy._tag) {
+      case "RetryPolicy":
+        if (policy.maxAttempts > 1) {
+          return yield* fail(`Unit ${authoredUnit.unitId} retry maxAttempts greater than 1 is not supported`)
+        }
+        break
+      case "TimeoutPolicy":
+      case "CancellationPolicy":
+        break
+      default:
+        return yield* fail(`Unit ${authoredUnit.unitId} uses an unsupported policy declaration`)
+    }
+  }
+})
+
+const toUnitDeclaration = (authoredUnit: AuthoredUnit) =>
+  new UnitDeclaration({
+    unitId: UnitId.make(authoredUnit.unitId),
+    name: authoredUnit.name,
+    payloadDeclaration: toCommandDeclaration(authoredUnit.command),
+    metadata: toMetadata(authoredUnit.metadata),
+    inputs: toNamedDeclarations(authoredUnit.inputs),
+    outputs: toNamedDeclarations(authoredUnit.outputs),
+    artifacts: toNamedDeclarations(authoredUnit.artifacts),
+    policies: toPolicyDeclarations(authoredUnit.policies),
+    source: toSourceMetadata(authoredUnit.source),
+  })
+
+const toCommandDeclaration = (command: AuthoredContainerCommand) =>
+  new ContainerCommandDeclaration({
+    image: command.image,
+    command: [...command.command],
+    env: command.env === undefined ? undefined : { ...command.env },
+    workingDirectory: command.workingDirectory,
+  })
+
+const toNamedDeclarations = (declarations: ReadonlyArray<AuthoredNamedDeclaration> | undefined) =>
+  (declarations ?? []).map(
+    (declaration) =>
+      new NamedDeclaration({
+        name: declaration.name,
+        metadata: toMetadata(declaration.metadata),
+        source: toSourceMetadata(declaration.source),
+      }),
+  )
+
+const toPolicyDeclarations = (policies: ReadonlyArray<AuthoredPolicy> | undefined) =>
+  (policies ?? []).map((policy) => {
+    switch (policy._tag) {
+      case "RetryPolicy":
+        return new RetryPolicyDeclaration({ maxAttempts: policy.maxAttempts })
+      case "TimeoutPolicy":
+        return new TimeoutPolicyDeclaration({ seconds: policy.seconds })
+      case "CancellationPolicy":
+        return new CancellationPolicyDeclaration({ mode: policy.mode })
+    }
+  })
+
+const toMetadata = (metadata: Readonly<Record<string, unknown>> | undefined) => ({ ...(metadata ?? {}) })
+
+const toSourceMetadata = (source: AuthoredSourceMetadata | undefined) =>
+  source === undefined
+    ? undefined
+    : new SourceMetadata({
+        file: source.file,
+        line: source.line,
+        column: source.column,
+        origin: source.origin,
+      })
+
+const fail = (message: string) => Effect.fail(new DslMaterializationFailed({ message }))
+
+const dependencyKey = (from: string, to: string) => `${from}\u0000${to}`

@@ -3,15 +3,9 @@ import { Command } from "effect/unstable/cli"
 
 import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
-import { ArtifactRef, AttemptId, LogRef, RunId, UnitId, WorkflowId } from "../domain/ids.ts"
+import { ArtifactRef, AttemptId, LogRef, RunId, UnitId } from "../domain/ids.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
-import {
-  ContainerCommandDeclaration,
-  DependencyDeclaration,
-  NamedDeclaration,
-  NormalizedWorkflowDefinition,
-  UnitDeclaration,
-} from "../domain/workflow-definition.ts"
+import { DslMaterializer, sampleWorkflow } from "../dsl/index.ts"
 import { Executor, type TestExecutorLayerOptions } from "../engine/executor.ts"
 import { Engine } from "../engine/interface.ts"
 import { Orchestrator } from "../engine/orchestrator.ts"
@@ -23,28 +17,33 @@ import { StateStore } from "../engine/stores/state-store.ts"
 export const cliVersion = "0.0.0"
 
 export const makeCliLayer = (options: TestExecutorLayerOptions = {}) =>
-  Engine.layer.pipe(
-    Layer.provideMerge(Planner.layer),
-    Layer.provideMerge(Orchestrator.layer),
-    Layer.provideMerge(StateStore.memoryLayer),
-    Layer.provideMerge(EventLog.memoryLayer),
-    Layer.provideMerge(ArtifactStore.memoryLayer),
-    Layer.provideMerge(Executor.testLayer(mergeExecutorOptions(options))),
+  Layer.mergeAll(
+    DslMaterializer.layer,
+    Engine.layer.pipe(
+      Layer.provideMerge(Planner.layer),
+      Layer.provideMerge(Orchestrator.layer),
+      Layer.provideMerge(StateStore.memoryLayer),
+      Layer.provideMerge(EventLog.memoryLayer),
+      Layer.provideMerge(ArtifactStore.memoryLayer),
+      Layer.provideMerge(Executor.testLayer(mergeExecutorOptions(options))),
+    ),
   )
 
 const validateCommand = Command.make("validate", {}, () =>
   Effect.gen(function* () {
     const engine = yield* Engine
+    const definition = yield* materializeSampleWorkflow()
 
-    yield* engine.validate(sampleWorkflow())
-    yield* printLines(["workflow workflow:sample is valid"])
+    yield* engine.validate(definition)
+    yield* printLines([`workflow ${definition.workflowId} is valid`])
   }),
 ).pipe(Command.withDescription("Validate the built-in sample workflow"))
 
 const planCommand = Command.make("plan", {}, () =>
   Effect.gen(function* () {
     const engine = yield* Engine
-    const plan = yield* engine.plan(sampleWorkflow())
+    const definition = yield* materializeSampleWorkflow()
+    const plan = yield* engine.plan(definition)
 
     yield* printLines(renderPlanSummary(plan))
   }),
@@ -53,7 +52,8 @@ const planCommand = Command.make("plan", {}, () =>
 const runCommand = Command.make("run", {}, () =>
   Effect.gen(function* () {
     const engine = yield* Engine
-    const plan = yield* engine.plan(sampleWorkflow())
+    const definition = yield* materializeSampleWorkflow()
+    const plan = yield* engine.plan(definition)
     const run = yield* engine.startRun(plan)
     const events = yield* engine.readRunEvents(run.runId)
     const artifacts = yield* engine.readArtifacts(run.runId)
@@ -70,25 +70,12 @@ export const cli = Command.make("effect-cicd").pipe(
 
 export const cliProgram = Command.run(cli, { version: cliVersion })
 
-export const sampleWorkflow = () =>
-  new NormalizedWorkflowDefinition({
-    schemaVersion: "0.1.0",
-    workflowId: WorkflowId.make("workflow:sample"),
-    name: "sample workflow",
-    metadata: { owner: "cli" },
-    units: [
-      unit("unit:test", ["bun", "test"], "coverage"),
-      unit("unit:deploy", ["bun", "run", "ship"], "release-manifest"),
-      unit("unit:build", ["bun", "run", "build"], "dist"),
-    ],
-    dependencies: [dependency("unit:test", "unit:deploy"), dependency("unit:build", "unit:test")],
-    inputs: [],
-    outputs: [],
-    artifacts: [],
-    reports: [],
-  })
-
 const printLines = (lines: ReadonlyArray<string>) => Console.log(lines.join("\n"))
+
+const materializeSampleWorkflow = Effect.fn("cli.materializeSampleWorkflow")(function* () {
+  const materializer = yield* DslMaterializer
+  return yield* materializer.materialize(sampleWorkflow)
+})
 
 const renderPlanSummary = (plan: ExecutionPlan) => [
   `workflow: ${plan.workflowId}`,
@@ -182,32 +169,3 @@ const executorResult = (
     ],
   } satisfies NonNullable<TestExecutorLayerOptions["resultsByUnitId"]>[string]
 }
-
-const unit = (unitId: string, command: [string, ...Array<string>], artifactName: string) =>
-  new UnitDeclaration({
-    unitId: UnitId.make(unitId),
-    name: unitId.replace("unit:", ""),
-    payloadDeclaration: new ContainerCommandDeclaration({
-      image: "oven/bun:latest",
-      command,
-      env: { CI: "true" },
-    }),
-    metadata: {},
-    inputs: [],
-    outputs: [],
-    artifacts: [named(artifactName)],
-    policies: [],
-  })
-
-const dependency = (from: string, to: string) =>
-  new DependencyDeclaration({
-    from: UnitId.make(from),
-    to: UnitId.make(to),
-    metadata: {},
-  })
-
-const named = (name: string) =>
-  new NamedDeclaration({
-    name,
-    metadata: {},
-  })
