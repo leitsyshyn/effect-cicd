@@ -1,3 +1,6 @@
-import { Effect } from "effect";
+import { BunRuntime, BunServices } from "@effect/platform-bun"
+import { Effect, Layer } from "effect"
 
-console.log(Effect.succeed("Hello via Effect!").pipe(Effect.runSync));
+import { cliProgram, makeCliLayer } from "./src/cli/index.ts"
+
+cliProgram.pipe(Effect.provide(Layer.mergeAll(makeCliLayer(), BunServices.layer)), BunRuntime.runMain)
