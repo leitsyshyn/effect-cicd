@@ -6,7 +6,7 @@ import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, LogRef, RunId, UnitId } from "../domain/ids.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
 import { DslMaterializer, sampleWorkflow } from "../dsl/index.ts"
-import { Executor, type TestExecutorLayerOptions } from "../engine/executor.ts"
+import { Executor, LocalContainerExecutor, type TestExecutorLayerOptions } from "../engine/executor.ts"
 import { Engine } from "../engine/interface.ts"
 import { Orchestrator } from "../engine/orchestrator.ts"
 import { Planner } from "../engine/planner.ts"
@@ -26,6 +26,19 @@ export const makeCliLayer = (options: TestExecutorLayerOptions = {}) =>
       Layer.provideMerge(EventLog.memoryLayer),
       Layer.provideMerge(ArtifactStore.memoryLayer),
       Layer.provideMerge(Executor.testLayer(mergeExecutorOptions(options))),
+    ),
+  )
+
+export const makeAppLayer = () =>
+  Layer.mergeAll(
+    DslMaterializer.layer,
+    Engine.layer.pipe(
+      Layer.provideMerge(Planner.layer),
+      Layer.provideMerge(Orchestrator.layer),
+      Layer.provideMerge(StateStore.memoryLayer),
+      Layer.provideMerge(EventLog.memoryLayer),
+      Layer.provideMerge(ArtifactStore.memoryLayer),
+      Layer.provideMerge(LocalContainerExecutor.layer),
     ),
   )
 

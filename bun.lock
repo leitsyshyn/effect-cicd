@@ -9,6 +9,7 @@
       },
       "devDependencies": {
         "@effect/language-service": "^0.86.2",
+        "@effect/platform-node-shared": "^4.0.0-beta.74",
         "@effect/vitest": "^4.0.0-beta.74",
         "@types/bun": "latest",
         "typescript": "^5",

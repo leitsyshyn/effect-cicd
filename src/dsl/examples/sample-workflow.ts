@@ -9,8 +9,8 @@ export const sampleWorkflow = workflow({
       unitId: "unit:test",
       name: "test",
       command: containerCommand({
-        image: "oven/bun:latest",
-        command: ["bun", "test"],
+        image: "alpine:latest",
+        command: ["sh", "-c", "echo test"],
         env: { CI: "true" },
       }),
       dependsOn: ["unit:build"],
@@ -20,8 +20,8 @@ export const sampleWorkflow = workflow({
       unitId: "unit:deploy",
       name: "deploy",
       command: containerCommand({
-        image: "oven/bun:latest",
-        command: ["bun", "run", "ship"],
+        image: "alpine:latest",
+        command: ["sh", "-c", "echo deploy"],
         env: { CI: "true" },
       }),
       dependsOn: ["unit:test"],
@@ -31,8 +31,8 @@ export const sampleWorkflow = workflow({
       unitId: "unit:build",
       name: "build",
       command: containerCommand({
-        image: "oven/bun:latest",
-        command: ["bun", "run", "build"],
+        image: "alpine:latest",
+        command: ["sh", "-c", "echo build"],
         env: { CI: "true" },
       }),
       artifacts: [artifact({ name: "dist" })],
