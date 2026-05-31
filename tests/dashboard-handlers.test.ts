@@ -1,0 +1,155 @@
+import { describe, expect, it } from "@effect/vitest"
+import { Effect } from "effect"
+
+import { ArtifactMetadata, LogMetadata } from "../src/domain/artifacts.ts"
+import { RunCreated, RunStarted, UnitSucceeded } from "../src/domain/events.ts"
+import { PlanId, RunId, UnitId, WorkflowId, AttemptId, ArtifactRef, LogRef, EventId } from "../src/domain/ids.ts"
+import { ExecutionAttemptState, ExecutionUnitState, ProgressSummary, WorkflowRunState } from "../src/domain/runtime-state.ts"
+import { createDashboardHandlers } from "../src/dashboard/handlers.ts"
+
+describe("dashboard route handlers", () => {
+  it.effect("listRuns returns Engine-backed run summaries", () =>
+    Effect.gen(function* () {
+      let called = false
+      const run = sampleRun()
+      const handlers = createDashboardHandlers({
+        listRuns: () =>
+          Effect.sync(() => {
+            called = true
+            return [run] as const
+          }),
+        inspectRun: () => Effect.die("unused"),
+        readRunEvents: () => Effect.die("unused"),
+        readArtifacts: () => Effect.die("unused"),
+        readArtifactPayload: () => Effect.die("unused"),
+        readLogs: () => Effect.die("unused"),
+        readLogPayload: () => Effect.die("unused"),
+      })
+
+      const response = yield* Effect.promise(() => handlers.listRuns())
+      const payload = yield* Effect.promise(() => response.json() as Promise<Array<{ readonly runId: string; readonly workflowId: string }>>)
+
+      expect(called).toBe(true)
+      expect(payload).toEqual([{ runId: run.runId, workflowId: run.workflowId, status: "succeeded", createdAt: run.createdAt.toISOString(), updatedAt: run.updatedAt.toISOString(), startedAt: run.startedAt!.toISOString(), finishedAt: run.finishedAt!.toISOString(), progress: { totalUnits: 2, completedUnits: 2, failedUnits: 0, skippedUnits: 0 } }])
+    }),
+  )
+
+  it.effect("inspectRun returns stage-grouped DAG detail and payload metadata", () =>
+    Effect.gen(function* () {
+      const run = sampleRun()
+      const events = [
+        new RunCreated({ eventId: EventId.make("event:1"), runId: run.runId, occurredAt: new Date("2026-01-01T00:00:00.000Z"), sequence: 0 }),
+        new RunStarted({ eventId: EventId.make("event:2"), runId: run.runId, occurredAt: new Date("2026-01-01T00:00:00.100Z"), sequence: 1 }),
+        new UnitSucceeded({ eventId: EventId.make("event:3"), runId: run.runId, occurredAt: new Date("2026-01-01T00:00:02.000Z"), sequence: 2, unitId: UnitId.make("unit:build") }),
+      ]
+      const handlers = createDashboardHandlers({
+        listRuns: () => Effect.die("unused"),
+        inspectRun: () => Effect.succeed(run),
+        readRunEvents: () => Effect.succeed(events),
+        readArtifacts: () => Effect.succeed(run.artifacts),
+        readArtifactPayload: () => Effect.succeed('{"artifact":"dist"}\n'),
+        readLogs: () => Effect.succeed(run.logs),
+        readLogPayload: () => Effect.succeed("build stdout\n"),
+      })
+
+      const response = yield* Effect.promise(() => handlers.inspectRun(run.runId))
+      const payload = yield* Effect.promise(() => response.json() as Promise<any>)
+
+      expect(payload.run.runId).toBe(run.runId)
+      expect(payload.stages.map((stage: any) => stage.label)).toEqual(["Stage 1", "Stage 2"])
+      expect(payload.stages[1].units[0].dependencies).toEqual(["unit:build"])
+      expect(payload.logs[0].name).toBe("stdout")
+      expect(payload.artifacts[0].name).toBe("dist")
+      expect(payload.events[2].type).toBe("UnitSucceeded")
+    }),
+  )
+})
+
+const sampleRun = () => {
+  const runId = RunId.make("run:dashboard:test")
+  const buildAttemptId = AttemptId.make(`attempt:${runId}:unit:build:1`)
+  const testAttemptId = AttemptId.make(`attempt:${runId}:unit:test:1`)
+  const artifact = new ArtifactMetadata({
+    artifactRef: ArtifactRef.make(`artifact:${runId}:dist`),
+    runId,
+    unitId: UnitId.make("unit:build"),
+    attemptId: buildAttemptId,
+    name: "dist",
+    category: "build-output",
+    status: "available",
+    summary: "build output",
+  })
+  const log = new LogMetadata({
+    logRef: LogRef.make(`log:${runId}:stdout`),
+    runId,
+    unitId: UnitId.make("unit:build"),
+    attemptId: buildAttemptId,
+    name: "stdout",
+    status: "available",
+    summary: "build stdout",
+  })
+
+  return new WorkflowRunState({
+    runId,
+    workflowId: WorkflowId.make("workflow:dashboard"),
+    planId: PlanId.make("plan:dashboard"),
+    status: "succeeded",
+    units: [
+      new ExecutionUnitState({
+        runId,
+        unitId: UnitId.make("unit:build"),
+        status: "succeeded",
+        dependencies: [],
+        latestAttemptId: buildAttemptId,
+        attempts: [
+          new ExecutionAttemptState({
+            attemptId: buildAttemptId,
+            runId,
+            unitId: UnitId.make("unit:build"),
+            attemptNumber: 1,
+            status: "succeeded",
+            startedAt: new Date("2026-01-01T00:00:00.000Z"),
+            finishedAt: new Date("2026-01-01T00:00:02.000Z"),
+            artifacts: [artifact],
+            logs: [log],
+          }),
+        ],
+        startedAt: new Date("2026-01-01T00:00:00.000Z"),
+        finishedAt: new Date("2026-01-01T00:00:02.000Z"),
+        artifacts: [artifact],
+        logs: [log],
+      }),
+      new ExecutionUnitState({
+        runId,
+        unitId: UnitId.make("unit:test"),
+        status: "succeeded",
+        dependencies: [UnitId.make("unit:build")],
+        latestAttemptId: testAttemptId,
+        attempts: [
+          new ExecutionAttemptState({
+            attemptId: testAttemptId,
+            runId,
+            unitId: UnitId.make("unit:test"),
+            attemptNumber: 1,
+            status: "succeeded",
+            startedAt: new Date("2026-01-01T00:00:02.500Z"),
+            finishedAt: new Date("2026-01-01T00:00:04.000Z"),
+            artifacts: [],
+            logs: [],
+          }),
+        ],
+        startedAt: new Date("2026-01-01T00:00:02.500Z"),
+        finishedAt: new Date("2026-01-01T00:00:04.000Z"),
+        artifacts: [],
+        logs: [],
+      }),
+    ],
+    progress: new ProgressSummary({ totalUnits: 2, completedUnits: 2, failedUnits: 0, skippedUnits: 0 }),
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:04.000Z"),
+    startedAt: new Date("2026-01-01T00:00:00.000Z"),
+    finishedAt: new Date("2026-01-01T00:00:04.000Z"),
+    artifacts: [artifact],
+    logs: [log],
+  })
+}

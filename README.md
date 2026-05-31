@@ -132,6 +132,54 @@ Read one persisted artifact payload:
 bun run index.ts runs artifact <artifactRef>
 ```
 
+## Dashboard MVP
+
+Start the local dashboard:
+
+```bash
+bun run dashboard
+```
+
+For hot reload during dashboard development:
+
+```bash
+bun run dashboard:dev
+```
+
+Default dashboard URL:
+
+- `http://localhost:3001/`
+
+Optional port override:
+
+```bash
+DASHBOARD_PORT=4000 bun run dashboard
+```
+
+The dashboard runs in the same Bun process as the local Engine. The browser React app does not access Postgres or MinIO directly. It talks only to local in-process bridge routes, which call Engine inspection methods:
+
+- `GET /api/runs`
+- `GET /api/runs/:runId`
+- `GET /api/runs/:runId/events`
+- `GET /api/runs/:runId/logs`
+- `GET /api/logs/:logRef`
+- `GET /api/runs/:runId/artifacts`
+- `GET /api/artifacts/:artifactRef`
+
+Dashboard routes:
+
+- `/` recent runs list
+- `/runs/:runId` run detail, stage layout, unit inspection panel
+
+The pipeline view derives stage-like columns from DAG depth. It does not change Engine execution semantics or introduce a stage model into the runtime.
+
+Current dashboard limitations:
+
+- Live streaming updates are not implemented yet. Use refresh to reload persisted state.
+- Dependency relations are shown textually per job card rather than drawn as SVG connector lines.
+- Artifact payload viewing assumes payload retrieval succeeds through the existing Engine artifact read path.
+- Workflow and unit display names fall back to ids when richer persisted names are unavailable.
+
 For the demo workflow, `runs artifact <artifactRef>` should print JSON like:
 
 ```json
@@ -179,6 +227,7 @@ bun run test:storage
 ## Notes
 
 - The CLI is Engine-backed. It does not read Postgres or MinIO directly.
+- The dashboard is also Engine-backed and runs in the same local Bun process as the Engine.
 - Run state and events are persisted in Postgres.
 - Log and artifact payloads are persisted in MinIO.
 - Current runtime state stores metadata and refs only, not full payloads.
