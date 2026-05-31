@@ -127,16 +127,15 @@ export class LocalContainerExecutor {
         return yield* executeDockerRequest(request).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
           Effect.scoped,
-          Effect.catchTag("ExecutorFailed", (error) => Effect.fail(error)),
-          Effect.catch((error) =>
-            Effect.fail(
+          Effect.catchTag("ExecutorFailed", Effect.fail),
+          Effect.mapError(
+            (error) =>
               new ExecutorFailed({
                 runId: request.runId,
                 unitId: request.unitId,
                 attemptId: request.attemptId,
                 message: `Failed to start local container execution: ${toErrorMessage(error)}`,
               }),
-            ),
           ),
         )
       })

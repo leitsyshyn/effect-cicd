@@ -4,4 +4,5 @@
 /.vscode/*
 !/.vscode/settings.json
 /tsconfig.tsbuildinfo
+.env
 .DS_Store

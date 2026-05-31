@@ -7,7 +7,12 @@
     "prepare": "effect-language-service patch",
     "typecheck": "tsc --noEmit",
     "test": "bun run --bun vitest run",
-    "test:watch": "bun run --bun vitest"
+    "test:watch": "bun run --bun vitest",
+
+    "infra:up": "docker compose -f compose.demo.yml up -d",
+    "infra:down": "docker compose -f compose.demo.yml down",
+    "infra:logs": "docker compose -f compose.demo.yml logs -f",
+    "test:storage": "RUN_STORAGE_TESTS=1 bun run test"
   },
   "devDependencies": {
     "@effect/language-service": "^0.86.2",
