@@ -1,11 +1,11 @@
-import { Console, Effect, Layer } from "effect"
-import { Argument, Command } from "effect/unstable/cli"
+import { Console, Effect, Layer, Option } from "effect"
+import { Argument, Command, Flag } from "effect/unstable/cli"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, LogRef, RunId, UnitId } from "../domain/ids.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
-import { DslMaterializer, sampleWorkflow } from "../dsl/index.ts"
+import { DslMaterializer, WorkflowModuleLoader } from "../dsl/index.ts"
 import { Executor, LocalContainerExecutor, type TestExecutorLayerOptions } from "../engine/executor.ts"
 import { Engine } from "../engine/interface.ts"
 import { Orchestrator } from "../engine/orchestrator.ts"
@@ -21,6 +21,7 @@ export const cliVersion = "0.0.0"
 export const makeCliLayer = (options: TestExecutorLayerOptions = {}) =>
   Layer.mergeAll(
     DslMaterializer.layer,
+    WorkflowModuleLoader.layer,
     Engine.layer.pipe(
       Layer.provideMerge(Planner.layer),
       Layer.provideMerge(Orchestrator.layer),
@@ -58,6 +59,7 @@ export const makeAppLayer = () => {
 
   return Layer.mergeAll(
     DslMaterializer.layer,
+    WorkflowModuleLoader.layer,
     StorageRuntimeConfig.layer,
     orchestratorLayer,
     Engine.layer.pipe(
@@ -79,30 +81,43 @@ export const appProgram = Effect.gen(function* () {
   yield* cliProgram
 })
 
-const validateCommand = Command.make("validate", {}, () =>
+const workflowModuleArg = Argument.string("workflow-module").pipe(
+  Argument.withDescription("Local workflow module path (TypeScript/JavaScript)"),
+)
+
+const exportNameFlag = Flag.string("export").pipe(
+  Flag.withAlias("e"),
+  Flag.optional,
+  Flag.withDescription("Select a named export (defaults to: default, then `workflow`)")
+)
+
+const validateCommand = Command.make(
+  "validate",
+  { workflowModule: workflowModuleArg, exportName: exportNameFlag },
+  ({ workflowModule, exportName }) =>
   Effect.gen(function* () {
     const engine = yield* Engine
-    const definition = yield* materializeSampleWorkflow()
+    const definition = yield* loadAndMaterializeWorkflow(workflowModule, Option.getOrUndefined(exportName))
 
     yield* engine.validate(definition)
     yield* printLines([`workflow ${definition.workflowId} is valid`])
   }),
-).pipe(Command.withDescription("Validate the built-in sample workflow"))
+).pipe(Command.withDescription("Validate a workflow module (default export or named export `workflow`)"))
 
-const planCommand = Command.make("plan", {}, () =>
+const planCommand = Command.make("plan", { workflowModule: workflowModuleArg, exportName: exportNameFlag }, ({ workflowModule, exportName }) =>
   Effect.gen(function* () {
     const engine = yield* Engine
-    const definition = yield* materializeSampleWorkflow()
+    const definition = yield* loadAndMaterializeWorkflow(workflowModule, Option.getOrUndefined(exportName))
     const plan = yield* engine.plan(definition)
 
     yield* printLines(renderPlanSummary(plan))
   }),
-).pipe(Command.withDescription("Plan the built-in sample workflow"))
+).pipe(Command.withDescription("Plan a workflow module (default export or named export `workflow`)"))
 
-const runCommand = Command.make("run", {}, () =>
+const runCommand = Command.make("run", { workflowModule: workflowModuleArg, exportName: exportNameFlag }, ({ workflowModule, exportName }) =>
   Effect.gen(function* () {
     const engine = yield* Engine
-    const definition = yield* materializeSampleWorkflow()
+    const definition = yield* loadAndMaterializeWorkflow(workflowModule, Option.getOrUndefined(exportName))
     const plan = yield* engine.plan(definition)
     const run = yield* engine.startRun(plan)
     const events = yield* engine.readRunEvents(run.runId)
@@ -111,7 +126,7 @@ const runCommand = Command.make("run", {}, () =>
 
     yield* printLines(renderRunSummary(run, events, artifacts, logs))
   }),
-).pipe(Command.withDescription("Run the built-in sample workflow"))
+).pipe(Command.withDescription("Run a workflow module (default export or named export `workflow`)"))
 
 const runsListCommand = Command.make("list", {}, () =>
   Effect.gen(function* () {
@@ -213,9 +228,14 @@ export const cliProgram = Command.run(cli, { version: cliVersion })
 
 const printLines = (lines: ReadonlyArray<string>) => Console.log(lines.join("\n"))
 
-const materializeSampleWorkflow = Effect.fn("cli.materializeSampleWorkflow")(function* () {
+const loadAndMaterializeWorkflow = Effect.fn("cli.loadAndMaterializeWorkflow")(function* (
+  workflowModule: string,
+  exportName: string | undefined,
+) {
+  const loader = yield* WorkflowModuleLoader
   const materializer = yield* DslMaterializer
-  return yield* materializer.materialize(sampleWorkflow)
+  const authored = yield* loader.load(workflowModule, exportName === undefined ? undefined : { exportName })
+  return yield* materializer.materialize(authored)
 })
 
 const renderPlanSummary = (plan: ExecutionPlan) => [

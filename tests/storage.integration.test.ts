@@ -18,6 +18,7 @@ import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { EventLog } from "../src/engine/stores/event-log.ts"
 import { StateStore } from "../src/engine/stores/state-store.ts"
 import { StorageRuntimeConfig } from "../src/runtime/config.ts"
+import { WorkflowModuleLoader } from "../src/dsl/loader.ts"
 
 describe("durable storage integration", () => {
   it.live("persists run state, events, and log payloads across fresh runtimes", () => {
@@ -25,8 +26,8 @@ describe("durable storage integration", () => {
       return Effect.void
     }
 
-    return Effect.gen(function* () {
-      const runOutput = yield* runCli(["run"], durableCliLayer())
+      return Effect.gen(function* () {
+      const runOutput = yield* runCli(["run", "./tests/fixtures/workflows/valid-workflow.ts"], durableCliLayer())
       const runId = parseLineValue(runOutput, "run: ")
 
       const listOutput = yield* runCli(["runs", "list"], durableCliLayer())
@@ -226,6 +227,7 @@ const durableCliLayer = (options: TestExecutorLayerOptions = {}) => {
     Stdio.layerTest({}),
     CliOutput.layer(CliOutput.defaultFormatter({ colors: false })),
     DslMaterializer.layer,
+    WorkflowModuleLoader.layer,
     StorageRuntimeConfig.layer,
     orchestratorLayer,
     Engine.layer.pipe(

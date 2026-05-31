@@ -6,8 +6,8 @@
   "scripts": {
     "prepare": "effect-language-service patch",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "bun run --bun vitest run",
+    "test:watch": "bun run --bun vitest"
   },
   "devDependencies": {
     "@effect/language-service": "^0.86.2",

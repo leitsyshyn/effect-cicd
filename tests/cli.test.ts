@@ -12,24 +12,26 @@ import {
   UnitDeclaration,
 } from "../src/domain/workflow-definition.ts"
 import { DslMaterializer } from "../src/dsl/index.ts"
+import { WorkflowModuleLoader } from "../src/dsl/loader.ts"
 import { Engine } from "../src/engine/interface.ts"
+import type { AuthoredWorkflow } from "../src/dsl/authored-workflow.ts"
 
 describe("CLI", () => {
   it.effect("validate succeeds and prints success text", () =>
     Effect.gen(function* () {
-      const output = yield* runCli(["validate"])
+      const output = yield* runCli(["validate", "./tests/fixtures/workflows/valid-workflow.ts"])
 
-      expect(output).toBe("workflow workflow:sample is valid")
+      expect(output).toBe("workflow workflow:fixture:valid is valid")
     }),
   )
 
   it.effect("plan prints canonical unit order and dependencies", () =>
     Effect.gen(function* () {
-      const output = yield* runCli(["plan"])
+      const output = yield* runCli(["plan", "./tests/fixtures/workflows/valid-workflow.ts"])
 
       expect(output).toBe([
-        "workflow: workflow:sample",
-        "name: sample workflow",
+        "workflow: workflow:fixture:valid",
+        "name: fixture valid workflow",
         "units:",
         "unit:build deps: -",
         "unit:deploy deps: unit:test",
@@ -44,9 +46,9 @@ describe("CLI", () => {
 
   it.effect("run prints a succeeded run summary", () =>
     Effect.gen(function* () {
-      const output = yield* runCli(["run"])
+      const output = yield* runCli(["run", "./tests/fixtures/workflows/valid-workflow.ts"])
 
-      expect(output).toContain("run: run:plan:workflow:sample:")
+      expect(output).toContain("run: run:plan:workflow:fixture:valid:")
       expect(output).toContain("status: succeeded")
       expect(output).toContain("unit:build succeeded")
       expect(output).toContain("unit:test succeeded")
@@ -59,7 +61,10 @@ describe("CLI", () => {
 
   it.effect("run prints failed status and RunFailed when build fails", () =>
     Effect.gen(function* () {
-      const output = yield* runCli(["run"], makeCliLayer({ resultsByUnitId: { "unit:build": { outcome: "failed" } } }))
+      const output = yield* runCli(
+        ["run", "./tests/fixtures/workflows/valid-workflow.ts"],
+        makeCliLayer({ resultsByUnitId: { "unit:build": { outcome: "failed" } } }),
+      )
 
       expect(output).toContain("status: failed")
       expect(output).toContain("unit:build failed")
@@ -72,8 +77,9 @@ describe("CLI", () => {
       let called = false
 
       const output = yield* runCli(
-        ["validate"],
+        ["validate", "./tests/fixtures/workflows/valid-workflow.ts"],
         Layer.mergeAll(
+          WorkflowModuleLoader.layer,
           DslMaterializer.layer,
           Layer.succeed(Engine, {
             validate: () =>
@@ -93,7 +99,7 @@ describe("CLI", () => {
       )
 
       expect(called).toBe(true)
-      expect(output).toBe("workflow workflow:sample is valid")
+      expect(output).toBe("workflow workflow:fixture:valid is valid")
     }),
   )
 
@@ -102,8 +108,22 @@ describe("CLI", () => {
       let validatedWorkflowId: string | undefined
 
       const output = yield* runCli(
-        ["validate"],
+        ["validate", "./tests/fixtures/workflows/valid-workflow.ts"],
         Layer.mergeAll(
+          Layer.succeed(WorkflowModuleLoader, {
+            load: () =>
+              Effect.succeed({
+                workflowId: "workflow:ignored",
+                name: "ignored",
+                units: [
+                  {
+                    unitId: "unit:build",
+                    name: "build",
+                    command: { _tag: "ContainerCommand", image: "alpine:latest", command: ["sh", "-c", "echo build"] },
+                  },
+                ],
+              } satisfies AuthoredWorkflow),
+          }),
           Layer.succeed(DslMaterializer, {
             materialize: () => Effect.succeed(materializedWorkflow("workflow:from-dsl")),
           }),
@@ -126,6 +146,14 @@ describe("CLI", () => {
 
       expect(validatedWorkflowId).toBe("workflow:from-dsl")
       expect(output).toBe("workflow workflow:from-dsl is valid")
+    }),
+  )
+
+  it.effect("validate surfaces DslMaterializer failures for bad workflows", () =>
+    Effect.gen(function* () {
+      const output = yield* runCli(["validate", "./tests/fixtures/workflows/materialization-error.ts"]).pipe(Effect.exit)
+
+      expect(output._tag).toBe("Failure")
     }),
   )
 })
