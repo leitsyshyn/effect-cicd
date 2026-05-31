@@ -7,19 +7,22 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 
 import { cli, cliVersion, makeDurableStorageLayer } from "../src/cli/index.ts"
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../src/domain/artifacts.ts"
+import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanUnit } from "../src/domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { RunCreated } from "../src/domain/events.ts"
-import { ProgressSummary, WorkflowRunState, ExecutionAttemptState, ExecutionUnitState } from "../src/domain/runtime-state.ts"
+import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState, ExecutionAttemptState, ExecutionUnitState } from "../src/domain/runtime-state.ts"
 import { DslMaterializer } from "../src/dsl/index.ts"
 import { Executor, LocalContainerExecutor, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
 import { Engine } from "../src/engine/interface.ts"
 import { Orchestrator } from "../src/engine/orchestrator.ts"
 import { Planner } from "../src/engine/planner.ts"
+import { RunController } from "../src/engine/run-controller.ts"
 import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { EventLog } from "../src/engine/stores/event-log.ts"
 import { StateStore } from "../src/engine/stores/state-store.ts"
 import { StorageRuntimeConfig } from "../src/runtime/config.ts"
 import { WorkflowModuleLoader } from "../src/dsl/loader.ts"
+import { ArtifactDeclaration, NamedDeclaration } from "../src/domain/workflow-definition.ts"
 
 describe("durable storage integration", () => {
   it.live("persists run state, events, and log payloads across fresh runtimes", () => {
@@ -64,6 +67,7 @@ describe("durable storage integration", () => {
       runId,
       workflowId: WorkflowId.make(`workflow:storage:${crypto.randomUUID()}`),
       planId: PlanId.make(`plan:storage:${crypto.randomUUID()}`),
+      execution: executionContextFor("workflow:storage", "plan:storage", ["unit:build"]),
       status: "running",
       units: [
         new ExecutionUnitState({
@@ -258,6 +262,7 @@ const durableCliLayer = (options: TestExecutorLayerOptions = {}) => {
     Layer.provideMerge(storageLayer),
     Layer.provideMerge(Executor.testLayer(options)),
   )
+  const runControllerLayer = RunController.layer.pipe(Layer.provideMerge(orchestratorLayer))
 
   return Layer.mergeAll(
     storageSupportLayer,
@@ -269,9 +274,11 @@ const durableCliLayer = (options: TestExecutorLayerOptions = {}) => {
     WorkflowModuleLoader.layer,
     StorageRuntimeConfig.layer,
     orchestratorLayer,
+    runControllerLayer,
     Engine.layer.pipe(
       Layer.provideMerge(Planner.layer),
       Layer.provideMerge(orchestratorLayer),
+      Layer.provideMerge(runControllerLayer),
       Layer.provideMerge(storageLayer),
     ),
   ).pipe(Layer.provideMerge(runtimeSupportLayer), Layer.provideMerge(storageConfigLayer(false)))
@@ -287,6 +294,7 @@ const realDurableCliLayer = () => {
       ),
     ),
   )
+  const runControllerLayer = RunController.layer.pipe(Layer.provideMerge(orchestratorLayer))
 
   return Layer.mergeAll(
     TestConsole.layer,
@@ -297,9 +305,11 @@ const realDurableCliLayer = () => {
     WorkflowModuleLoader.layer,
     StorageRuntimeConfig.layer,
     orchestratorLayer,
+    runControllerLayer,
     Engine.layer.pipe(
       Layer.provideMerge(Planner.layer),
       Layer.provideMerge(orchestratorLayer),
+      Layer.provideMerge(runControllerLayer),
       Layer.provideMerge(storageLayer),
     ),
   ).pipe(Layer.provideMerge(runtimeSupportLayer), Layer.provideMerge(storageConfigLayer(false)))
@@ -392,6 +402,7 @@ const interruptedSeedRun = (workflowId: string) => {
     runId,
     workflowId: WorkflowId.make(workflowId),
     planId: PlanId.make(`plan:${workflowId}`),
+    execution: executionContextFor(workflowId, `plan:${workflowId}`, ["unit:build", "unit:test"]),
     status: "running",
     units,
     progress: new ProgressSummary({
@@ -407,6 +418,37 @@ const interruptedSeedRun = (workflowId: string) => {
     logs: [],
   })
 }
+
+const executionContextFor = (workflowId: string, planId: string, unitIds: ReadonlyArray<string>) =>
+  new RunExecutionContext({
+    plan: new ExecutionPlan({
+      planId: PlanId.make(planId),
+      schemaVersion: "0.1.0",
+      workflowId: WorkflowId.make(workflowId),
+      workflowName: workflowId.replace("workflow:", ""),
+      metadata: {},
+      units: unitIds.map(
+        (unitId, index) =>
+          new PlanUnit({
+            unitId: UnitId.make(unitId),
+            name: unitId.replace("unit:", ""),
+            dependencies: index === 0 ? [] : [UnitId.make(unitIds[index - 1]!)],
+            payloadDescriptor: new ContainerCommandDescriptor({ image: "oven/bun:1", command: ["bun", "test"], env: {} }),
+            logExpectations: [new NamedDeclaration({ name: "stdout", metadata: {} })],
+            artifactExpectations: [new ArtifactDeclaration({ name: "dist", kind: "file", path: "dist/output.txt", metadata: {} })],
+            policies: [],
+            diagnostics: [],
+          }),
+      ),
+      dependencies: unitIds.slice(1).map(
+        (unitId, index) =>
+          new PlanDependency({ from: UnitId.make(unitIds[index]!), to: UnitId.make(unitId) }),
+      ),
+      diagnostics: [],
+    }),
+    options: new RunExecutionOptions({ workspacePath: "/repo/workspace" }),
+    submittedAt: new Date(0),
+  })
 
 const terminalLayer = Layer.succeed(
   Terminal.Terminal,

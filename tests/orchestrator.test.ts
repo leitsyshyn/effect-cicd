@@ -5,10 +5,11 @@ import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from
 import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanUnit } from "../src/domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { RunCreated } from "../src/domain/events.ts"
-import { ProgressSummary, WorkflowRunState, ExecutionUnitState, ExecutionAttemptState } from "../src/domain/runtime-state.ts"
+import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState, ExecutionUnitState, ExecutionAttemptState } from "../src/domain/runtime-state.ts"
 import { ArtifactDeclaration, NamedDeclaration } from "../src/domain/workflow-definition.ts"
 import { DispatchRequest, Executor, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
 import { Orchestrator } from "../src/engine/orchestrator.ts"
+import { RunUpdates } from "../src/engine/run-updates.ts"
 import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { EventLog } from "../src/engine/stores/event-log.ts"
 import { StateStore } from "../src/engine/stores/state-store.ts"
@@ -193,7 +194,7 @@ describe("Orchestrator", () => {
     }).pipe(Effect.provide(runtimeLayer())),
   )
 
-  it.effect("resumeIncompleteRuns does not replay EventLog and marks incomplete runs interrupted", () =>
+  it.effect("resumeIncompleteRuns resumes incomplete runs from persisted state without replay", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator
       const stateStore = yield* StateStore
@@ -215,12 +216,14 @@ describe("Orchestrator", () => {
       const events = yield* eventLog.readRunEvents(seededRun.runId)
 
       expect(resumed).toHaveLength(1)
-      expect(stored.status).toBe("interrupted")
-      expect(stored.units.find((unit) => unit.unitId === UnitId.make("unit:build"))?.status).toBe("interrupted")
-      expect(stored.units.find((unit) => unit.unitId === UnitId.make("unit:lint"))?.status).toBe("interrupted")
-      expect(stored.units.find((unit) => unit.unitId === UnitId.make("unit:test"))?.status).toBe("interrupted")
+      expect(stored.status).toBe("succeeded")
+      expect(stored.units.find((unit) => unit.unitId === UnitId.make("unit:build"))?.attempts[0]?.status).toBe("interrupted")
+      expect(stored.units.find((unit) => unit.unitId === UnitId.make("unit:build"))?.status).toBe("succeeded")
+      expect(stored.units.find((unit) => unit.unitId === UnitId.make("unit:lint"))?.status).toBe("succeeded")
+      expect(stored.units.find((unit) => unit.unitId === UnitId.make("unit:test"))?.status).toBe("succeeded")
       expect(stored.units[0]?.attempts[0]?.status).toBe("interrupted")
-      expect(events.map((event) => event._tag)).toEqual(["RunCreated", "RunInterrupted"])
+      expect(events.map((event) => event._tag)).toContain("RunResumed")
+      expect(events.map((event) => event._tag)).toContain("RunSucceeded")
     }).pipe(Effect.provide(runtimeLayer())),
   )
 })
@@ -232,6 +235,7 @@ const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
     Layer.provideMerge(EventLog.memoryLayer),
     Layer.provideMerge(ArtifactStore.memoryLayer),
     Layer.provideMerge(Executor.testLayer(options)),
+    Layer.provideMerge(RunUpdates.noopLayer),
   )
 
 const plan = (
@@ -376,6 +380,18 @@ const interruptedSeedRun = (workflowId: string) => {
     runId,
     workflowId: WorkflowId.make(workflowId),
     planId: PlanId.make(`plan:${workflowId}`),
+    execution: new RunExecutionContext({
+      plan: plan(
+        workflowId,
+        [planUnit("unit:build"), planUnit("unit:lint"), planUnit("unit:test", ["unit:build", "unit:lint"])],
+        [
+          planDependency("unit:build", "unit:test"),
+          planDependency("unit:lint", "unit:test"),
+        ],
+      ),
+      options: new RunExecutionOptions({ workspacePath: "/repo/workspace" }),
+      submittedAt: new Date(0),
+    }),
     status: "running",
     units,
     progress: new ProgressSummary({

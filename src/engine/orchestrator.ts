@@ -1,19 +1,24 @@
-import { Clock, Effect, Layer } from "effect"
+import { Clock, Effect, Layer, Option } from "effect"
 import * as Context from "effect/Context"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
-import { ExecutorFailed, PlanningFailed, RunNotFound, StoreUnavailable } from "../domain/errors.ts"
+import { ExecutorFailed, RunNotFound, StoreUnavailable } from "../domain/errors.ts"
 import {
   ArtifactRegistered,
+  AttemptCanceled,
   AttemptFailed,
   AttemptStarted,
   AttemptSucceeded,
   LogRegistered,
+  RetryScheduled,
+  RunCanceled,
+  RunCancellationRequested,
   RunCreated,
   RunFailed,
-  RunInterrupted,
+  RunResumed,
   RunStarted,
   RunSucceeded,
+  UnitCanceled,
   UnitDispatched,
   UnitFailed,
   UnitReady,
@@ -21,20 +26,23 @@ import {
   UnitSucceeded,
   type WorkflowEvent,
 } from "../domain/events.ts"
-import { ExecutionPlan, PlanUnit } from "../domain/execution-plan.ts"
+import { ExecutionPlan, PlanRetryPolicy, PlanUnit } from "../domain/execution-plan.ts"
 import { AttemptId, EventId, RunId, UnitId } from "../domain/ids.ts"
-import { DispatchRequest, DispatchWorkspace, Executor, ExecutorFailureSummary, ExecutorResult } from "./executor.ts"
 import {
   ExecutionAttemptState,
   ExecutionUnitState,
   FailureSummary,
   ProgressSummary,
+  RunExecutionContext,
+  RunExecutionOptions,
   WorkflowRunState,
 } from "../domain/runtime-state.ts"
+import { StorageTransactor } from "../runtime/storage.ts"
+import { DispatchRequest, DispatchWorkspace, Executor, ExecutorFailureSummary, ExecutorResult } from "./executor.ts"
+import { RunUpdate, RunUpdates } from "./run-updates.ts"
 import { ArtifactStore } from "./stores/artifact-store.ts"
 import { EventLog } from "./stores/event-log.ts"
 import { StateStore } from "./stores/state-store.ts"
-import { StorageTransactor } from "../runtime/storage.ts"
 
 export interface RunStartOptions {
   readonly workspacePath?: string
@@ -45,12 +53,20 @@ export const containerWorkspaceMountPath = "/workspace"
 export class Orchestrator extends Context.Service<
   Orchestrator,
   {
-    readonly startRun: (
+    readonly startRun: (plan: ExecutionPlan, options?: RunStartOptions) => Effect.Effect<WorkflowRunState, StoreUnavailable>
+    readonly createRun: (
       plan: ExecutionPlan,
       options?: RunStartOptions,
-    ) => Effect.Effect<WorkflowRunState, PlanningFailed | StoreUnavailable>
+      retriedFromRunId?: RunId,
+    ) => Effect.Effect<WorkflowRunState, StoreUnavailable>
     readonly inspectRun: (runId: RunId) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
     readonly advanceRun: (runId: RunId) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
+    readonly cancelRun: (runId: RunId, reason?: string) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
+    readonly finalizeCancellation: (
+      runId: RunId,
+      reason?: string,
+    ) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
+    readonly recoverIncompleteRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, StoreUnavailable>
     readonly resumeIncompleteRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, StoreUnavailable>
   }
 >()("@effect-cicd/engine/Orchestrator") {
@@ -62,8 +78,8 @@ export class Orchestrator extends Context.Service<
       const artifactStore = yield* ArtifactStore
       const executor = yield* Executor
       const storageTransactor = yield* StorageTransactor
+      const runUpdates = yield* Effect.serviceOption(RunUpdates)
 
-      const plans = new Map<RunId, ExecutionPlan>()
       const eventSequences = new Map<RunId, number>()
 
       const appendEvent = (
@@ -103,6 +119,21 @@ export class Orchestrator extends Context.Service<
           return nextSequence
         })
 
+      const publishRunUpdate = (run: WorkflowRunState, eventType?: string) =>
+        Option.match(runUpdates, {
+          onNone: () => Effect.void,
+          onSome: (service) =>
+            service.publish(
+              new RunUpdate({
+                runId: run.runId,
+                status: run.status,
+                updatedAt: run.updatedAt,
+                terminal: isTerminalRun(run),
+                eventType,
+              }),
+            ),
+        })
+
       const persistRun = (run: WorkflowRunState) =>
         stateStore.updateRun(run).pipe(
           Effect.catchTag(
@@ -117,21 +148,50 @@ export class Orchestrator extends Context.Service<
           ),
         )
 
-      const advanceWithPlan = Effect.fn("Orchestrator.advanceWithPlan")(function* (
+      const createRun = Effect.fn("Orchestrator.createRun")(function* (
         plan: ExecutionPlan,
-        initialRun: WorkflowRunState,
         options?: RunStartOptions,
+        retriedFromRunId?: RunId,
       ) {
+        const createdAt = yield* nowDate
+        const run = createInitialRun(
+          plan,
+          RunId.make(`run:${plan.planId}:${crypto.randomUUID()}`),
+          createdAt,
+          options,
+          retriedFromRunId,
+        )
+
+        eventSequences.set(run.runId, 0)
+
+        yield* storageTransactor.run(
+          Effect.gen(function* () {
+            yield* stateStore.createRun(run)
+            yield* appendEvent(run.runId, (base) => new RunCreated(base))
+            yield* appendEvent(run.runId, (base) => new RunStarted(base))
+          }),
+        )
+        yield* publishRunUpdate(run, "RunStarted")
+
+        return run
+      })
+
+      const advanceWithRun = Effect.fn("Orchestrator.advanceWithRun")(function* (initialRun: WorkflowRunState) {
         let run = initialRun
+        const plan = run.execution.plan
 
         while (!isTerminalRun(run)) {
+          if (run.status === "canceling") {
+            return yield* finalizeCancellationState(run, "Cancellation requested")
+          }
+
           const readyUnitIds = getReadyUnitIds(run)
           if (readyUnitIds.length === 0) {
             return run
           }
 
           for (const unitId of readyUnitIds) {
-            run = yield* executeReadyUnit(plan, run, unitId, options)
+            run = yield* executeReadyUnit(plan, run, unitId)
             if (isTerminalRun(run)) {
               return run
             }
@@ -145,14 +205,16 @@ export class Orchestrator extends Context.Service<
         plan: ExecutionPlan,
         initialRun: WorkflowRunState,
         unitId: UnitId,
-        options?: RunStartOptions,
       ) {
         const planUnit = yield* getPlanUnit(plan, unitId)
+        const currentUnit = yield* getRunUnit(initialRun, unitId)
         const readyAt = yield* nowDate
 
         const readyUnit = new ExecutionUnitState({
-          ...(yield* getRunUnit(initialRun, unitId)),
+          ...currentUnit,
           status: "ready",
+          finishedAt: undefined,
+          failure: undefined,
         })
 
         let run = replaceUnit(initialRun, readyUnit, readyAt)
@@ -162,14 +224,16 @@ export class Orchestrator extends Context.Service<
             yield* appendEvent(run.runId, (base) => new UnitReady({ ...base, unitId }))
           }),
         )
+        yield* publishRunUpdate(run, "UnitReady")
 
-        const attemptId = AttemptId.make(`attempt:${run.runId}:${unitId}:1`)
+        const attemptNumber = getNextAttemptNumber(currentUnit)
+        const attemptId = AttemptId.make(`attempt:${run.runId}:${unitId}:${attemptNumber}`)
         const startedAt = yield* nowDate
         const runningAttempt = new ExecutionAttemptState({
           attemptId,
           runId: run.runId,
           unitId,
-          attemptNumber: 1,
+          attemptNumber,
           status: "running",
           startedAt,
           artifacts: [],
@@ -197,17 +261,19 @@ export class Orchestrator extends Context.Service<
                   ...base,
                   unitId,
                   attemptId,
-                  attemptNumber: 1,
+                  attemptNumber,
                 }),
             )
           }),
         )
+        yield* publishRunUpdate(run, "AttemptStarted")
 
-        const request = buildDispatchRequest(run, plan, planUnit, attemptId, options)
-        const result = yield* executor.execute(request).pipe(
-          Effect.catchTag("ExecutorFailed", (error) =>
-            Effect.succeed(executorFailureResult(request, error)),
+        const request = buildDispatchRequest(run, planUnit, attemptId, attemptNumber)
+        const result = yield* Effect.onInterrupt(
+          executor.execute(request).pipe(
+            Effect.catchTag("ExecutorFailed", (error) => Effect.succeed(executorFailureResult(request, error))),
           ),
+          () => finalizeCancellationState(run, `Cancellation requested while executing ${unitId}`).pipe(Effect.asVoid),
         )
 
         const attemptStartedAt = result.startedAt ?? runningAttempt.startedAt
@@ -252,6 +318,7 @@ export class Orchestrator extends Context.Service<
               }
             }),
           )
+          yield* publishRunUpdate(run, run.status === "succeeded" ? "RunSucceeded" : "UnitSucceeded")
 
           return run
         }
@@ -266,17 +333,58 @@ export class Orchestrator extends Context.Service<
           logs,
           artifacts,
         })
-        const failedUnit = replaceAttempt(
+        const attemptFailedUnit = replaceAttempt(
           new ExecutionUnitState({
             ...runningUnit,
-            status: "failed",
-            finishedAt,
-            failure,
+            latestAttemptId: attemptId,
+            finishedAt: undefined,
             logs: [...runningUnit.logs, ...logs],
             artifacts: [...runningUnit.artifacts, ...artifacts],
           }),
           failedAttempt,
         )
+
+        const retryLimit = getRetryLimit(planUnit)
+        if (attemptNumber < retryLimit) {
+          run = replaceUnit(
+            appendRunPayloads(run, logs, artifacts, finishedAt),
+            new ExecutionUnitState({
+              ...attemptFailedUnit,
+              status: "pending",
+              finishedAt: undefined,
+              failure: undefined,
+            }),
+            finishedAt,
+          )
+
+          yield* storageTransactor.run(
+            Effect.gen(function* () {
+              yield* persistRun(run)
+              yield* appendEvent(run.runId, (base) => new AttemptFailed({ ...base, unitId, attemptId, failure }))
+              yield* appendEvent(
+                run.runId,
+                (base) =>
+                  new RetryScheduled({
+                    ...base,
+                    unitId,
+                    attemptId,
+                    nextAttemptNumber: attemptNumber + 1,
+                    reason: failure.message,
+                  }),
+              )
+            }),
+          )
+          yield* publishRunUpdate(run, "RetryScheduled")
+
+          return run
+        }
+
+        const failedUnit = new ExecutionUnitState({
+          ...attemptFailedUnit,
+          status: "failed",
+          finishedAt,
+          failure,
+        })
 
         const skippedUnitIds = getBlockedDescendantUnitIds(plan, unitId)
         run = replaceUnit(appendRunPayloads(run, logs, artifacts, finishedAt), failedUnit, finishedAt)
@@ -302,7 +410,61 @@ export class Orchestrator extends Context.Service<
             yield* appendEvent(run.runId, (base) => new RunFailed({ ...base, failure }))
           }),
         )
+        yield* publishRunUpdate(run, "RunFailed")
+
         return run
+      })
+
+      const finalizeCancellationState = Effect.fn("Orchestrator.finalizeCancellationState")(function* (
+        initialRun: WorkflowRunState,
+        reason: string,
+      ) {
+        if (isTerminalRun(initialRun)) {
+          return initialRun
+        }
+
+        const run = yield* stateStore.getRun(initialRun.runId).pipe(
+          Effect.catchTag("RunNotFound", () => Effect.succeed(initialRun)),
+        )
+        if (isTerminalRun(run)) {
+          return run
+        }
+
+        const canceledAt = yield* nowDate
+        const nextRun = cancelRunState(run, canceledAt)
+        const canceledUnitIds = nextRun.units
+          .filter((unit, index) => run.units[index]?.status !== unit.status && unit.status === "canceled")
+          .map((unit) => unit.unitId)
+
+        yield* storageTransactor.run(
+          Effect.gen(function* () {
+            yield* persistRun(nextRun)
+
+            for (const unit of nextRun.units) {
+              const latestAttempt = unit.attempts.at(-1)
+              const previousLatestAttempt = run.units.find((candidate) => candidate.unitId === unit.unitId)?.attempts.at(-1)
+              if (
+                latestAttempt !== undefined &&
+                latestAttempt.status === "canceled" &&
+                previousLatestAttempt?.status === "running"
+              ) {
+                yield* appendEvent(
+                  nextRun.runId,
+                  (base) => new AttemptCanceled({ ...base, unitId: unit.unitId, attemptId: latestAttempt.attemptId, reason }),
+                )
+              }
+            }
+
+            for (const canceledUnitId of canceledUnitIds) {
+              yield* appendEvent(nextRun.runId, (base) => new UnitCanceled({ ...base, unitId: canceledUnitId, reason }))
+            }
+
+            yield* appendEvent(nextRun.runId, (base) => new RunCanceled({ ...base, reason }))
+          }),
+        )
+        yield* publishRunUpdate(nextRun, "RunCanceled")
+
+        return nextRun
       })
 
       const registerLogs = (
@@ -345,21 +507,8 @@ export class Orchestrator extends Context.Service<
         })
 
       const startRun = Effect.fn("Orchestrator.startRun")(function* (plan: ExecutionPlan, options?: RunStartOptions) {
-        const createdAt = yield* nowDate
-        const run = createInitialRun(plan, RunId.make(`run:${plan.planId}:${crypto.randomUUID()}`), createdAt)
-
-        plans.set(run.runId, plan)
-        eventSequences.set(run.runId, 0)
-
-        yield* storageTransactor.run(
-          Effect.gen(function* () {
-            yield* stateStore.createRun(run)
-            yield* appendEvent(run.runId, (base) => new RunCreated(base))
-            yield* appendEvent(run.runId, (base) => new RunStarted(base))
-          }),
-        )
-
-        return yield* advanceWithPlan(plan, run, options)
+        const run = yield* createRun(plan, options)
+        return yield* advanceWithRun(run)
       })
 
       const inspectRun = Effect.fn("Orchestrator.inspectRun")((runId: RunId) => stateStore.getRun(runId))
@@ -370,45 +519,89 @@ export class Orchestrator extends Context.Service<
           return run
         }
 
-        const plan = plans.get(runId)
-        return plan === undefined ? run : yield* advanceWithPlan(plan, run)
+        return yield* advanceWithRun(run)
       })
 
-      const resumeIncompleteRuns = Effect.fn("Orchestrator.resumeIncompleteRuns")(function* () {
+      const cancelRun = Effect.fn("Orchestrator.cancelRun")(function* (runId: RunId, reason = "Cancellation requested") {
+        const run = yield* stateStore.getRun(runId)
+        if (isTerminalRun(run)) {
+          return run
+        }
+
+        const updatedAt = yield* nowDate
+        const nextRun = new WorkflowRunState({
+          ...run,
+          status: "canceling",
+          updatedAt,
+        })
+
+        yield* storageTransactor.run(
+          Effect.gen(function* () {
+            yield* persistRun(nextRun)
+            yield* appendEvent(nextRun.runId, (base) => new RunCancellationRequested({ ...base, reason }))
+          }),
+        )
+        yield* publishRunUpdate(nextRun, "RunCancellationRequested")
+
+        return nextRun
+      })
+
+      const finalizeCancellation = Effect.fn("Orchestrator.finalizeCancellation")(function* (
+        runId: RunId,
+        reason = "Cancellation requested",
+      ) {
+        const run = yield* stateStore.getRun(runId)
+        return yield* finalizeCancellationState(run, reason)
+      })
+
+      const recoverIncompleteRuns = Effect.fn("Orchestrator.recoverIncompleteRuns")(function* () {
         const runs = yield* stateStore.listIncompleteRuns()
-        const interrupted = new Array<WorkflowRunState>()
+        const recovered = new Array<WorkflowRunState>()
 
         for (const run of runs) {
-          const interruptedAt = yield* nowDate
-          const interruptedUnits = run.units.map((unit) => interruptUnit(unit, interruptedAt))
-          const nextRun = new WorkflowRunState({
-            ...run,
-            status: "interrupted",
-            updatedAt: interruptedAt,
-            finishedAt: interruptedAt,
-            units: interruptedUnits,
-            progress: summarizeProgress(interruptedUnits),
-          })
+          if (run.status === "canceling") {
+            recovered.push(yield* finalizeCancellationState(run, "Cancellation requested before restart completed"))
+            continue
+          }
+
+          const recoveredAt = yield* nowDate
+          const nextRun = recoverRun(run, recoveredAt)
 
           yield* storageTransactor.run(
             Effect.gen(function* () {
               yield* persistRun(nextRun)
               yield* appendEvent(
                 nextRun.runId,
-                (base) => new RunInterrupted({ ...base, reason: "Run interrupted during resume recovery" }),
+                (base) => new RunResumed({ ...base, reason: "Resumed from persisted runtime state after restart" }),
               )
             }),
           )
-          interrupted.push(nextRun)
+          yield* publishRunUpdate(nextRun, "RunResumed")
+          recovered.push(nextRun)
         }
 
-        return interrupted
+        return recovered
+      })
+
+      const resumeIncompleteRuns = Effect.fn("Orchestrator.resumeIncompleteRuns")(function* () {
+        const runs = yield* recoverIncompleteRuns()
+        const resumed = new Array<WorkflowRunState>()
+
+        for (const run of runs) {
+          resumed.push(isTerminalRun(run) ? run : yield* advanceWithRun(run))
+        }
+
+        return resumed
       })
 
       return {
         startRun,
+        createRun,
         inspectRun,
         advanceRun,
+        cancelRun,
+        finalizeCancellation,
+        recoverIncompleteRuns,
         resumeIncompleteRuns,
       }
     }),
@@ -417,7 +610,13 @@ export class Orchestrator extends Context.Service<
 
 const nowDate = Effect.map(Clock.currentTimeMillis, (millis) => new Date(millis))
 
-const createInitialRun = (plan: ExecutionPlan, runId: RunId, createdAt: Date) => {
+const createInitialRun = (
+  plan: ExecutionPlan,
+  runId: RunId,
+  createdAt: Date,
+  options?: RunStartOptions,
+  retriedFromRunId?: RunId,
+) => {
   const units = plan.units.map(
     (unit) =>
       new ExecutionUnitState({
@@ -435,6 +634,12 @@ const createInitialRun = (plan: ExecutionPlan, runId: RunId, createdAt: Date) =>
     runId,
     workflowId: plan.workflowId,
     planId: plan.planId,
+    execution: new RunExecutionContext({
+      plan,
+      options: new RunExecutionOptions({ workspacePath: options?.workspacePath }),
+      submittedAt: createdAt,
+      retriedFromRunId,
+    }),
     status: "running",
     units,
     progress: summarizeProgress(units),
@@ -463,28 +668,30 @@ const executorFailureResult = (request: DispatchRequest, error: ExecutorFailed) 
 
 const buildDispatchRequest = (
   run: WorkflowRunState,
-  plan: ExecutionPlan,
   planUnit: PlanUnit,
   attemptId: AttemptId,
-  options?: RunStartOptions,
+  attemptNumber: number,
 ) =>
   new DispatchRequest({
     runId: run.runId,
     unitId: planUnit.unitId,
     attemptId,
-    attemptNumber: 1,
+    attemptNumber,
     payloadDescriptor: planUnit.payloadDescriptor,
     workspace:
-      options?.workspacePath === undefined
+      run.execution.options.workspacePath === undefined
         ? undefined
-        : new DispatchWorkspace({ hostPath: options.workspacePath, mountPath: containerWorkspaceMountPath }),
+        : new DispatchWorkspace({
+            hostPath: run.execution.options.workspacePath,
+            mountPath: containerWorkspaceMountPath,
+          }),
     inputs: [],
     artifacts: planUnit.artifactExpectations,
     logNames: planUnit.logExpectations.map((log) => log.name),
     policies: planUnit.policies,
     correlation: {
-      workflowId: plan.workflowId.toString(),
-      planId: plan.planId.toString(),
+      workflowId: run.workflowId.toString(),
+      planId: run.planId.toString(),
       runId: run.runId.toString(),
       unitId: planUnit.unitId.toString(),
       attemptId: attemptId.toString(),
@@ -577,31 +784,85 @@ const applySkippedUnits = (run: WorkflowRunState, skippedUnitIds: ReadonlyArray<
   })
 }
 
-const interruptUnit = (unit: ExecutionUnitState, interruptedAt: Date) => {
-  const attempts = unit.attempts.map((attempt) => {
-    if (attempt.status !== "running") {
-      return attempt
+const recoverRun = (run: WorkflowRunState, recoveredAt: Date) => {
+  const units = run.units.map((unit) => {
+    const attempts = unit.attempts.map((attempt) => {
+      if (attempt.status !== "running") {
+        return attempt
+      }
+
+      return new ExecutionAttemptState({
+        ...attempt,
+        status: "interrupted",
+        finishedAt: recoveredAt,
+      })
+    })
+
+    if (unit.status === "succeeded" || unit.status === "failed" || unit.status === "skipped" || unit.status === "canceled") {
+      return new ExecutionUnitState({
+        ...unit,
+        attempts,
+      })
     }
 
-    return new ExecutionAttemptState({
-      ...attempt,
-      status: "interrupted",
-      finishedAt: interruptedAt,
+    return new ExecutionUnitState({
+      ...unit,
+      status: "pending",
+      finishedAt: undefined,
+      failure: undefined,
+      attempts,
     })
   })
 
-  if (terminalUnitStatuses.has(unit.status)) {
+  return new WorkflowRunState({
+    ...run,
+    status: "running",
+    units,
+    updatedAt: recoveredAt,
+    finishedAt: undefined,
+    failure: undefined,
+    progress: summarizeProgress(units),
+  })
+}
+
+const cancelRunState = (run: WorkflowRunState, canceledAt: Date) => {
+  const units = run.units.map((unit) => {
+    const attempts = unit.attempts.map((attempt) => {
+      if (attempt.status !== "running") {
+        return attempt
+      }
+
+      return new ExecutionAttemptState({
+        ...attempt,
+        status: "canceled",
+        finishedAt: canceledAt,
+      })
+    })
+
+    if (terminalUnitStatuses.has(unit.status)) {
+      return new ExecutionUnitState({
+        ...unit,
+        attempts,
+      })
+    }
+
     return new ExecutionUnitState({
       ...unit,
+      status: "canceled",
+      finishedAt: canceledAt,
+      failure: undefined,
       attempts,
     })
-  }
+  })
 
-  return new ExecutionUnitState({
-    ...unit,
-    status: "interrupted",
-    finishedAt: interruptedAt,
-    attempts,
+  return new WorkflowRunState({
+    ...run,
+    status: "canceled",
+    units,
+    updatedAt: canceledAt,
+    finishedAt: canceledAt,
+    failure: undefined,
+    progress: summarizeProgress(units),
   })
 }
 
@@ -669,8 +930,17 @@ const getBlockedDescendantUnitIds = (plan: ExecutionPlan, failedUnitId: UnitId) 
   return [...descendants].sort(compareUnitIds)
 }
 
+const getNextAttemptNumber = (unit: ExecutionUnitState) =>
+  unit.attempts.reduce((maxAttemptNumber, attempt) => Math.max(maxAttemptNumber, attempt.attemptNumber), 0) + 1
+
+const getRetryLimit = (planUnit: PlanUnit) =>
+  planUnit.policies.reduce(
+    (maxAttempts, policy) => (policy instanceof PlanRetryPolicy ? Math.max(maxAttempts, policy.maxAttempts) : maxAttempts),
+    1,
+  )
+
 const compareUnitIds = (left: UnitId, right: UnitId) => (left < right ? -1 : left > right ? 1 : 0)
 
 const terminalRunStatuses = new Set(["succeeded", "failed", "canceled", "interrupted"])
 
-const terminalUnitStatuses = new Set(["succeeded", "failed", "skipped", "canceled", "interrupted"])
+const terminalUnitStatuses = new Set(["succeeded", "failed", "skipped", "canceled"])

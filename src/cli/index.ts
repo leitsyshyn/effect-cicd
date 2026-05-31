@@ -7,80 +7,34 @@ import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, LogRef, RunId, UnitId } from "../domain/ids.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
 import { DslMaterializer, WorkflowModuleLoader } from "../dsl/index.ts"
-import { Executor, LocalContainerExecutor, type TestExecutorLayerOptions } from "../engine/executor.ts"
+import { type TestExecutorLayerOptions } from "../engine/executor.ts"
 import { Engine } from "../engine/interface.ts"
-import { Orchestrator } from "../engine/orchestrator.ts"
-import { Planner } from "../engine/planner.ts"
-import { ArtifactStore } from "../engine/stores/artifact-store.ts"
-import { EventLog } from "../engine/stores/event-log.ts"
-import { StateStore } from "../engine/stores/state-store.ts"
-import { StorageRuntimeConfig } from "../runtime/config.ts"
-import { ObjectStorageClient, StorageTransactor, sqlClientLayer, storageMigrationLayer } from "../runtime/storage.ts"
+import { makeDurableStorageLayer, makeInMemoryEngineLayer } from "../runtime/layers.ts"
+import { FetchHttpClient } from "effect/unstable/http"
+
+import { EngineServiceConfig } from "../runtime/config.ts"
+import { engineServiceClientLayer } from "../service/client.ts"
 
 export const cliVersion = "0.0.0"
+
+export { makeDurableStorageLayer }
 
 export const makeCliLayer = (options: TestExecutorLayerOptions = {}) =>
   Layer.mergeAll(
     DslMaterializer.layer,
     WorkflowModuleLoader.layer,
-    Engine.layer.pipe(
-      Layer.provideMerge(Planner.layer),
-      Layer.provideMerge(Orchestrator.layer),
-      Layer.provideMerge(StorageTransactor.memoryLayer),
-      Layer.provideMerge(StateStore.memoryLayer),
-      Layer.provideMerge(EventLog.memoryLayer),
-      Layer.provideMerge(ArtifactStore.memoryLayer),
-      Layer.provideMerge(Executor.testLayer(mergeExecutorOptions(options))),
-    ),
+    makeInMemoryEngineLayer(mergeExecutorOptions(options)),
   )
 
-export const makeDurableStorageLayer = () =>
-  {
-    const sqlLayer = sqlClientLayer
-    const objectStorageLayer = ObjectStorageClient.layer
-
-    return Layer.mergeAll(
-      storageMigrationLayer.pipe(Layer.provideMerge(sqlLayer)),
-      StorageTransactor.postgresLayer.pipe(Layer.provideMerge(sqlLayer)),
-      StateStore.postgresLayer.pipe(Layer.provideMerge(sqlLayer)),
-      EventLog.postgresLayer.pipe(Layer.provideMerge(sqlLayer)),
-      ArtifactStore.s3Layer.pipe(
-        Layer.provideMerge(sqlLayer),
-        Layer.provideMerge(objectStorageLayer),
-      ),
-    )
-  }
-
-export const makeAppLayer = () => {
-  const durableStorageLayer = makeDurableStorageLayer()
-  const orchestratorLayer = Orchestrator.layer.pipe(
-    Layer.provideMerge(durableStorageLayer),
-    Layer.provideMerge(LocalContainerExecutor.layer),
-  )
-
-  return Layer.mergeAll(
+export const makeAppLayer = () =>
+  Layer.mergeAll(
     DslMaterializer.layer,
     WorkflowModuleLoader.layer,
-    StorageRuntimeConfig.layer,
-    orchestratorLayer,
-    Engine.layer.pipe(
-      Layer.provideMerge(Planner.layer),
-      Layer.provideMerge(orchestratorLayer),
-      Layer.provideMerge(durableStorageLayer),
+    engineServiceClientLayer.pipe(
+      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(EngineServiceConfig.layer),
     ),
   )
-}
-
-export const appProgram = Effect.gen(function* () {
-  const runtimeConfig = yield* StorageRuntimeConfig
-
-  if (runtimeConfig.runRecoveryOnStartup) {
-    const orchestrator = yield* Orchestrator
-    yield* orchestrator.resumeIncompleteRuns()
-  }
-
-  yield* cliProgram
-})
 
 const workflowModuleArg = Argument.string("workflow-module").pipe(
   Argument.withDescription("Local workflow module path (TypeScript/JavaScript)"),
@@ -130,7 +84,8 @@ const runCommand = Command.make(
     const resolvedWorkspace = yield* resolveWorkspacePath(workflowModule, workspace)
     const definition = yield* loadAndMaterializeWorkflow(workflowModule, Option.getOrUndefined(exportName))
     const plan = yield* engine.plan(definition)
-    const run = yield* engine.startRun(plan, { workspacePath: resolvedWorkspace })
+    const submitted = yield* engine.submitRun(plan, { workspacePath: resolvedWorkspace })
+    const run = yield* waitForTerminalRun(engine, submitted.runId)
     const events = yield* engine.readRunEvents(run.runId)
     const artifacts = yield* engine.readArtifacts(run.runId)
     const logs = yield* engine.readLogs(run.runId)
@@ -190,6 +145,34 @@ const runsArtifactsCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Show artifact metadata for a run"))
 
+const runsCancelCommand = Command.make(
+  "cancel",
+  {
+    runId: Argument.string("runId"),
+  },
+  ({ runId }) =>
+    Effect.gen(function* () {
+      const engine = yield* Engine
+      const run = yield* engine.cancelRun(RunId.make(runId), "Canceled from CLI")
+
+      yield* printLines(renderRunState(run))
+    }),
+).pipe(Command.withDescription("Cancel a workflow run"))
+
+const runsRetryCommand = Command.make(
+  "retry",
+  {
+    runId: Argument.string("runId"),
+  },
+  ({ runId }) =>
+    Effect.gen(function* () {
+      const engine = yield* Engine
+      const retriedRun = yield* engine.retryRun(RunId.make(runId), "Retried from CLI")
+
+      yield* printLines(renderRunState(retriedRun))
+    }),
+).pipe(Command.withDescription("Retry a terminal workflow run"))
+
 const runsLogsCommand = Command.make(
   "logs",
   {
@@ -242,6 +225,8 @@ const runsCommand = Command.make("runs").pipe(
     runsArtifactCommand,
     runsLogsCommand,
     runsLogCommand,
+    runsCancelCommand,
+    runsRetryCommand,
   ]),
 )
 
@@ -251,6 +236,14 @@ export const cli = Command.make("effect-cicd").pipe(
 )
 
 export const cliProgram = Command.run(cli, { version: cliVersion })
+
+export const appProgram = cliProgram.pipe(
+  Effect.catchTag("EngineUnavailable", (error) =>
+    Console.error(`engine service unavailable: ${error.message}`).pipe(
+      Effect.flatMap(() => Effect.fail(error)),
+    ),
+  ),
+)
 
 const printLines = (lines: ReadonlyArray<string>) => Console.log(lines.join("\n"))
 
@@ -277,6 +270,18 @@ const resolveWorkspacePath = Effect.fn("cli.resolveWorkspacePath")(function* (
 
   return dirname(resolvedModulePath)
 })
+
+const waitForTerminalRun = (
+  engine: { readonly inspectRun: (runId: RunId) => Effect.Effect<WorkflowRunState, any> },
+  runId: RunId,
+): Effect.Effect<WorkflowRunState, any> =>
+  engine.inspectRun(runId).pipe(
+    Effect.flatMap((run) =>
+      terminalRunStatuses.has(run.status)
+        ? Effect.succeed(run)
+        : Effect.sleep("250 millis").pipe(Effect.flatMap(() => waitForTerminalRun(engine, runId))),
+    ),
+  )
 
 const renderPlanSummary = (plan: ExecutionPlan) => [
   `workflow: ${plan.workflowId}`,
@@ -427,3 +432,5 @@ const executorResult = (
     ],
   } satisfies NonNullable<TestExecutorLayerOptions["resultsByUnitId"]>[string]
 }
+
+const terminalRunStatuses = new Set(["succeeded", "failed", "canceled", "interrupted"])

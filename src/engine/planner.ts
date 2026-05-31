@@ -85,12 +85,6 @@ const validateDefinition = (definition: NormalizedWorkflowDefinition): string | 
       return `Unit ${unit.unitId} name must be non-empty`
     }
 
-    for (const policy of unit.policies) {
-      if (policy._tag === "RetryPolicyDeclaration" && policy.maxAttempts > 1) {
-        return `Unit ${unit.unitId} retry maxAttempts greater than 1 is not supported`
-      }
-    }
-
     for (const artifact of unit.artifacts) {
       if (artifact.path.trim().length === 0) {
         return `Unit ${unit.unitId} artifact ${artifact.name} path must be non-empty`

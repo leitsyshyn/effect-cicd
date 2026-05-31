@@ -16,6 +16,8 @@ import { Executor, type TestExecutorLayerOptions } from "../src/engine/executor.
 import { Engine } from "../src/engine/interface.ts"
 import { Orchestrator } from "../src/engine/orchestrator.ts"
 import { Planner } from "../src/engine/planner.ts"
+import { RunController } from "../src/engine/run-controller.ts"
+import { RunUpdates } from "../src/engine/run-updates.ts"
 import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { EventLog } from "../src/engine/stores/event-log.ts"
 import { StateStore } from "../src/engine/stores/state-store.ts"
@@ -196,15 +198,29 @@ describe("Engine interface", () => {
 })
 
 const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
-  Engine.layer.pipe(
-    Layer.provideMerge(Planner.layer),
-    Layer.provideMerge(Orchestrator.layer),
-    Layer.provideMerge(StorageTransactor.memoryLayer),
-    Layer.provideMerge(StateStore.memoryLayer),
-    Layer.provideMerge(EventLog.memoryLayer),
-    Layer.provideMerge(ArtifactStore.memoryLayer),
-    Layer.provideMerge(Executor.testLayer(options)),
-  )
+  {
+    const updatesLayer = RunUpdates.noopLayer
+    const orchestratorLayer = Orchestrator.layer.pipe(
+      Layer.provideMerge(StorageTransactor.memoryLayer),
+      Layer.provideMerge(StateStore.memoryLayer),
+      Layer.provideMerge(EventLog.memoryLayer),
+      Layer.provideMerge(ArtifactStore.memoryLayer),
+      Layer.provideMerge(Executor.testLayer(options)),
+      Layer.provideMerge(updatesLayer),
+    )
+    const runControllerLayer = RunController.layer.pipe(Layer.provideMerge(orchestratorLayer))
+
+    return Engine.layer.pipe(
+      Layer.provideMerge(Planner.layer),
+      Layer.provideMerge(orchestratorLayer),
+      Layer.provideMerge(runControllerLayer),
+      Layer.provideMerge(StorageTransactor.memoryLayer),
+      Layer.provideMerge(StateStore.memoryLayer),
+      Layer.provideMerge(EventLog.memoryLayer),
+      Layer.provideMerge(ArtifactStore.memoryLayer),
+      Layer.provideMerge(updatesLayer),
+    )
+  }
 
 const workflow = (overrides: Partial<ConstructorParameters<typeof NormalizedWorkflowDefinition>[0]> = {}) =>
   new NormalizedWorkflowDefinition({

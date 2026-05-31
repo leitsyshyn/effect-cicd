@@ -121,6 +121,31 @@ export class StorageRuntimeConfig extends Context.Service<
   )
 }
 
+export class EngineServiceConfig extends Context.Service<
+  EngineServiceConfig,
+  {
+    readonly baseUrl: string
+    readonly port: number
+  }
+>()("@effect-cicd/runtime/EngineServiceConfig") {
+  static readonly layer = Layer.effect(
+    EngineServiceConfig,
+    Effect.gen(function* () {
+      const baseUrl = yield* Config.string("ENGINE_BASE_URL").pipe(
+        Config.orElse(() => Config.succeed("http://127.0.0.1:3000")),
+      )
+      const port = yield* Config.int("ENGINE_PORT").pipe(
+        Config.orElse(() => Config.succeed(3000)),
+      )
+
+      return {
+        baseUrl,
+        port,
+      }
+    }),
+  )
+}
+
 const optionValue = <A>(option: { readonly _tag: "Some"; readonly value: A } | { readonly _tag: "None" }) =>
   option._tag === "Some" ? option.value : undefined
 

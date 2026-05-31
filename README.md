@@ -60,22 +60,40 @@ The package step writes a real artifact at `dist/release.json`, which is persist
 
 ## MVP Demo Walkthrough
 
+Start the persistent engine service:
+
+```bash
+bun run server
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:3000/healthz
+```
+
+All CLI commands below assume the CLI talks to the running service:
+
+```bash
+export ENGINE_BASE_URL=http://127.0.0.1:3000
+```
+
 Validate the workflow:
 
 ```bash
-bun run index.ts validate ./examples/demo-workflow.ts
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts validate ./examples/demo-workflow.ts
 ```
 
 Plan the workflow:
 
 ```bash
-bun run index.ts plan ./examples/demo-workflow.ts
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts plan ./examples/demo-workflow.ts
 ```
 
 Run the workflow against the real workspace:
 
 ```bash
-bun run index.ts run ./examples/demo-workflow.ts --workspace ./examples/demo-project
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts run ./examples/demo-workflow.ts --workspace ./examples/demo-project
 ```
 
 Expected run output shape:
@@ -93,57 +111,69 @@ unit:package succeeded
 Inspect persisted runs:
 
 ```bash
-bun run index.ts runs list
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs list
 ```
 
 Show one run:
 
 ```bash
-bun run index.ts runs show <runId>
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs show <runId>
 ```
 
 Show workflow events:
 
 ```bash
-bun run index.ts runs events <runId>
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs events <runId>
 ```
 
 Show artifact metadata:
 
 ```bash
-bun run index.ts runs artifacts <runId>
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs artifacts <runId>
 ```
 
 Show log metadata:
 
 ```bash
-bun run index.ts runs logs <runId>
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs logs <runId>
 ```
 
 Read one persisted log payload:
 
 ```bash
-bun run index.ts runs log <logRef>
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs log <logRef>
 ```
 
 Read one persisted artifact payload:
 
 ```bash
-bun run index.ts runs artifact <artifactRef>
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs artifact <artifactRef>
+```
+
+Cancel a run:
+
+```bash
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs cancel <runId>
+```
+
+Retry a terminal run as a new run:
+
+```bash
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs retry <runId>
 ```
 
 ## Dashboard MVP
 
-Start the local dashboard:
+Start the dashboard proxy:
 
 ```bash
-bun run dashboard
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run dashboard
 ```
 
 For hot reload during dashboard development:
 
 ```bash
-bun run dashboard:dev
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run dashboard:dev
 ```
 
 Default dashboard URL:
@@ -153,13 +183,15 @@ Default dashboard URL:
 Optional port override:
 
 ```bash
-DASHBOARD_PORT=4000 bun run dashboard
+ENGINE_BASE_URL=http://127.0.0.1:3000 DASHBOARD_PORT=4000 bun run dashboard
 ```
 
-The dashboard runs in the same Bun process as the local Engine. The browser React app does not access Postgres or MinIO directly. It talks only to local in-process bridge routes, which call Engine inspection methods:
+The dashboard runs as a separate client-facing Bun process. The browser React app still does not access Postgres or MinIO directly. It talks only to dashboard-local proxy routes, which call the engine service:
 
 - `GET /api/runs`
+- `GET /api/runs/stream`
 - `GET /api/runs/:runId`
+- `GET /api/runs/:runId/stream`
 - `GET /api/runs/:runId/events`
 - `GET /api/runs/:runId/logs`
 - `GET /api/logs/:logRef`
@@ -175,7 +207,7 @@ The pipeline view derives stage-like columns from DAG depth. It does not change 
 
 Current dashboard limitations:
 
-- Live streaming updates are not implemented yet. Use refresh to reload persisted state.
+- Live updates use Server-Sent Events and refresh the runs list and run detail views automatically while the service is alive.
 - Dependency relations are shown textually per job card rather than drawn as SVG connector lines.
 - Artifact payload viewing assumes payload retrieval succeeds through the existing Engine artifact read path.
 - Workflow and unit display names fall back to ids when richer persisted names are unavailable.
@@ -194,8 +226,26 @@ For the demo workflow, `runs artifact <artifactRef>` should print JSON like:
 ## Workspace Behavior
 
 - `run <workflow-module> --workspace <path>` mounts that directory into the container at `/workspace`.
-- If `--workspace` is omitted, the CLI defaults to the directory containing the workflow module.
+- If `--workspace` is omitted, the CLI sends the directory containing the workflow module to the service as persisted run execution context.
 - Relative `workingDirectory` values in workflow commands resolve under `/workspace`.
+
+## Service API
+
+- `POST /api/workflows/validate`
+- `POST /api/workflows/plan`
+- `POST /api/runs`
+- `POST /api/runs/:runId/cancel`
+- `POST /api/runs/:runId/retry`
+- `GET /api/runs`
+- `GET /api/runs/stream`
+- `GET /api/runs/:runId`
+- `GET /api/runs/:runId/stream`
+- `GET /api/runs/:runId/events`
+- `GET /api/runs/:runId/logs`
+- `GET /api/logs/:logRef`
+- `GET /api/runs/:runId/artifacts`
+- `GET /api/artifacts/:artifactRef`
+- `GET /healthz`
 
 ## Test Commands
 
@@ -227,7 +277,9 @@ bun run test:storage
 ## Notes
 
 - The CLI is Engine-backed. It does not read Postgres or MinIO directly.
-- The dashboard is also Engine-backed and runs in the same local Bun process as the Engine.
+- The CLI is a client of the persistent engine service in normal mode.
+- The dashboard is a client/proxy of the persistent engine service in normal mode.
+- The engine service owns startup recovery, control operations, inspection reads, run execution, cancellation, retry submission, and live update streaming.
 - Run state and events are persisted in Postgres.
 - Log and artifact payloads are persisted in MinIO.
 - Current runtime state stores metadata and refs only, not full payloads.

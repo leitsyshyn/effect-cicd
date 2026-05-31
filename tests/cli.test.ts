@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Console, Effect, FileSystem, Layer, Path, Stdio, Terminal } from "effect"
+import { Console, Effect, FileSystem, Layer, Path, Stdio, Stream, Terminal } from "effect"
 import { TestConsole } from "effect/testing"
 import { CliOutput, Command } from "effect/unstable/cli"
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
@@ -14,7 +14,7 @@ import {
   NormalizedWorkflowDefinition,
   UnitDeclaration,
 } from "../src/domain/workflow-definition.ts"
-import { ProgressSummary, WorkflowRunState } from "../src/domain/runtime-state.ts"
+import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState } from "../src/domain/runtime-state.ts"
 import { DslMaterializer } from "../src/dsl/index.ts"
 import { WorkflowModuleLoader } from "../src/dsl/loader.ts"
 import { Engine } from "../src/engine/interface.ts"
@@ -92,8 +92,13 @@ describe("CLI", () => {
               }),
             plan: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
+            submitRun: () => Effect.die("unused"),
+            cancelRun: () => Effect.die("unused"),
+            retryRun: () => Effect.die("unused"),
             listRuns: () => Effect.die("unused"),
             inspectRun: () => Effect.die("unused"),
+            streamRuns: () => Stream.empty,
+            streamRun: () => Stream.empty,
             readRunEvents: () => Effect.die("unused"),
             readArtifacts: () => Effect.die("unused"),
             readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
@@ -140,8 +145,13 @@ describe("CLI", () => {
               }),
             plan: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
+            submitRun: () => Effect.die("unused"),
+            cancelRun: () => Effect.die("unused"),
+            retryRun: () => Effect.die("unused"),
             listRuns: () => Effect.die("unused"),
             inspectRun: () => Effect.die("unused"),
+            streamRuns: () => Stream.empty,
+            streamRun: () => Stream.empty,
             readRunEvents: () => Effect.die("unused"),
             readArtifacts: () => Effect.die("unused"),
             readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
@@ -179,13 +189,18 @@ describe("CLI", () => {
           Layer.succeed(Engine, {
             validate: () => Effect.die("unused"),
             plan: () => Effect.succeed(samplePlan()),
-            startRun: (_plan, options) =>
+            startRun: () => Effect.die("unused"),
+            submitRun: (_plan, options) =>
               Effect.sync(() => {
                 capturedWorkspace = options?.workspacePath
                 return sampleRunState()
               }),
+            cancelRun: () => Effect.die("unused"),
+            retryRun: () => Effect.die("unused"),
             listRuns: () => Effect.die("unused"),
-            inspectRun: () => Effect.die("unused"),
+            inspectRun: () => Effect.succeed(sampleRunState()),
+            streamRuns: () => Stream.empty,
+            streamRun: () => Stream.empty,
             readRunEvents: () => Effect.succeed([]),
             readArtifacts: () => Effect.succeed([]),
             readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
@@ -211,8 +226,13 @@ describe("CLI", () => {
             validate: () => Effect.die("unused"),
             plan: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
+            submitRun: () => Effect.die("unused"),
+            cancelRun: () => Effect.die("unused"),
+            retryRun: () => Effect.die("unused"),
             listRuns: () => Effect.die("unused"),
             inspectRun: () => Effect.die("unused"),
+            streamRuns: () => Stream.empty,
+            streamRun: () => Stream.empty,
             readRunEvents: () => Effect.die("unused"),
             readArtifacts: () => Effect.die("unused"),
             readArtifactPayload: () => Effect.succeed('{"artifact":"ok"}\n'),
@@ -313,6 +333,11 @@ const sampleRunState = () =>
     runId: RunId.make("run:sample"),
     workflowId: WorkflowId.make("workflow:sample"),
     planId: PlanId.make("plan:workflow:sample"),
+    execution: new RunExecutionContext({
+      plan: samplePlan(),
+      options: new RunExecutionOptions({ workspacePath: "/repo/examples" }),
+      submittedAt: new Date(0),
+    }),
     status: "succeeded",
     units: [],
     progress: new ProgressSummary({ totalUnits: 0, completedUnits: 0, failedUnits: 0, skippedUnits: 0 }),

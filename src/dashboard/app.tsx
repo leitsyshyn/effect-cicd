@@ -77,6 +77,16 @@ export function RunsPage() {
 
   useEffect(() => {
     void load()
+
+    const source = new EventSource("/api/runs/stream")
+    const reload = () => {
+      void load()
+    }
+
+    source.addEventListener("run-update", reload)
+    source.onerror = () => undefined
+
+    return () => source.close()
   }, [])
 
   return (
@@ -159,6 +169,16 @@ function RunPage({ path, search, setSearch }: { readonly path: string; readonly 
 
   useEffect(() => {
     void load()
+
+    const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`)
+    const reload = () => {
+      void load()
+    }
+
+    source.addEventListener("run-update", reload)
+    source.onerror = () => undefined
+
+    return () => source.close()
   }, [runId])
 
   useEffect(() => {

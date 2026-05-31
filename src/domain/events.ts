@@ -16,6 +16,14 @@ const EventBase = {
 
 export class RunCreated extends Schema.TaggedClass<RunCreated>()("RunCreated", EventBase) {}
 export class RunStarted extends Schema.TaggedClass<RunStarted>()("RunStarted", EventBase) {}
+export class RunResumed extends Schema.TaggedClass<RunResumed>()("RunResumed", {
+  ...EventBase,
+  reason: Schema.String,
+}) {}
+export class RunCancellationRequested extends Schema.TaggedClass<RunCancellationRequested>()("RunCancellationRequested", {
+  ...EventBase,
+  reason: Schema.String,
+}) {}
 
 export class UnitReady extends Schema.TaggedClass<UnitReady>()("UnitReady", {
   ...EventBase,
@@ -51,6 +59,21 @@ export class AttemptFailed extends Schema.TaggedClass<AttemptFailed>()("AttemptF
   failure: FailureSummary,
 }) {}
 
+export class RetryScheduled extends Schema.TaggedClass<RetryScheduled>()("RetryScheduled", {
+  ...EventBase,
+  unitId: UnitId,
+  attemptId: AttemptId,
+  nextAttemptNumber: PositiveInt,
+  reason: Schema.String,
+}) {}
+
+export class AttemptCanceled extends Schema.TaggedClass<AttemptCanceled>()("AttemptCanceled", {
+  ...EventBase,
+  unitId: UnitId,
+  attemptId: AttemptId,
+  reason: Schema.String,
+}) {}
+
 export class UnitSucceeded extends Schema.TaggedClass<UnitSucceeded>()("UnitSucceeded", {
   ...EventBase,
   unitId: UnitId,
@@ -63,6 +86,12 @@ export class UnitFailed extends Schema.TaggedClass<UnitFailed>()("UnitFailed", {
 }) {}
 
 export class UnitSkipped extends Schema.TaggedClass<UnitSkipped>()("UnitSkipped", {
+  ...EventBase,
+  unitId: UnitId,
+  reason: Schema.String,
+}) {}
+
+export class UnitCanceled extends Schema.TaggedClass<UnitCanceled>()("UnitCanceled", {
   ...EventBase,
   unitId: UnitId,
   reason: Schema.String,
@@ -95,6 +124,11 @@ export class RunFailed extends Schema.TaggedClass<RunFailed>()("RunFailed", {
   failure: FailureSummary,
 }) {}
 
+export class RunCanceled extends Schema.TaggedClass<RunCanceled>()("RunCanceled", {
+  ...EventBase,
+  reason: Schema.String,
+}) {}
+
 export class RunInterrupted extends Schema.TaggedClass<RunInterrupted>()("RunInterrupted", {
   ...EventBase,
   reason: Schema.String,
@@ -103,18 +137,24 @@ export class RunInterrupted extends Schema.TaggedClass<RunInterrupted>()("RunInt
 export const WorkflowEvent = Schema.Union([
   RunCreated,
   RunStarted,
+  RunResumed,
+  RunCancellationRequested,
   UnitReady,
   UnitDispatched,
   AttemptStarted,
   AttemptSucceeded,
   AttemptFailed,
+  RetryScheduled,
+  AttemptCanceled,
   UnitSucceeded,
   UnitFailed,
   UnitSkipped,
+  UnitCanceled,
   LogRegistered,
   ArtifactRegistered,
   RunSucceeded,
   RunFailed,
+  RunCanceled,
   RunInterrupted,
 ])
 export type WorkflowEvent = typeof WorkflowEvent.Type

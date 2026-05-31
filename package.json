@@ -8,6 +8,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun run --bun vitest run",
     "test:watch": "bun run --bun vitest",
+    "server": "bun run server.ts",
+    "server:dev": "bun --hot server.ts",
     "dashboard": "bun run dashboard.ts",
     "dashboard:dev": "bun --hot dashboard.ts",
     "infra:up": "docker compose -f compose.demo.yml up -d",

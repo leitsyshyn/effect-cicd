@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 
 import { ArtifactMetadata, LogMetadata } from "./artifacts.ts"
+import { ExecutionPlan } from "./execution-plan.ts"
 import { AttemptId, PlanId, RunId, UnitId, WorkflowId } from "./ids.ts"
 
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
@@ -45,6 +46,17 @@ export class ProgressSummary extends Schema.Class<ProgressSummary>("ProgressSumm
   skippedUnits: NonNegativeInt,
 }) {}
 
+export class RunExecutionOptions extends Schema.Class<RunExecutionOptions>("RunExecutionOptions")({
+  workspacePath: Schema.optional(Schema.String),
+}) {}
+
+export class RunExecutionContext extends Schema.Class<RunExecutionContext>("RunExecutionContext")({
+  plan: ExecutionPlan,
+  options: RunExecutionOptions,
+  submittedAt: Schema.Date,
+  retriedFromRunId: Schema.optional(RunId),
+}) {}
+
 export class ExecutionAttemptState extends Schema.Class<ExecutionAttemptState>("ExecutionAttemptState")({
   attemptId: AttemptId,
   runId: RunId,
@@ -76,6 +88,7 @@ export class WorkflowRunState extends Schema.Class<WorkflowRunState>("WorkflowRu
   runId: RunId,
   workflowId: WorkflowId,
   planId: PlanId,
+  execution: RunExecutionContext,
   status: WorkflowRunStatus,
   units: Schema.Array(ExecutionUnitState),
   progress: ProgressSummary,

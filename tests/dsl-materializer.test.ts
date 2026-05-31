@@ -95,19 +95,16 @@ describe("DslMaterializer", () => {
     }).pipe(Effect.provide(DslMaterializer.layer)),
   )
 
-  it.effect("retry maxAttempts greater than 1 fails materialization", () =>
+  it.effect("retry maxAttempts greater than 1 materializes successfully", () =>
     Effect.gen(function* () {
       const materializer = yield* DslMaterializer
-      const error = yield* materializer
-        .materialize(
-          authoredWorkflow({
-            units: [authoredUnit("unit:build", { policies: [retry({ maxAttempts: 2 })] })],
-          }),
-        )
-        .pipe(Effect.flip)
+      const definition = yield* materializer.materialize(
+        authoredWorkflow({
+          units: [authoredUnit("unit:build", { policies: [retry({ maxAttempts: 2 })] })],
+        }),
+      )
 
-      expect(error._tag).toBe("DslMaterializationFailed")
-      expect(error.message).toContain("maxAttempts")
+      expect(definition.units[0]?.policies[0]).toMatchObject({ _tag: "RetryPolicyDeclaration", maxAttempts: 2 })
     }).pipe(Effect.provide(DslMaterializer.layer)),
   )
 

@@ -30,6 +30,12 @@ export class RunNotFound extends Schema.TaggedErrorClass<RunNotFound>()("RunNotF
   runId: RunId,
 }) {}
 
+export class RunControlRejected extends Schema.TaggedErrorClass<RunControlRejected>()("RunControlRejected", {
+  runId: RunId,
+  operation: Schema.String,
+  message: Schema.String,
+}) {}
+
 export class UnitNotFound extends Schema.TaggedErrorClass<UnitNotFound>()("UnitNotFound", {
   runId: RunId,
   unitId: UnitId,
@@ -46,6 +52,10 @@ export class StoreUnavailable extends Schema.TaggedErrorClass<StoreUnavailable>(
   message: Schema.String,
 }) {}
 
+export class EngineUnavailable extends Schema.TaggedErrorClass<EngineUnavailable>()("EngineUnavailable", {
+  message: Schema.String,
+}) {}
+
 export class ExecutorFailed extends Schema.TaggedErrorClass<ExecutorFailed>()("ExecutorFailed", {
   runId: RunId,
   unitId: UnitId,
@@ -59,9 +69,11 @@ export const DomainError = Schema.Union([
   PlanningFailed,
   PlanNotFound,
   RunNotFound,
+  RunControlRejected,
   UnitNotFound,
   AttemptNotFound,
   StoreUnavailable,
+  EngineUnavailable,
   ExecutorFailed,
 ])
 export type DomainError = typeof DomainError.Type

@@ -124,10 +124,6 @@ const validatePolicies = Effect.fn("dsl.validatePolicies")(function* (authoredUn
   for (const policy of authoredUnit.policies ?? []) {
     switch (policy._tag) {
       case "RetryPolicy":
-        if (policy.maxAttempts > 1) {
-          return yield* fail(`Unit ${authoredUnit.unitId} retry maxAttempts greater than 1 is not supported`)
-        }
-        break
       case "TimeoutPolicy":
       case "CancellationPolicy":
         break

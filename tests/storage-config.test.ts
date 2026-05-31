@@ -3,8 +3,9 @@ import { ConfigProvider, Effect, Layer, Redacted } from "effect"
 
 import { ArtifactMetadata, LogMetadata } from "../src/domain/artifacts.ts"
 import { ArtifactRegistered, RunCreated } from "../src/domain/events.ts"
+import { ContainerCommandDescriptor, ExecutionPlan, PlanUnit } from "../src/domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
-import { ExecutionAttemptState, ExecutionUnitState, ProgressSummary, WorkflowRunState } from "../src/domain/runtime-state.ts"
+import { ExecutionAttemptState, ExecutionUnitState, ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState } from "../src/domain/runtime-state.ts"
 import { ObjectStorageConfig, PostgresConfig, StorageRuntimeConfig } from "../src/runtime/config.ts"
 import {
   decodeWorkflowEvent,
@@ -12,6 +13,7 @@ import {
   encodeWorkflowEvent,
   encodeWorkflowRunState,
 } from "../src/runtime/storage-codecs.ts"
+import { ArtifactDeclaration, NamedDeclaration } from "../src/domain/workflow-definition.ts"
 
 describe("storage config", () => {
   it.effect("parses postgres, object storage, and runtime flags", () =>
@@ -84,6 +86,31 @@ describe("storage codecs", () => {
       runId,
       workflowId: WorkflowId.make("workflow:codec"),
       planId: PlanId.make("plan:codec"),
+      execution: new RunExecutionContext({
+        plan: new ExecutionPlan({
+          planId: PlanId.make("plan:codec"),
+          schemaVersion: "0.1.0",
+          workflowId: WorkflowId.make("workflow:codec"),
+          workflowName: "codec",
+          metadata: {},
+          units: [
+            new PlanUnit({
+              unitId: UnitId.make("unit:build"),
+              name: "build",
+              dependencies: [],
+              payloadDescriptor: new ContainerCommandDescriptor({ image: "oven/bun:1", command: ["bun", "test"], env: {} }),
+              logExpectations: [new NamedDeclaration({ name: "stdout", metadata: {} })],
+              artifactExpectations: [new ArtifactDeclaration({ name: "dist", kind: "file", path: "dist/output.txt", metadata: {} })],
+              policies: [],
+              diagnostics: [],
+            }),
+          ],
+          dependencies: [],
+          diagnostics: [],
+        }),
+        options: new RunExecutionOptions({ workspacePath: "/repo/workspace" }),
+        submittedAt: new Date("2026-01-01T00:00:00.000Z"),
+      }),
       status: "succeeded",
       units: [unit],
       progress: new ProgressSummary({

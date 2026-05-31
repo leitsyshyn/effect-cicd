@@ -19,6 +19,7 @@ export interface DashboardEngine {
 export const mapRunSummary = (run: WorkflowRunState): RunSummaryDto => ({
   runId: run.runId,
   workflowId: run.workflowId,
+  workflowName: run.execution.plan.workflowName,
   status: run.status,
   createdAt: run.createdAt.toISOString(),
   updatedAt: run.updatedAt.toISOString(),
@@ -156,10 +157,16 @@ const describeEvent = (event: WorkflowEvent): string => {
       return "Run created"
     case "RunStarted":
       return "Run started"
+    case "RunResumed":
+      return `Run resumed: ${event.reason}`
+    case "RunCancellationRequested":
+      return `Cancellation requested: ${event.reason}`
     case "RunSucceeded":
       return "Run succeeded"
     case "RunFailed":
       return `Run failed: ${event.failure.message}`
+    case "RunCanceled":
+      return `Run canceled: ${event.reason}`
     case "RunInterrupted":
       return `Run interrupted: ${event.reason}`
     case "UnitReady":
@@ -178,10 +185,16 @@ const describeEvent = (event: WorkflowEvent): string => {
       return `${event.unitId} attempt succeeded`
     case "AttemptFailed":
       return `${event.unitId} attempt failed: ${event.failure.message}`
+    case "RetryScheduled":
+      return `${event.unitId} retry ${event.nextAttemptNumber} scheduled: ${event.reason}`
+    case "AttemptCanceled":
+      return `${event.unitId} attempt canceled: ${event.reason}`
     case "LogRegistered":
       return `Log registered: ${event.log.name}`
     case "ArtifactRegistered":
       return `Artifact registered: ${event.artifact.name}`
+    case "UnitCanceled":
+      return `${event.unitId} canceled: ${event.reason}`
   }
 }
 

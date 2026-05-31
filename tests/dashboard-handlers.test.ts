@@ -4,7 +4,9 @@ import { Effect } from "effect"
 import { ArtifactMetadata, LogMetadata } from "../src/domain/artifacts.ts"
 import { RunCreated, RunStarted, UnitSucceeded } from "../src/domain/events.ts"
 import { PlanId, RunId, UnitId, WorkflowId, AttemptId, ArtifactRef, LogRef, EventId } from "../src/domain/ids.ts"
-import { ExecutionAttemptState, ExecutionUnitState, ProgressSummary, WorkflowRunState } from "../src/domain/runtime-state.ts"
+import { ExecutionAttemptState, ExecutionUnitState, ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState } from "../src/domain/runtime-state.ts"
+import { ExecutionPlan, PlanDependency, PlanUnit, ContainerCommandDescriptor } from "../src/domain/execution-plan.ts"
+import { NamedDeclaration, ArtifactDeclaration } from "../src/domain/workflow-definition.ts"
 import { createDashboardHandlers } from "../src/dashboard/handlers.ts"
 
 describe("dashboard route handlers", () => {
@@ -30,7 +32,7 @@ describe("dashboard route handlers", () => {
       const payload = yield* Effect.promise(() => response.json() as Promise<Array<{ readonly runId: string; readonly workflowId: string }>>)
 
       expect(called).toBe(true)
-      expect(payload).toEqual([{ runId: run.runId, workflowId: run.workflowId, status: "succeeded", createdAt: run.createdAt.toISOString(), updatedAt: run.updatedAt.toISOString(), startedAt: run.startedAt!.toISOString(), finishedAt: run.finishedAt!.toISOString(), progress: { totalUnits: 2, completedUnits: 2, failedUnits: 0, skippedUnits: 0 } }])
+      expect(payload).toEqual([{ runId: run.runId, workflowId: run.workflowId, workflowName: "dashboard", status: "succeeded", createdAt: run.createdAt.toISOString(), updatedAt: run.updatedAt.toISOString(), startedAt: run.startedAt!.toISOString(), finishedAt: run.finishedAt!.toISOString(), progress: { totalUnits: 2, completedUnits: 2, failedUnits: 0, skippedUnits: 0 } }])
     }),
   )
 
@@ -93,6 +95,43 @@ const sampleRun = () => {
     runId,
     workflowId: WorkflowId.make("workflow:dashboard"),
     planId: PlanId.make("plan:dashboard"),
+    execution: new RunExecutionContext({
+      plan: new ExecutionPlan({
+        planId: PlanId.make("plan:dashboard"),
+        schemaVersion: "0.1.0",
+        workflowId: WorkflowId.make("workflow:dashboard"),
+        workflowName: "dashboard",
+        metadata: {},
+        units: [
+          new PlanUnit({
+            unitId: UnitId.make("unit:build"),
+            name: "build",
+            dependencies: [],
+            payloadDescriptor: new ContainerCommandDescriptor({ image: "oven/bun:1", command: ["bun", "test"], env: {} }),
+            logExpectations: [new NamedDeclaration({ name: "stdout", metadata: {} })],
+            artifactExpectations: [
+              new ArtifactDeclaration({ name: "dist", kind: "file", path: "dist/output.txt", metadata: {} }),
+            ],
+            policies: [],
+            diagnostics: [],
+          }),
+          new PlanUnit({
+            unitId: UnitId.make("unit:test"),
+            name: "test",
+            dependencies: [UnitId.make("unit:build")],
+            payloadDescriptor: new ContainerCommandDescriptor({ image: "oven/bun:1", command: ["bun", "test"], env: {} }),
+            logExpectations: [],
+            artifactExpectations: [],
+            policies: [],
+            diagnostics: [],
+          }),
+        ],
+        dependencies: [new PlanDependency({ from: UnitId.make("unit:build"), to: UnitId.make("unit:test") })],
+        diagnostics: [],
+      }),
+      options: new RunExecutionOptions({ workspacePath: "/repo/examples" }),
+      submittedAt: new Date("2026-01-01T00:00:00.000Z"),
+    }),
     status: "succeeded",
     units: [
       new ExecutionUnitState({

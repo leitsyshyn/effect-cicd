@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option, Stream } from "effect"
 import * as Context from "effect/Context"
 
 import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
@@ -9,6 +9,8 @@ import { WorkflowEvent } from "../domain/events.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
 import { Orchestrator, type RunStartOptions } from "./orchestrator.ts"
+import { RunController } from "./run-controller.ts"
+import { RunUpdate, RunUpdates } from "./run-updates.ts"
 import { ArtifactStore } from "./stores/artifact-store.ts"
 import { Planner } from "./planner.ts"
 import { EventLog } from "./stores/event-log.ts"
@@ -20,8 +22,13 @@ export class Engine extends Context.Service<
     readonly validate: (definition: NormalizedWorkflowDefinition) => Effect.Effect<void, DomainError>
     readonly plan: (definition: NormalizedWorkflowDefinition) => Effect.Effect<ExecutionPlan, DomainError>
     readonly startRun: (plan: ExecutionPlan, options?: RunStartOptions) => Effect.Effect<WorkflowRunState, DomainError>
+    readonly submitRun: (plan: ExecutionPlan, options?: RunStartOptions) => Effect.Effect<WorkflowRunState, DomainError>
+    readonly cancelRun: (runId: RunId, reason?: string) => Effect.Effect<WorkflowRunState, DomainError>
+    readonly retryRun: (runId: RunId, reason?: string) => Effect.Effect<WorkflowRunState, DomainError>
     readonly listRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, DomainError>
     readonly inspectRun: (runId: RunId) => Effect.Effect<WorkflowRunState, DomainError>
+    readonly streamRuns: () => Stream.Stream<RunUpdate, DomainError>
+    readonly streamRun: (runId: RunId) => Stream.Stream<RunUpdate, DomainError>
     readonly readRunEvents: (runId: RunId) => Effect.Effect<ReadonlyArray<WorkflowEvent>, DomainError>
     readonly readArtifacts: (runId: RunId) => Effect.Effect<ReadonlyArray<ArtifactMetadata>, DomainError>
     readonly readArtifactPayload: (artifactRef: ArtifactRef) => Effect.Effect<string, DomainError>
@@ -34,6 +41,8 @@ export class Engine extends Context.Service<
     Effect.gen(function* () {
       const planner = yield* Planner
       const orchestrator = yield* Orchestrator
+      const runController = yield* RunController
+      const runUpdates = yield* Effect.serviceOption(RunUpdates)
       const stateStore = yield* StateStore
       const eventLog = yield* EventLog
       const artifactStore = yield* ArtifactStore
@@ -46,9 +55,22 @@ export class Engine extends Context.Service<
         orchestrator.startRun(executionPlan, options),
       )
 
+      const submitRun = Effect.fn("Engine.submitRun")((executionPlan: ExecutionPlan, options?: RunStartOptions) =>
+        runController.submitRun(executionPlan, options),
+      )
+
+      const cancelRun = Effect.fn("Engine.cancelRun")((runId: RunId, reason?: string) => runController.cancelRun(runId, reason))
+
+      const retryRun = Effect.fn("Engine.retryRun")((runId: RunId, reason?: string) => runController.retryRun(runId, reason))
+
       const listRuns = Effect.fn("Engine.listRuns")(() => stateStore.listRuns())
 
       const inspectRun = Effect.fn("Engine.inspectRun")((runId: RunId) => orchestrator.inspectRun(runId))
+
+      const streamRuns = () => Option.match(runUpdates, { onNone: () => Stream.empty, onSome: (service) => service.stream() })
+
+      const streamRun = (runId: RunId) =>
+        Option.match(runUpdates, { onNone: () => Stream.empty, onSome: (service) => service.stream(runId) })
 
       const readRunEvents = Effect.fn("Engine.readRunEvents")((runId: RunId) => eventLog.readRunEvents(runId))
 
@@ -70,8 +92,13 @@ export class Engine extends Context.Service<
         validate,
         plan,
         startRun,
+        submitRun,
+        cancelRun,
+        retryRun,
         listRuns,
         inspectRun,
+        streamRuns,
+        streamRun,
         readRunEvents,
         readArtifacts,
         readArtifactPayload,

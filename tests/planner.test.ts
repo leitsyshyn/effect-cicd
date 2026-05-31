@@ -123,19 +123,17 @@ describe("Planner", () => {
     }).pipe(Effect.provide(Planner.layer)),
   )
 
-  it.effect("retry policy with maxAttempts greater than 1 fails validation", () =>
+  it.effect("retry policy with maxAttempts greater than 1 validates successfully", () =>
     Effect.gen(function* () {
       const planner = yield* Planner
-      const error = yield* planner
-        .validate(
-          workflow({
-            units: [unit("unit:build", { policies: [new RetryPolicyDeclaration({ maxAttempts: 2 })] })],
-          }),
-        )
-        .pipe(Effect.flip)
+      const definition = workflow({
+        units: [unit("unit:build", { policies: [new RetryPolicyDeclaration({ maxAttempts: 2 })] })],
+      })
 
-      expect(error._tag).toBe("WorkflowDefinitionInvalid")
-      expect(error.message).toContain("maxAttempts")
+      yield* planner.validate(definition)
+      const plan = yield* planner.plan(definition)
+
+      expect(plan.units[0]?.policies.find((policy) => policy._tag === "PlanRetryPolicy")).toMatchObject({ maxAttempts: 2 })
     }).pipe(Effect.provide(Planner.layer)),
   )
 
