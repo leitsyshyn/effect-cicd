@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 
-import { ArtifactMetadata, LogMetadata } from "../src/domain/artifacts.ts"
+import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../src/domain/artifacts.ts"
 import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanUnit } from "../src/domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { RunCreated } from "../src/domain/events.ts"
@@ -12,6 +12,7 @@ import { Orchestrator } from "../src/engine/orchestrator.ts"
 import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { EventLog } from "../src/engine/stores/event-log.ts"
 import { StateStore } from "../src/engine/stores/state-store.ts"
+import { StorageTransactor } from "../src/runtime/storage.ts"
 
 describe("Orchestrator", () => {
   it.effect("single-unit successful plan creates a succeeded run", () =>
@@ -19,7 +20,7 @@ describe("Orchestrator", () => {
       const orchestrator = yield* Orchestrator
       const run = yield* orchestrator.startRun(plan("workflow:single", [planUnit("unit:build")]))
 
-      expect(run.runId).toBe(RunId.make("run:plan:workflow:single"))
+      expect(run.runId.startsWith("run:plan:workflow:single:")).toBe(true)
       expect(run.status).toBe("succeeded")
       expect(run.progress).toEqual(
         new ProgressSummary({
@@ -97,14 +98,12 @@ describe("Orchestrator", () => {
         yield* orchestrator.startRun(plan("workflow:boundary", [planUnit("unit:build")]))
 
         expect(requests).toHaveLength(1)
-        expect(requests[0]).toMatchObject({
-          runId: RunId.make("run:plan:workflow:boundary"),
-          unitId: UnitId.make("unit:build"),
-          attemptId: AttemptId.make("attempt:run:plan:workflow:boundary:unit:build:1"),
-          attemptNumber: 1,
-          artifactNames: ["dist"],
-          logNames: ["stdout"],
-        })
+        expect(requests[0]?.runId.startsWith("run:plan:workflow:boundary:")).toBe(true)
+        expect(requests[0]?.unitId).toBe(UnitId.make("unit:build"))
+        expect(requests[0]?.attemptId).toBe(AttemptId.make(`attempt:${requests[0]!.runId}:unit:build:1`))
+        expect(requests[0]?.attemptNumber).toBe(1)
+        expect(requests[0]?.artifactNames).toEqual(["dist"])
+        expect(requests[0]?.logNames).toEqual(["stdout"])
         expect(requests[0]?.correlation.planId).toBe("plan:workflow:boundary")
         expect(requests[0]?.payloadDescriptor).toBeInstanceOf(ContainerCommandDescriptor)
       }).pipe(Effect.provide(runtimeLayer({ requests })))
@@ -122,7 +121,7 @@ describe("Orchestrator", () => {
 
       expect(storedRun.status).toBe("succeeded")
       expect(storedUnit.status).toBe("succeeded")
-      expect(storedUnit.latestAttemptId).toBe(AttemptId.make("attempt:run:plan:workflow:state:unit:build:1"))
+      expect(storedUnit.latestAttemptId).toBe(AttemptId.make(`attempt:${run.runId}:unit:build:1`))
       expect(storedUnit.attempts[0]?.status).toBe("succeeded")
     }).pipe(Effect.provide(runtimeLayer())),
   )
@@ -156,8 +155,10 @@ describe("Orchestrator", () => {
       const artifactStore = yield* ArtifactStore
 
       const run = yield* orchestrator.startRun(plan("workflow:artifacts", [planUnit("unit:build")]))
-      const storedArtifact = yield* artifactStore.readArtifact(ArtifactRef.make("artifact:workflow:artifacts:unit:build:dist"))
-      const storedLog = yield* artifactStore.readLog(LogRef.make("log:workflow:artifacts:unit:build:stdout"))
+      const storedArtifact = yield* artifactStore.readArtifact(
+        ArtifactRef.make(`artifact:attempt:${run.runId}:unit:build:1:dist`),
+      )
+      const storedLog = yield* artifactStore.readLog(LogRef.make(`log:attempt:${run.runId}:unit:build:1:stdout`))
 
       expect(storedArtifact.runId).toBe(run.runId)
       expect(storedArtifact.name).toBe("dist")
@@ -226,6 +227,7 @@ describe("Orchestrator", () => {
 
 const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
   Orchestrator.layer.pipe(
+    Layer.provideMerge(StorageTransactor.memoryLayer),
     Layer.provideMerge(StateStore.memoryLayer),
     Layer.provideMerge(EventLog.memoryLayer),
     Layer.provideMerge(ArtifactStore.memoryLayer),
@@ -283,26 +285,31 @@ const successPayloads = (workflowId: string, unitId: string) => {
 
   return {
     logs: [
-      new LogMetadata({
-        logRef: LogRef.make(`log:${workflowId}:${unitId}:stdout`),
-        runId,
-        unitId: brandedUnitId,
-        attemptId,
-        name: "stdout",
-        status: "available",
-        summary: "unit stdout",
+      new RegisteredLog({
+        metadata: new LogMetadata({
+          logRef: LogRef.make(`log:${workflowId}:${unitId}:stdout`),
+          runId,
+          unitId: brandedUnitId,
+          attemptId,
+          name: "stdout",
+          status: "available",
+          summary: "unit stdout",
+        }),
+        content: "unit stdout\n",
       }),
     ],
     artifacts: [
-      new ArtifactMetadata({
-        artifactRef: ArtifactRef.make(`artifact:${workflowId}:${unitId}:dist`),
-        runId,
-        unitId: brandedUnitId,
-        attemptId,
-        name: "dist",
-        category: "build-output",
-        status: "available",
-        summary: "unit artifact",
+      new RegisteredArtifact({
+        metadata: new ArtifactMetadata({
+          artifactRef: ArtifactRef.make(`artifact:${workflowId}:${unitId}:dist`),
+          runId,
+          unitId: brandedUnitId,
+          attemptId,
+          name: "dist",
+          category: "build-output",
+          status: "available",
+          summary: "unit artifact",
+        }),
       }),
     ],
   } satisfies NonNullable<TestExecutorLayerOptions["resultsByUnitId"]>[string]

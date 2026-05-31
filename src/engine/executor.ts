@@ -3,10 +3,10 @@ import * as Context from "effect/Context"
 import * as ChildProcess from "effect/unstable/process/ChildProcess"
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
 
-import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
+import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
 import { ExecutorFailed } from "../domain/errors.ts"
 import { PayloadDescriptor, PlanPolicy } from "../domain/execution-plan.ts"
-import { AttemptId, LogRef, RunId, UnitId } from "../domain/ids.ts"
+import { ArtifactRef, AttemptId, LogRef, RunId, UnitId } from "../domain/ids.ts"
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
 
@@ -45,8 +45,8 @@ export class ExecutorResult extends Schema.Class<ExecutorResult>("ExecutorResult
   exitCode: Schema.optional(Schema.Int),
   failure: Schema.optional(ExecutorFailureSummary),
   outputs: Schema.Record(Schema.String, Schema.Unknown),
-  artifacts: Schema.Array(ArtifactMetadata),
-  logs: Schema.Array(LogMetadata),
+  artifacts: Schema.Array(RegisteredArtifact),
+  logs: Schema.Array(RegisteredLog),
   startedAt: Schema.optional(Schema.Date),
   finishedAt: Schema.optional(Schema.Date),
   diagnostics: Schema.Array(Schema.String),
@@ -57,8 +57,8 @@ export interface TestExecutorResultConfig {
   readonly exitCode?: number
   readonly failure?: ExecutorFailureSummary
   readonly outputs?: Record<string, unknown>
-  readonly artifacts?: ReadonlyArray<ArtifactMetadata>
-  readonly logs?: ReadonlyArray<LogMetadata>
+  readonly artifacts?: ReadonlyArray<RegisteredArtifact>
+  readonly logs?: ReadonlyArray<RegisteredLog>
   readonly startedAt?: Date
   readonly finishedAt?: Date
   readonly diagnostics?: ReadonlyArray<string>
@@ -96,8 +96,8 @@ export class Executor extends Context.Service<
               ? new ExecutorFailureSummary({ message: `Configured failure for ${request.unitId}` })
               : undefined),
           outputs: configured?.outputs ?? {},
-          artifacts: [...(configured?.artifacts ?? [])],
-          logs: [...(configured?.logs ?? [])],
+          artifacts: normalizeArtifacts(request, configured?.artifacts ?? []),
+          logs: normalizeLogs(request, configured?.logs ?? []),
           startedAt: configured?.startedAt,
           finishedAt: configured?.finishedAt,
           diagnostics: [...(configured?.diagnostics ?? [])],
@@ -217,17 +217,49 @@ const buildLogs = (request: DispatchRequest, createdAt: Date, stdout: string, st
 }
 
 const buildLog = (request: DispatchRequest, createdAt: Date, name: "stdout" | "stderr", content: string) =>
-  new LogMetadata({
-    logRef: LogRef.make(`log:${request.runId}:${request.unitId}:${request.attemptId}:${name}`),
-    runId: request.runId,
-    unitId: request.unitId,
-    attemptId: request.attemptId,
-    name,
-    status: "available",
-    sizeBytes: new TextEncoder().encode(content).byteLength,
-    createdAt,
-    summary: summarizeLog(content),
+  new RegisteredLog({
+    metadata: new LogMetadata({
+      logRef: LogRef.make(`log:${request.runId}:${request.unitId}:${request.attemptId}:${name}`),
+      runId: request.runId,
+      unitId: request.unitId,
+      attemptId: request.attemptId,
+      name,
+      status: "available",
+      sizeBytes: new TextEncoder().encode(content).byteLength,
+      createdAt,
+      summary: summarizeLog(content),
+    }),
+    content,
   })
+
+const normalizeArtifacts = (request: DispatchRequest, artifacts: ReadonlyArray<RegisteredArtifact>) =>
+  artifacts.map(({ metadata, payloadBase64, contentType }) =>
+    new RegisteredArtifact({
+      metadata: new ArtifactMetadata({
+        ...metadata,
+        artifactRef: ArtifactRef.make(`artifact:${request.attemptId}:${metadata.name}`),
+        runId: request.runId,
+        unitId: request.unitId,
+        attemptId: request.attemptId,
+      }),
+      payloadBase64,
+      contentType,
+    }),
+  )
+
+const normalizeLogs = (request: DispatchRequest, logs: ReadonlyArray<RegisteredLog>) =>
+  logs.map(({ metadata, content }) =>
+    new RegisteredLog({
+      metadata: new LogMetadata({
+        ...metadata,
+        logRef: LogRef.make(`log:${request.attemptId}:${metadata.name}`),
+        runId: request.runId,
+        unitId: request.unitId,
+        attemptId: request.attemptId,
+      }),
+      content,
+    }),
+  )
 
 const summarizeLog = (content: string) => {
   const normalized = content.trim()

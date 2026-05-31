@@ -33,3 +33,14 @@ export class LogMetadata extends Schema.Class<LogMetadata>("LogMetadata")({
   createdAt: Schema.optional(Schema.Date),
   summary: Schema.optional(Schema.String),
 }) {}
+
+export class RegisteredArtifact extends Schema.Class<RegisteredArtifact>("RegisteredArtifact")({
+  metadata: ArtifactMetadata,
+  payloadBase64: Schema.optional(Schema.String),
+  contentType: Schema.optional(Schema.String),
+}) {}
+
+export class RegisteredLog extends Schema.Class<RegisteredLog>("RegisteredLog")({
+  metadata: LogMetadata,
+  content: Schema.String,
+}) {}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
 
-import { ArtifactMetadata, LogMetadata } from "../src/domain/artifacts.ts"
+import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../src/domain/artifacts.ts"
 import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanUnit } from "../src/domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { NamedDeclaration, NormalizedWorkflowDefinition, ContainerCommandDeclaration, DependencyDeclaration, UnitDeclaration } from "../src/domain/workflow-definition.ts"
@@ -12,6 +12,7 @@ import { Planner } from "../src/engine/planner.ts"
 import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { EventLog } from "../src/engine/stores/event-log.ts"
 import { StateStore } from "../src/engine/stores/state-store.ts"
+import { StorageTransactor } from "../src/runtime/storage.ts"
 
 describe("Engine interface", () => {
   it.effect("validate delegates to Planner for a valid workflow", () =>
@@ -84,10 +85,10 @@ describe("Engine interface", () => {
       expect(artifacts).toEqual(run.artifacts)
       expect(artifacts).toEqual([
         new ArtifactMetadata({
-          artifactRef: ArtifactRef.make("artifact:workflow:artifacts:unit:build:dist"),
+          artifactRef: ArtifactRef.make(`artifact:attempt:${run.runId}:unit:build:1:dist`),
           runId: run.runId,
           unitId: UnitId.make("unit:build"),
-          attemptId: AttemptId.make("attempt:run:plan:workflow:artifacts:unit:build:1"),
+          attemptId: AttemptId.make(`attempt:${run.runId}:unit:build:1`),
           name: "dist",
           category: "build-output",
           status: "available",
@@ -108,10 +109,10 @@ describe("Engine interface", () => {
       expect(logs).toEqual(run.logs)
       expect(logs).toEqual([
         new LogMetadata({
-          logRef: LogRef.make("log:workflow:logs:unit:build:stdout"),
+          logRef: LogRef.make(`log:attempt:${run.runId}:unit:build:1:stdout`),
           runId: run.runId,
           unitId: UnitId.make("unit:build"),
-          attemptId: AttemptId.make("attempt:run:plan:workflow:logs:unit:build:1"),
+          attemptId: AttemptId.make(`attempt:${run.runId}:unit:build:1`),
           name: "stdout",
           status: "available",
           summary: "unit stdout",
@@ -179,6 +180,7 @@ const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
   Engine.layer.pipe(
     Layer.provideMerge(Planner.layer),
     Layer.provideMerge(Orchestrator.layer),
+    Layer.provideMerge(StorageTransactor.memoryLayer),
     Layer.provideMerge(StateStore.memoryLayer),
     Layer.provideMerge(EventLog.memoryLayer),
     Layer.provideMerge(ArtifactStore.memoryLayer),
@@ -274,26 +276,31 @@ const successPayloads = (workflowId: string, unitId: string) => {
 
   return {
     logs: [
-      new LogMetadata({
-        logRef: LogRef.make(`log:${workflowId}:${unitId}:stdout`),
-        runId,
-        unitId: brandedUnitId,
-        attemptId,
-        name: "stdout",
-        status: "available",
-        summary: "unit stdout",
+      new RegisteredLog({
+        metadata: new LogMetadata({
+          logRef: LogRef.make(`log:${workflowId}:${unitId}:stdout`),
+          runId,
+          unitId: brandedUnitId,
+          attemptId,
+          name: "stdout",
+          status: "available",
+          summary: "unit stdout",
+        }),
+        content: "unit stdout\n",
       }),
     ],
     artifacts: [
-      new ArtifactMetadata({
-        artifactRef: ArtifactRef.make(`artifact:${workflowId}:${unitId}:dist`),
-        runId,
-        unitId: brandedUnitId,
-        attemptId,
-        name: "dist",
-        category: "build-output",
-        status: "available",
-        summary: "unit artifact",
+      new RegisteredArtifact({
+        metadata: new ArtifactMetadata({
+          artifactRef: ArtifactRef.make(`artifact:${workflowId}:${unitId}:dist`),
+          runId,
+          unitId: brandedUnitId,
+          attemptId,
+          name: "dist",
+          category: "build-output",
+          status: "available",
+          summary: "unit artifact",
+        }),
       }),
     ],
   } satisfies NonNullable<TestExecutorLayerOptions["resultsByUnitId"]>[string]

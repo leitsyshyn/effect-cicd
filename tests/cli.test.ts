@@ -46,14 +46,14 @@ describe("CLI", () => {
     Effect.gen(function* () {
       const output = yield* runCli(["run"])
 
-      expect(output).toContain("run: run:plan:workflow:sample")
+      expect(output).toContain("run: run:plan:workflow:sample:")
       expect(output).toContain("status: succeeded")
       expect(output).toContain("unit:build succeeded")
       expect(output).toContain("unit:test succeeded")
       expect(output).toContain("unit:deploy succeeded")
       expect(output).toContain("RunSucceeded")
-      expect(output).toContain("dist artifact:workflow:sample:unit:build:dist")
-      expect(output).toContain("stdout log:workflow:sample:unit:deploy:stdout")
+      expect(output).toContain("dist artifact:attempt:")
+      expect(output).toContain("stdout log:attempt:")
     }),
   )
 
@@ -82,10 +82,12 @@ describe("CLI", () => {
               }),
             plan: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
+            listRuns: () => Effect.die("unused"),
             inspectRun: () => Effect.die("unused"),
             readRunEvents: () => Effect.die("unused"),
             readArtifacts: () => Effect.die("unused"),
             readLogs: () => Effect.die("unused"),
+            readLogPayload: () => Effect.die("unused"),
           }),
         ),
       )
@@ -112,10 +114,12 @@ describe("CLI", () => {
               }),
             plan: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
+            listRuns: () => Effect.die("unused"),
             inspectRun: () => Effect.die("unused"),
             readRunEvents: () => Effect.die("unused"),
             readArtifacts: () => Effect.die("unused"),
             readLogs: () => Effect.die("unused"),
+            readLogPayload: () => Effect.die("unused"),
           }),
         ),
       )

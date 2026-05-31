@@ -1,7 +1,7 @@
 import { Clock, Effect, Layer } from "effect"
 import * as Context from "effect/Context"
 
-import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
+import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
 import { ExecutorFailed, PlanningFailed, RunNotFound, StoreUnavailable } from "../domain/errors.ts"
 import {
   ArtifactRegistered,
@@ -34,6 +34,7 @@ import {
 import { ArtifactStore } from "./stores/artifact-store.ts"
 import { EventLog } from "./stores/event-log.ts"
 import { StateStore } from "./stores/state-store.ts"
+import { StorageTransactor } from "../runtime/storage.ts"
 
 export class Orchestrator extends Context.Service<
   Orchestrator,
@@ -51,6 +52,7 @@ export class Orchestrator extends Context.Service<
       const eventLog = yield* EventLog
       const artifactStore = yield* ArtifactStore
       const executor = yield* Executor
+      const storageTransactor = yield* StorageTransactor
 
       const plans = new Map<RunId, ExecutionPlan>()
       const eventSequences = new Map<RunId, number>()
@@ -65,7 +67,7 @@ export class Orchestrator extends Context.Service<
         }) => WorkflowEvent,
       ) =>
         Effect.gen(function* () {
-          const sequence = (eventSequences.get(runId) ?? 0) + 1
+          const sequence = (yield* nextEventSequence(runId)) + 1
           eventSequences.set(runId, sequence)
 
           const occurredAt = yield* nowDate
@@ -77,6 +79,19 @@ export class Orchestrator extends Context.Service<
           })
 
           yield* eventLog.append(event)
+        })
+
+      const nextEventSequence = (runId: RunId) =>
+        Effect.gen(function* () {
+          const knownSequence = eventSequences.get(runId)
+          if (knownSequence !== undefined) {
+            return knownSequence
+          }
+
+          const persistedEvents = yield* eventLog.readRunEvents(runId)
+          const nextSequence = persistedEvents.at(-1)?.sequence ?? 0
+          eventSequences.set(runId, nextSequence)
+          return nextSequence
         })
 
       const persistRun = (run: WorkflowRunState) =>
@@ -130,8 +145,12 @@ export class Orchestrator extends Context.Service<
         })
 
         let run = replaceUnit(initialRun, readyUnit, readyAt)
-        yield* persistRun(run)
-        yield* appendEvent(run.runId, (base) => new UnitReady({ ...base, unitId }))
+        yield* storageTransactor.run(
+          Effect.gen(function* () {
+            yield* persistRun(run)
+            yield* appendEvent(run.runId, (base) => new UnitReady({ ...base, unitId }))
+          }),
+        )
 
         const attemptId = AttemptId.make(`attempt:${run.runId}:${unitId}:1`)
         const startedAt = yield* nowDate
@@ -156,17 +175,21 @@ export class Orchestrator extends Context.Service<
         )
 
         run = replaceUnit(run, runningUnit, startedAt)
-        yield* persistRun(run)
-        yield* appendEvent(run.runId, (base) => new UnitDispatched({ ...base, unitId, attemptId }))
-        yield* appendEvent(
-          run.runId,
-          (base) =>
-            new AttemptStarted({
-              ...base,
-              unitId,
-              attemptId,
-              attemptNumber: 1,
-            }),
+        yield* storageTransactor.run(
+          Effect.gen(function* () {
+            yield* persistRun(run)
+            yield* appendEvent(run.runId, (base) => new UnitDispatched({ ...base, unitId, attemptId }))
+            yield* appendEvent(
+              run.runId,
+              (base) =>
+                new AttemptStarted({
+                  ...base,
+                  unitId,
+                  attemptId,
+                  attemptNumber: 1,
+                }),
+            )
+          }),
         )
 
         const request = buildDispatchRequest(run, plan, planUnit, attemptId)
@@ -207,13 +230,17 @@ export class Orchestrator extends Context.Service<
             run = finalizeRun(run, "succeeded", finishedAt)
           }
 
-          yield* persistRun(run)
-          yield* appendEvent(run.runId, (base) => new AttemptSucceeded({ ...base, unitId, attemptId }))
-          yield* appendEvent(run.runId, (base) => new UnitSucceeded({ ...base, unitId }))
+          yield* storageTransactor.run(
+            Effect.gen(function* () {
+              yield* persistRun(run)
+              yield* appendEvent(run.runId, (base) => new AttemptSucceeded({ ...base, unitId, attemptId }))
+              yield* appendEvent(run.runId, (base) => new UnitSucceeded({ ...base, unitId }))
 
-          if (run.status === "succeeded") {
-            yield* appendEvent(run.runId, (base) => new RunSucceeded(base))
-          }
+              if (run.status === "succeeded") {
+                yield* appendEvent(run.runId, (base) => new RunSucceeded(base))
+              }
+            }),
+          )
 
           return run
         }
@@ -245,21 +272,25 @@ export class Orchestrator extends Context.Service<
         run = applySkippedUnits(run, skippedUnitIds, finishedAt)
         run = finalizeRun(run, "failed", finishedAt, failure)
 
-        yield* persistRun(run)
-        yield* appendEvent(run.runId, (base) => new AttemptFailed({ ...base, unitId, attemptId, failure }))
-        yield* appendEvent(run.runId, (base) => new UnitFailed({ ...base, unitId, failure }))
+        yield* storageTransactor.run(
+          Effect.gen(function* () {
+            yield* persistRun(run)
+            yield* appendEvent(run.runId, (base) => new AttemptFailed({ ...base, unitId, attemptId, failure }))
+            yield* appendEvent(run.runId, (base) => new UnitFailed({ ...base, unitId, failure }))
 
-        for (const skippedUnitId of skippedUnitIds) {
-          const skippedUnit = run.units.find((unit) => unit.unitId === skippedUnitId)
-          if (skippedUnit?.status === "skipped") {
-            yield* appendEvent(
-              run.runId,
-              (base) => new UnitSkipped({ ...base, unitId: skippedUnitId, reason: `Blocked by ${unitId}` }),
-            )
-          }
-        }
+            for (const skippedUnitId of skippedUnitIds) {
+              const skippedUnit = run.units.find((unit) => unit.unitId === skippedUnitId)
+              if (skippedUnit?.status === "skipped") {
+                yield* appendEvent(
+                  run.runId,
+                  (base) => new UnitSkipped({ ...base, unitId: skippedUnitId, reason: `Blocked by ${unitId}` }),
+                )
+              }
+            }
 
-        yield* appendEvent(run.runId, (base) => new RunFailed({ ...base, failure }))
+            yield* appendEvent(run.runId, (base) => new RunFailed({ ...base, failure }))
+          }),
+        )
         return run
       })
 
@@ -267,12 +298,12 @@ export class Orchestrator extends Context.Service<
         runId: RunId,
         unitId: UnitId,
         attemptId: AttemptId,
-        metadata: ReadonlyArray<LogMetadata>,
+        logs: ReadonlyArray<RegisteredLog>,
       ) =>
         Effect.gen(function* () {
           const registered = new Array<LogMetadata>()
 
-          for (const log of metadata) {
+          for (const log of logs) {
             const persisted = yield* artifactStore.registerLog(log)
             registered.push(persisted)
             yield* appendEvent(runId, (base) => new LogRegistered({ ...base, unitId, attemptId, log: persisted }))
@@ -285,12 +316,12 @@ export class Orchestrator extends Context.Service<
         runId: RunId,
         unitId: UnitId,
         attemptId: AttemptId,
-        metadata: ReadonlyArray<ArtifactMetadata>,
+        artifacts: ReadonlyArray<RegisteredArtifact>,
       ) =>
         Effect.gen(function* () {
           const registered = new Array<ArtifactMetadata>()
 
-          for (const artifact of metadata) {
+          for (const artifact of artifacts) {
             const persisted = yield* artifactStore.registerArtifact(artifact)
             registered.push(persisted)
             yield* appendEvent(
@@ -304,14 +335,18 @@ export class Orchestrator extends Context.Service<
 
       const startRun = Effect.fn("Orchestrator.startRun")(function* (plan: ExecutionPlan) {
         const createdAt = yield* nowDate
-        const run = createInitialRun(plan, createdAt)
+        const run = createInitialRun(plan, RunId.make(`run:${plan.planId}:${crypto.randomUUID()}`), createdAt)
 
         plans.set(run.runId, plan)
         eventSequences.set(run.runId, 0)
 
-        yield* stateStore.createRun(run)
-        yield* appendEvent(run.runId, (base) => new RunCreated(base))
-        yield* appendEvent(run.runId, (base) => new RunStarted(base))
+        yield* storageTransactor.run(
+          Effect.gen(function* () {
+            yield* stateStore.createRun(run)
+            yield* appendEvent(run.runId, (base) => new RunCreated(base))
+            yield* appendEvent(run.runId, (base) => new RunStarted(base))
+          }),
+        )
 
         return yield* advanceWithPlan(plan, run)
       })
@@ -344,10 +379,14 @@ export class Orchestrator extends Context.Service<
             progress: summarizeProgress(interruptedUnits),
           })
 
-          yield* persistRun(nextRun)
-          yield* appendEvent(
-            nextRun.runId,
-            (base) => new RunInterrupted({ ...base, reason: "Run interrupted during resume recovery" }),
+          yield* storageTransactor.run(
+            Effect.gen(function* () {
+              yield* persistRun(nextRun)
+              yield* appendEvent(
+                nextRun.runId,
+                (base) => new RunInterrupted({ ...base, reason: "Run interrupted during resume recovery" }),
+              )
+            }),
           )
           interrupted.push(nextRun)
         }
@@ -367,8 +406,7 @@ export class Orchestrator extends Context.Service<
 
 const nowDate = Effect.map(Clock.currentTimeMillis, (millis) => new Date(millis))
 
-const createInitialRun = (plan: ExecutionPlan, createdAt: Date) => {
-  const runId = RunId.make(`run:${plan.planId}`)
+const createInitialRun = (plan: ExecutionPlan, runId: RunId, createdAt: Date) => {
   const units = plan.units.map(
     (unit) =>
       new ExecutionUnitState({

@@ -77,8 +77,9 @@ describe("Executor", () => {
         expect(result.exitCode).toBe(0)
         expect(result.failure).toBeUndefined()
         expect(result.logs).toHaveLength(1)
-        expect(result.logs[0]?.name).toBe("stdout")
-        expect(result.logs[0]?.summary).toBe("hello")
+        expect(result.logs[0]?.metadata.name).toBe("stdout")
+        expect(result.logs[0]?.metadata.summary).toBe("hello")
+        expect(result.logs[0]?.content).toBe("hello\n")
         expect(result.artifacts).toEqual([])
         expect(result.outputs).toEqual({})
         expect(result.startedAt).toBeInstanceOf(Date)
@@ -123,7 +124,7 @@ describe("Executor", () => {
       expect(result.exitCode).toBe(23)
       expect(result.failure?.message).toBe("boom")
       expect(result.failure?.code).toBe("exit:23")
-      expect(result.logs.map((log) => log.name)).toEqual(["stdout", "stderr"])
+      expect(result.logs.map((log) => log.metadata.name)).toEqual(["stdout", "stderr"])
       expect(result.diagnostics).toEqual(["docker run exited with code 23"])
     }).pipe(
       Effect.provide(
@@ -178,8 +179,8 @@ describe("Executor", () => {
 
       expect(result.outcome).toBe("succeeded")
       expect(result.exitCode).toBe(0)
-      expect(result.logs[0]?.name).toBe("stdout")
-      expect(result.logs[0]?.summary).toContain("hello")
+      expect(result.logs[0]?.metadata.name).toBe("stdout")
+      expect(result.logs[0]?.metadata.summary).toContain("hello")
     }).pipe(Effect.provide(realDockerExecutorLayer))
   })
 })

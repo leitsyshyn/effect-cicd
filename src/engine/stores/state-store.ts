@@ -1,9 +1,12 @@
 import { Effect, Layer } from "effect"
 import * as Context from "effect/Context"
+import { SqlClient } from "effect/unstable/sql/SqlClient"
+import { isSqlError } from "effect/unstable/sql/SqlError"
 
 import { RunNotFound, StoreUnavailable, UnitNotFound } from "../../domain/errors.ts"
 import { RunId, UnitId } from "../../domain/ids.ts"
 import { ExecutionAttemptState, ExecutionUnitState, WorkflowRunState } from "../../domain/runtime-state.ts"
+import { decodeWorkflowRunState, encodeWorkflowRunState } from "../../runtime/storage-codecs.ts"
 
 export class StateStore extends Context.Service<
   StateStore,
@@ -13,6 +16,7 @@ export class StateStore extends Context.Service<
     readonly getRun: (runId: RunId) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
     readonly updateUnit: (state: ExecutionUnitState) => Effect.Effect<void, UnitNotFound | StoreUnavailable>
     readonly updateAttempt: (state: ExecutionAttemptState) => Effect.Effect<void, UnitNotFound | StoreUnavailable>
+    readonly listRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, StoreUnavailable>
     readonly listIncompleteRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, StoreUnavailable>
     readonly getUnit: (runId: RunId, unitId: UnitId) => Effect.Effect<ExecutionUnitState, UnitNotFound | StoreUnavailable>
   }
@@ -120,6 +124,11 @@ export class StateStore extends Context.Service<
         [...runs.values()].filter((run) => !terminalRunStatuses.has(run.status)),
       )
 
+    const listRuns = () =>
+      Effect.sync(() =>
+        [...runs.values()].sort((left, right) => compareRuns(right, left)),
+      )
+
     const getUnit = (runId: RunId, unitId: UnitId) =>
       Effect.sync(() => runs.get(runId)).pipe(
         Effect.flatMap((run) => {
@@ -140,10 +149,229 @@ export class StateStore extends Context.Service<
       getRun,
       updateUnit,
       updateAttempt,
+      listRuns,
       listIncompleteRuns,
       getUnit,
     }
   })
+
+  static readonly postgresLayer = Layer.effect(
+    StateStore,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient
+
+      const upsertableFields = (state: WorkflowRunState) => ({
+        workflowId: state.workflowId,
+        planId: state.planId,
+        status: state.status,
+        createdAt: state.createdAt,
+        updatedAt: state.updatedAt,
+        startedAt: state.startedAt ?? null,
+        finishedAt: state.finishedAt ?? null,
+        stateJson: JSON.stringify(encodeWorkflowRunState(state)),
+      })
+
+      const createRun = Effect.fn("StateStore.createRun")(function* (state: WorkflowRunState) {
+        const fields = upsertableFields(state)
+
+        yield* catchSql("create workflow run", sql`
+          INSERT INTO workflow_runs (
+            run_id,
+            workflow_id,
+            plan_id,
+            status,
+            created_at,
+            updated_at,
+            started_at,
+            finished_at,
+            state_json
+          ) VALUES (
+            ${state.runId},
+            ${fields.workflowId},
+            ${fields.planId},
+            ${fields.status},
+            ${fields.createdAt},
+            ${fields.updatedAt},
+            ${fields.startedAt},
+            ${fields.finishedAt},
+            ${fields.stateJson}::jsonb
+          )
+        `)
+      })
+
+      const updateRun = Effect.fn("StateStore.updateRun")(function* (state: WorkflowRunState) {
+        const fields = upsertableFields(state)
+        const rows = yield* catchSql("update workflow run", sql<{ readonly run_id: string }>`
+          UPDATE workflow_runs
+          SET workflow_id = ${fields.workflowId},
+              plan_id = ${fields.planId},
+              status = ${fields.status},
+              created_at = ${fields.createdAt},
+              updated_at = ${fields.updatedAt},
+              started_at = ${fields.startedAt},
+              finished_at = ${fields.finishedAt},
+              state_json = ${fields.stateJson}::jsonb
+          WHERE run_id = ${state.runId}
+          RETURNING run_id
+        `)
+
+        if (rows.length === 0) {
+          return yield* new RunNotFound({ runId: state.runId })
+        }
+      })
+
+      const getRun = Effect.fn("StateStore.getRun")(function* (runId: RunId) {
+        const rows = yield* catchSql("read workflow run", sql<{ readonly state_json: unknown }>`
+          SELECT state_json
+          FROM workflow_runs
+          WHERE run_id = ${runId}
+        `)
+
+        const row = rows[0]
+        if (row === undefined) {
+          return yield* new RunNotFound({ runId })
+        }
+
+        return decodeWorkflowRunState(row.state_json)
+      })
+
+      const listRuns = Effect.fn("StateStore.listRuns")(function* () {
+        const rows = yield* catchSql("list workflow runs", sql<{ readonly state_json: unknown }>`
+          SELECT state_json
+          FROM workflow_runs
+          ORDER BY updated_at DESC, run_id ASC
+        `)
+
+        return rows.map((row: { readonly state_json: unknown }) => decodeWorkflowRunState(row.state_json))
+      })
+
+      const listIncompleteRuns = Effect.fn("StateStore.listIncompleteRuns")(function* () {
+        const rows = yield* catchSql("list incomplete workflow runs", sql<{ readonly state_json: unknown }>`
+          SELECT state_json
+          FROM workflow_runs
+          WHERE status NOT IN ('succeeded', 'failed', 'canceled', 'interrupted')
+          ORDER BY updated_at DESC, run_id ASC
+        `)
+
+        return rows.map((row: { readonly state_json: unknown }) => decodeWorkflowRunState(row.state_json))
+      })
+
+      const updateUnit = Effect.fn("StateStore.updateUnit")(function* (state: ExecutionUnitState) {
+        const run = yield* getRun(state.runId).pipe(
+          Effect.catchTags({
+            RunNotFound: () => Effect.fail(new UnitNotFound({ runId: state.runId, unitId: state.unitId })),
+          }),
+        )
+
+        const index = run.units.findIndex((unit) => unit.unitId === state.unitId)
+        if (index === -1) {
+          return yield* new UnitNotFound({ runId: state.runId, unitId: state.unitId })
+        }
+
+        const units = [...run.units]
+        units[index] = state
+
+        yield* updateRun(
+          new WorkflowRunState({
+            ...run,
+            units,
+          }),
+        ).pipe(
+          Effect.catchTags({
+            RunNotFound: () => Effect.fail(new UnitNotFound({ runId: state.runId, unitId: state.unitId })),
+          }),
+        )
+      })
+
+      const updateAttempt = Effect.fn("StateStore.updateAttempt")(function* (state: ExecutionAttemptState) {
+        const run = yield* getRun(state.runId).pipe(
+          Effect.catchTags({
+            RunNotFound: () => Effect.fail(new UnitNotFound({ runId: state.runId, unitId: state.unitId })),
+          }),
+        )
+
+        const unitIndex = run.units.findIndex((unit) => unit.unitId === state.unitId)
+        if (unitIndex === -1) {
+          return yield* new UnitNotFound({ runId: state.runId, unitId: state.unitId })
+        }
+
+        const currentUnit = run.units[unitIndex]!
+        const attempts = [...currentUnit.attempts]
+        const attemptIndex = attempts.findIndex((attempt) => attempt.attemptId === state.attemptId)
+
+        if (attemptIndex === -1) {
+          attempts.push(state)
+        } else {
+          attempts[attemptIndex] = state
+        }
+
+        const units = [...run.units]
+        units[unitIndex] = new ExecutionUnitState({
+          ...currentUnit,
+          latestAttemptId: state.attemptId,
+          attempts,
+        })
+
+        yield* updateRun(
+          new WorkflowRunState({
+            ...run,
+            units,
+          }),
+        ).pipe(
+          Effect.catchTags({
+            RunNotFound: () => Effect.fail(new UnitNotFound({ runId: state.runId, unitId: state.unitId })),
+          }),
+        )
+      })
+
+      const getUnit = Effect.fn("StateStore.getUnit")(function* (runId: RunId, unitId: UnitId) {
+        const run = yield* getRun(runId).pipe(
+          Effect.catchTags({
+            RunNotFound: () => Effect.fail(new UnitNotFound({ runId, unitId })),
+          }),
+        )
+        const unit = run.units.find((candidate) => candidate.unitId === unitId)
+
+        if (unit === undefined) {
+          return yield* new UnitNotFound({ runId, unitId })
+        }
+
+        return unit
+      })
+
+      return {
+        createRun,
+        updateRun,
+        getRun,
+        updateUnit,
+        updateAttempt,
+        listRuns,
+        listIncompleteRuns,
+        getUnit,
+      }
+    }),
+  )
 }
 
 const terminalRunStatuses = new Set(["succeeded", "failed", "canceled", "interrupted"])
+
+const compareRuns = (left: WorkflowRunState, right: WorkflowRunState) => {
+  const timeDelta = left.updatedAt.getTime() - right.updatedAt.getTime()
+  return timeDelta === 0 ? compareStrings(left.runId, right.runId) : timeDelta
+}
+
+const compareStrings = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0)
+
+const catchSql = <A>(operation: string, effect: Effect.Effect<A, unknown, never>) =>
+  effect.pipe(
+    Effect.catch((error: unknown) =>
+      isSqlError(error)
+        ? Effect.fail(
+            new StoreUnavailable({
+              store: "StateStore",
+              message: `Failed to ${operation}: ${error.message}`,
+            }),
+          )
+        : Effect.fail(error),
+    ),
+  ) as Effect.Effect<A, StoreUnavailable, never>
