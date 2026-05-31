@@ -50,6 +50,7 @@ export interface WorkflowModuleLoadOptions {
 export class WorkflowModuleLoader extends Context.Service<
   WorkflowModuleLoader,
   {
+    readonly resolve: (modulePath: string) => Effect.Effect<string, WorkflowModuleNotFound>;
     readonly load: (
       modulePath: string,
       options?: WorkflowModuleLoadOptions,
@@ -57,6 +58,7 @@ export class WorkflowModuleLoader extends Context.Service<
   }
 >()("@effect-cicd/dsl/WorkflowModuleLoader") {
   static readonly layer = Layer.succeed(WorkflowModuleLoader, {
+    resolve: Effect.fn("WorkflowModuleLoader.resolve")((modulePath: string) => resolveWorkflowModulePath(modulePath)),
     load: Effect.fn("WorkflowModuleLoader.load")(
       (modulePath: string, options?: WorkflowModuleLoadOptions) =>
         loadWorkflowModule(modulePath, options),

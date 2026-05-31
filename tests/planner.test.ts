@@ -4,10 +4,10 @@ import { Effect } from "effect"
 import { ContainerCommandDescriptor } from "../src/domain/execution-plan.ts"
 import { UnitId, WorkflowId } from "../src/domain/ids.ts"
 import {
+  ArtifactDeclaration,
   CancellationPolicyDeclaration,
   ContainerCommandDeclaration,
   DependencyDeclaration,
-  NamedDeclaration,
   NormalizedWorkflowDefinition,
   RetryPolicyDeclaration,
   SourceMetadata,
@@ -248,8 +248,11 @@ const dependency = (from: string, to: string) =>
   })
 
 const named = (name: string, source?: SourceMetadata) =>
-  new NamedDeclaration({
+  new ArtifactDeclaration({
     name,
+    kind: "file",
+    path: `artifacts/${name}.txt`,
+    contentType: "text/plain",
     metadata: {},
     source,
   })

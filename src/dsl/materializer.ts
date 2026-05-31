@@ -4,6 +4,7 @@ import * as Context from "effect/Context"
 import { DslMaterializationFailed } from "../domain/errors.ts"
 import { UnitId, WorkflowId } from "../domain/ids.ts"
 import {
+  ArtifactDeclaration,
   CancellationPolicyDeclaration,
   ContainerCommandDeclaration,
   DependencyDeclaration,
@@ -15,6 +16,7 @@ import {
 } from "../domain/workflow-definition.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
 import type {
+  AuthoredArtifactDeclaration,
   AuthoredContainerCommand,
   AuthoredNamedDeclaration,
   AuthoredPolicy,
@@ -62,6 +64,7 @@ const materialize = Effect.fn("dsl.materialize")(function* (authored: AuthoredWo
     }
 
     yield* validateCommand(authoredUnit)
+    yield* validateArtifacts(authoredUnit)
     yield* validatePolicies(authoredUnit)
   }
 
@@ -103,7 +106,7 @@ const materialize = Effect.fn("dsl.materialize")(function* (authored: AuthoredWo
     dependencies,
     inputs: toNamedDeclarations(authored.inputs),
     outputs: toNamedDeclarations(authored.outputs),
-    artifacts: toNamedDeclarations(authored.artifacts),
+    artifacts: toArtifactDeclarations(authored.artifacts),
     reports: toNamedDeclarations(authored.reports),
     source: toSourceMetadata(authored.source),
   })
@@ -134,6 +137,18 @@ const validatePolicies = Effect.fn("dsl.validatePolicies")(function* (authoredUn
   }
 })
 
+const validateArtifacts = Effect.fn("dsl.validateArtifacts")(function* (authoredUnit: AuthoredUnit) {
+  for (const artifact of authoredUnit.artifacts ?? []) {
+    if (artifact.name.trim().length === 0) {
+      return yield* fail(`Unit ${authoredUnit.unitId} artifact name must be non-empty`)
+    }
+
+    if (artifact.path.trim().length === 0) {
+      return yield* fail(`Unit ${authoredUnit.unitId} artifact ${artifact.name} path must be non-empty`)
+    }
+  }
+})
+
 const toUnitDeclaration = (authoredUnit: AuthoredUnit) =>
   new UnitDeclaration({
     unitId: UnitId.make(authoredUnit.unitId),
@@ -142,7 +157,7 @@ const toUnitDeclaration = (authoredUnit: AuthoredUnit) =>
     metadata: toMetadata(authoredUnit.metadata),
     inputs: toNamedDeclarations(authoredUnit.inputs),
     outputs: toNamedDeclarations(authoredUnit.outputs),
-    artifacts: toNamedDeclarations(authoredUnit.artifacts),
+    artifacts: toArtifactDeclarations(authoredUnit.artifacts),
     policies: toPolicyDeclarations(authoredUnit.policies),
     source: toSourceMetadata(authoredUnit.source),
   })
@@ -160,6 +175,19 @@ const toNamedDeclarations = (declarations: ReadonlyArray<AuthoredNamedDeclaratio
     (declaration) =>
       new NamedDeclaration({
         name: declaration.name,
+        metadata: toMetadata(declaration.metadata),
+        source: toSourceMetadata(declaration.source),
+      }),
+  )
+
+const toArtifactDeclarations = (declarations: ReadonlyArray<AuthoredArtifactDeclaration> | undefined) =>
+  (declarations ?? []).map(
+    (declaration) =>
+      new ArtifactDeclaration({
+        name: declaration.name,
+        kind: declaration.kind ?? "file",
+        path: declaration.path,
+        contentType: declaration.contentType,
         metadata: toMetadata(declaration.metadata),
         source: toSourceMetadata(declaration.source),
       }),

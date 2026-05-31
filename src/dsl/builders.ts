@@ -1,4 +1,5 @@
 import type {
+  AuthoredArtifactDeclaration,
   AuthoredCancellationPolicy,
   AuthoredContainerCommand,
   AuthoredNamedDeclaration,
@@ -17,7 +18,10 @@ export const containerCommand = (definition: Omit<AuthoredContainerCommand, "_ta
   ...definition,
 })
 
-export const artifact = (definition: AuthoredNamedDeclaration): AuthoredNamedDeclaration => definition
+export const artifact = (definition: AuthoredArtifactDeclaration): AuthoredArtifactDeclaration => ({
+  kind: "file",
+  ...definition,
+})
 
 export const input = (definition: AuthoredNamedDeclaration): AuthoredNamedDeclaration => definition
 

@@ -23,6 +23,7 @@ import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanUnit } f
 import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { FailureSummary } from "../src/domain/runtime-state.ts"
 import {
+  ArtifactDeclaration,
   ContainerCommandDeclaration,
   DependencyDeclaration,
   NamedDeclaration,
@@ -166,6 +167,15 @@ const minimalNamedDeclaration = (name: string) =>
     metadata: {},
   })
 
+const minimalArtifactDeclaration = (name: string) =>
+  new ArtifactDeclaration({
+    name,
+    kind: "file",
+    path: `artifacts/${name}.txt`,
+    contentType: "text/plain",
+    metadata: {},
+  })
+
 const minimalWorkflow = () => {
   const unitId = UnitId.make("unit:build")
 
@@ -185,14 +195,14 @@ const minimalWorkflow = () => {
         metadata: {},
         inputs: emptyNamedDeclarations,
         outputs: emptyNamedDeclarations,
-        artifacts: [minimalNamedDeclaration("dist")],
+        artifacts: [minimalArtifactDeclaration("dist")],
         policies: [],
       }),
     ],
     dependencies: [] satisfies ReadonlyArray<DependencyDeclaration>,
     inputs: emptyNamedDeclarations,
     outputs: emptyNamedDeclarations,
-    artifacts: [minimalNamedDeclaration("dist")],
+    artifacts: [minimalArtifactDeclaration("dist")],
     reports: emptyNamedDeclarations,
   })
 }
@@ -217,7 +227,7 @@ const minimalPlan = () => {
           env: {},
         }),
         logExpectations: [minimalNamedDeclaration("stdout")],
-        artifactExpectations: [minimalNamedDeclaration("dist")],
+        artifactExpectations: [minimalArtifactDeclaration("dist")],
         policies: [],
         diagnostics: [],
       }),

@@ -14,7 +14,7 @@ export default workflow({
         env: { CI: "true" },
       }),
       dependsOn: ["unit:build"],
-      artifacts: [artifact({ name: "coverage" })],
+      artifacts: [artifact({ name: "coverage", path: "artifacts/coverage.txt" })],
     }),
     unit({
       unitId: "unit:deploy",
@@ -25,7 +25,7 @@ export default workflow({
         env: { CI: "true" },
       }),
       dependsOn: ["unit:test"],
-      artifacts: [artifact({ name: "release-manifest" })],
+      artifacts: [artifact({ name: "release-manifest", path: "artifacts/release-manifest.json" })],
     }),
     unit({
       unitId: "unit:build",
@@ -35,7 +35,7 @@ export default workflow({
         command: ["sh", "-c", "echo build"],
         env: { CI: "true" },
       }),
-      artifacts: [artifact({ name: "dist" })],
+      artifacts: [artifact({ name: "dist", path: "artifacts/dist.txt" })],
     }),
   ],
 })
@@ -53,7 +53,7 @@ export const workflowNamed = workflow({
         command: ["sh", "-c", "echo build"],
         env: { CI: "true" },
       }),
-      artifacts: [artifact({ name: "dist" })],
+      artifacts: [artifact({ name: "dist", path: "artifacts/named-dist.txt" })],
     }),
   ],
 })

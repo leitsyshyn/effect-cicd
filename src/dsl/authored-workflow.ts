@@ -13,6 +13,12 @@ export interface AuthoredNamedDeclaration {
   readonly source?: AuthoredSourceMetadata
 }
 
+export interface AuthoredArtifactDeclaration extends AuthoredNamedDeclaration {
+  readonly kind?: "file"
+  readonly path: string
+  readonly contentType?: string
+}
+
 export interface AuthoredContainerCommand {
   readonly _tag: "ContainerCommand"
   readonly image: string
@@ -46,7 +52,7 @@ export interface AuthoredUnit {
   readonly metadata?: AuthoredMetadata
   readonly inputs?: ReadonlyArray<AuthoredNamedDeclaration>
   readonly outputs?: ReadonlyArray<AuthoredNamedDeclaration>
-  readonly artifacts?: ReadonlyArray<AuthoredNamedDeclaration>
+  readonly artifacts?: ReadonlyArray<AuthoredArtifactDeclaration>
   readonly policies?: ReadonlyArray<AuthoredPolicy>
   readonly source?: AuthoredSourceMetadata
 }
@@ -58,7 +64,7 @@ export interface AuthoredWorkflow {
   readonly units: ReadonlyArray<AuthoredUnit>
   readonly inputs?: ReadonlyArray<AuthoredNamedDeclaration>
   readonly outputs?: ReadonlyArray<AuthoredNamedDeclaration>
-  readonly artifacts?: ReadonlyArray<AuthoredNamedDeclaration>
+  readonly artifacts?: ReadonlyArray<AuthoredArtifactDeclaration>
   readonly reports?: ReadonlyArray<AuthoredNamedDeclaration>
   readonly source?: AuthoredSourceMetadata
 }

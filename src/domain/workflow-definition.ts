@@ -18,6 +18,15 @@ export class NamedDeclaration extends Schema.Class<NamedDeclaration>("NamedDecla
   source: Schema.optional(SourceMetadata),
 }) {}
 
+export class ArtifactDeclaration extends Schema.Class<ArtifactDeclaration>("ArtifactDeclaration")({
+  name: Schema.String,
+  kind: Schema.Literals(["file"]),
+  path: Schema.String,
+  contentType: Schema.optional(Schema.String),
+  metadata: Schema.Record(Schema.String, Schema.Unknown),
+  source: Schema.optional(SourceMetadata),
+}) {}
+
 export class DependencyDeclaration extends Schema.Class<DependencyDeclaration>("DependencyDeclaration")({
   from: UnitId,
   to: UnitId,
@@ -73,7 +82,7 @@ export class UnitDeclaration extends Schema.Class<UnitDeclaration>("UnitDeclarat
   metadata: Schema.Record(Schema.String, Schema.Unknown),
   inputs: Schema.Array(NamedDeclaration),
   outputs: Schema.Array(NamedDeclaration),
-  artifacts: Schema.Array(NamedDeclaration),
+  artifacts: Schema.Array(ArtifactDeclaration),
   policies: Schema.Array(PolicyDeclaration),
   source: Schema.optional(SourceMetadata),
 }) {}
@@ -89,7 +98,7 @@ export class NormalizedWorkflowDefinition extends Schema.Class<NormalizedWorkflo
   dependencies: Schema.Array(DependencyDeclaration),
   inputs: Schema.Array(NamedDeclaration),
   outputs: Schema.Array(NamedDeclaration),
-  artifacts: Schema.Array(NamedDeclaration),
+  artifacts: Schema.Array(ArtifactDeclaration),
   reports: Schema.Array(NamedDeclaration),
   source: Schema.optional(SourceMetadata),
 }) {}

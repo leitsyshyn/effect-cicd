@@ -180,7 +180,7 @@ const authoredUnit = (unitId: string, overrides: Partial<AuthoredUnit> = {}): Au
     dependsOn: [],
     inputs: [],
     outputs: [],
-    artifacts: [artifact({ name: "dist" })],
+    artifacts: [artifact({ name: "dist", path: "artifacts/dist.txt" })],
     policies: [],
     ...overrides,
   })

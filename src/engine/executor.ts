@@ -2,9 +2,11 @@ import { Clock, Effect, Layer, Schema, Stream } from "effect"
 import * as Context from "effect/Context"
 import * as ChildProcess from "effect/unstable/process/ChildProcess"
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
+import { join, posix } from "node:path"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
 import { ExecutorFailed } from "../domain/errors.ts"
+import { ArtifactDeclaration } from "../domain/workflow-definition.ts"
 import { PayloadDescriptor, PlanPolicy } from "../domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, LogRef, RunId, UnitId } from "../domain/ids.ts"
 
@@ -15,14 +17,20 @@ export class DispatchInput extends Schema.Class<DispatchInput>("DispatchInput")(
   value: Schema.Unknown,
 }) {}
 
+export class DispatchWorkspace extends Schema.Class<DispatchWorkspace>("DispatchWorkspace")({
+  hostPath: Schema.String,
+  mountPath: Schema.String,
+}) {}
+
 export class DispatchRequest extends Schema.Class<DispatchRequest>("DispatchRequest")({
   runId: RunId,
   unitId: UnitId,
   attemptId: AttemptId,
   attemptNumber: PositiveInt,
   payloadDescriptor: PayloadDescriptor,
+  workspace: Schema.optional(DispatchWorkspace),
   inputs: Schema.Array(DispatchInput),
-  artifactNames: Schema.Array(Schema.String),
+  artifacts: Schema.Array(ArtifactDeclaration),
   logNames: Schema.Array(Schema.String),
   policies: Schema.Array(PlanPolicy),
   correlation: Schema.Record(Schema.String, Schema.String),
@@ -147,7 +155,7 @@ export class LocalContainerExecutor {
 
 const executeDockerRequest = Effect.fn("LocalContainerExecutor.executeDockerRequest")(function* (request: DispatchRequest) {
   const startedAt = yield* nowDate
-  const handle = yield* ChildProcess.make("docker", dockerArgs(request.payloadDescriptor))
+  const handle = yield* ChildProcess.make("docker", dockerArgs(request.payloadDescriptor, request.workspace))
   const [stdout, stderr, exitCode] = yield* Effect.all(
     [readText(handle.stdout), readText(handle.stderr), handle.exitCode],
     { concurrency: "unbounded" },
@@ -164,6 +172,8 @@ const executeDockerRequest = Effect.fn("LocalContainerExecutor.executeDockerRequ
     })
   }
 
+  const artifacts = yield* collectArtifacts(request, finishedAt)
+
   return new ExecutorResult({
     runId: request.runId,
     unitId: request.unitId,
@@ -179,7 +189,7 @@ const executeDockerRequest = Effect.fn("LocalContainerExecutor.executeDockerRequ
             code: `exit:${numericExitCode}`,
           }),
     outputs: {},
-    artifacts: [],
+    artifacts,
     logs: buildLogs(request, finishedAt, stdout, stderr),
     startedAt,
     finishedAt,
@@ -187,16 +197,19 @@ const executeDockerRequest = Effect.fn("LocalContainerExecutor.executeDockerRequ
   })
 })
 
-const dockerArgs = (payloadDescriptor: PayloadDescriptor) => {
+const dockerArgs = (payloadDescriptor: PayloadDescriptor, workspace: DispatchWorkspace | undefined) => {
   const envArgs = Object.keys(payloadDescriptor.env)
     .sort()
     .flatMap((name) => ["--env", `${name}=${payloadDescriptor.env[name]}`])
+  const volumeArgs = workspace === undefined ? [] : ["--volume", `${workspace.hostPath}:${workspace.mountPath}`]
+  const workingDirectory = resolveContainerWorkingDirectory(payloadDescriptor, workspace)
 
   return [
     "run",
     "--rm",
     ...envArgs,
-    ...(payloadDescriptor.workingDirectory === undefined ? [] : ["--workdir", payloadDescriptor.workingDirectory]),
+    ...volumeArgs,
+    ...(workingDirectory === undefined ? [] : ["--workdir", workingDirectory]),
     payloadDescriptor.image,
     ...payloadDescriptor.command,
   ]
@@ -231,6 +244,84 @@ const buildLog = (request: DispatchRequest, createdAt: Date, name: "stdout" | "s
     content,
   })
 
+const collectArtifacts = Effect.fn("LocalContainerExecutor.collectArtifacts")(function* (
+  request: DispatchRequest,
+  createdAt: Date,
+) {
+  if (request.workspace === undefined) {
+    return []
+  }
+
+  const registered = new Array<RegisteredArtifact>()
+
+  for (const artifact of request.artifacts) {
+    const hostPath = join(request.workspace.hostPath, artifact.path)
+    const file = Bun.file(hostPath)
+    const exists = yield* Effect.tryPromise({
+      try: () => file.exists(),
+      catch: (error) =>
+        new ExecutorFailed({
+          runId: request.runId,
+          unitId: request.unitId,
+          attemptId: request.attemptId,
+          message: `Failed to inspect artifact ${artifact.name}: ${toErrorMessage(error)}`,
+        }),
+    })
+
+    if (!exists) {
+      registered.push(
+        new RegisteredArtifact({
+          metadata: new ArtifactMetadata({
+            artifactRef: ArtifactRef.make(`artifact:${request.attemptId}:${artifact.name}`),
+            runId: request.runId,
+            unitId: request.unitId,
+            attemptId: request.attemptId,
+            name: artifact.name,
+            category: artifact.kind,
+            status: "missing",
+            createdAt,
+            summary: artifact.path,
+          }),
+          contentType: artifact.contentType,
+        }),
+      )
+      continue
+    }
+
+    const bytes = yield* Effect.tryPromise({
+      try: () => file.bytes(),
+      catch: (error) =>
+        new ExecutorFailed({
+          runId: request.runId,
+          unitId: request.unitId,
+          attemptId: request.attemptId,
+          message: `Failed to read artifact ${artifact.name}: ${toErrorMessage(error)}`,
+        }),
+    })
+
+    registered.push(
+      new RegisteredArtifact({
+        metadata: new ArtifactMetadata({
+          artifactRef: ArtifactRef.make(`artifact:${request.attemptId}:${artifact.name}`),
+          runId: request.runId,
+          unitId: request.unitId,
+          attemptId: request.attemptId,
+          name: artifact.name,
+          category: artifact.kind,
+          status: "available",
+          sizeBytes: bytes.byteLength,
+          createdAt,
+          summary: artifact.path,
+        }),
+        payloadBase64: Buffer.from(bytes).toString("base64"),
+        contentType: artifact.contentType,
+      }),
+    )
+  }
+
+  return registered
+})
+
 const normalizeArtifacts = (request: DispatchRequest, artifacts: ReadonlyArray<RegisteredArtifact>) =>
   artifacts.map(({ metadata, payloadBase64, contentType }) =>
     new RegisteredArtifact({
@@ -263,6 +354,29 @@ const normalizeLogs = (request: DispatchRequest, logs: ReadonlyArray<RegisteredL
 const summarizeLog = (content: string) => {
   const normalized = content.trim()
   return normalized.length === 0 ? undefined : normalized.slice(0, 200)
+}
+
+const resolveContainerWorkingDirectory = (
+  payloadDescriptor: PayloadDescriptor,
+  workspace: DispatchWorkspace | undefined,
+) => {
+  if (workspace === undefined) {
+    return payloadDescriptor.workingDirectory
+  }
+
+  if (payloadDescriptor.workingDirectory === undefined || payloadDescriptor.workingDirectory.length === 0) {
+    return workspace.mountPath
+  }
+
+  if (payloadDescriptor.workingDirectory.startsWith(workspace.mountPath)) {
+    return payloadDescriptor.workingDirectory
+  }
+
+  if (payloadDescriptor.workingDirectory.startsWith("/")) {
+    return payloadDescriptor.workingDirectory
+  }
+
+  return posix.join(workspace.mountPath, payloadDescriptor.workingDirectory)
 }
 
 const summarizeUnitFailure = (exitCode: number, stdout: string, stderr: string) => {

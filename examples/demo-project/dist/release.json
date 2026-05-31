@@ -1,0 +1,6 @@
+{
+  "name": "effect-cicd-demo-project",
+  "entrypoint": "dist/index.js",
+  "bytes": 211,
+  "generatedBy": "effect-cicd-demo"
+}

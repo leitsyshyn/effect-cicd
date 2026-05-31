@@ -1,0 +1,9 @@
+{
+  "name": "effect-cicd-demo-project",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build ./src/index.ts --outfile ./dist/index.js --target bun",
+    "package": "bun run ./scripts/package.ts"
+  }
+}

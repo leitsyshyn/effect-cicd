@@ -23,7 +23,7 @@ import {
 } from "../domain/events.ts"
 import { ExecutionPlan, PlanUnit } from "../domain/execution-plan.ts"
 import { AttemptId, EventId, RunId, UnitId } from "../domain/ids.ts"
-import { DispatchRequest, Executor, ExecutorFailureSummary, ExecutorResult } from "./executor.ts"
+import { DispatchRequest, DispatchWorkspace, Executor, ExecutorFailureSummary, ExecutorResult } from "./executor.ts"
 import {
   ExecutionAttemptState,
   ExecutionUnitState,
@@ -36,10 +36,19 @@ import { EventLog } from "./stores/event-log.ts"
 import { StateStore } from "./stores/state-store.ts"
 import { StorageTransactor } from "../runtime/storage.ts"
 
+export interface RunStartOptions {
+  readonly workspacePath?: string
+}
+
+export const containerWorkspaceMountPath = "/workspace"
+
 export class Orchestrator extends Context.Service<
   Orchestrator,
   {
-    readonly startRun: (plan: ExecutionPlan) => Effect.Effect<WorkflowRunState, PlanningFailed | StoreUnavailable>
+    readonly startRun: (
+      plan: ExecutionPlan,
+      options?: RunStartOptions,
+    ) => Effect.Effect<WorkflowRunState, PlanningFailed | StoreUnavailable>
     readonly inspectRun: (runId: RunId) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
     readonly advanceRun: (runId: RunId) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
     readonly resumeIncompleteRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, StoreUnavailable>
@@ -111,6 +120,7 @@ export class Orchestrator extends Context.Service<
       const advanceWithPlan = Effect.fn("Orchestrator.advanceWithPlan")(function* (
         plan: ExecutionPlan,
         initialRun: WorkflowRunState,
+        options?: RunStartOptions,
       ) {
         let run = initialRun
 
@@ -121,7 +131,7 @@ export class Orchestrator extends Context.Service<
           }
 
           for (const unitId of readyUnitIds) {
-            run = yield* executeReadyUnit(plan, run, unitId)
+            run = yield* executeReadyUnit(plan, run, unitId, options)
             if (isTerminalRun(run)) {
               return run
             }
@@ -135,6 +145,7 @@ export class Orchestrator extends Context.Service<
         plan: ExecutionPlan,
         initialRun: WorkflowRunState,
         unitId: UnitId,
+        options?: RunStartOptions,
       ) {
         const planUnit = yield* getPlanUnit(plan, unitId)
         const readyAt = yield* nowDate
@@ -192,7 +203,7 @@ export class Orchestrator extends Context.Service<
           }),
         )
 
-        const request = buildDispatchRequest(run, plan, planUnit, attemptId)
+        const request = buildDispatchRequest(run, plan, planUnit, attemptId, options)
         const result = yield* executor.execute(request).pipe(
           Effect.catchTag("ExecutorFailed", (error) =>
             Effect.succeed(executorFailureResult(request, error)),
@@ -333,7 +344,7 @@ export class Orchestrator extends Context.Service<
           return registered
         })
 
-      const startRun = Effect.fn("Orchestrator.startRun")(function* (plan: ExecutionPlan) {
+      const startRun = Effect.fn("Orchestrator.startRun")(function* (plan: ExecutionPlan, options?: RunStartOptions) {
         const createdAt = yield* nowDate
         const run = createInitialRun(plan, RunId.make(`run:${plan.planId}:${crypto.randomUUID()}`), createdAt)
 
@@ -348,7 +359,7 @@ export class Orchestrator extends Context.Service<
           }),
         )
 
-        return yield* advanceWithPlan(plan, run)
+        return yield* advanceWithPlan(plan, run, options)
       })
 
       const inspectRun = Effect.fn("Orchestrator.inspectRun")((runId: RunId) => stateStore.getRun(runId))
@@ -450,15 +461,25 @@ const executorFailureResult = (request: DispatchRequest, error: ExecutorFailed) 
     diagnostics: [],
   })
 
-const buildDispatchRequest = (run: WorkflowRunState, plan: ExecutionPlan, planUnit: PlanUnit, attemptId: AttemptId) =>
+const buildDispatchRequest = (
+  run: WorkflowRunState,
+  plan: ExecutionPlan,
+  planUnit: PlanUnit,
+  attemptId: AttemptId,
+  options?: RunStartOptions,
+) =>
   new DispatchRequest({
     runId: run.runId,
     unitId: planUnit.unitId,
     attemptId,
     attemptNumber: 1,
     payloadDescriptor: planUnit.payloadDescriptor,
+    workspace:
+      options?.workspacePath === undefined
+        ? undefined
+        : new DispatchWorkspace({ hostPath: options.workspacePath, mountPath: containerWorkspaceMountPath }),
     inputs: [],
-    artifactNames: planUnit.artifactExpectations.map((artifact) => artifact.name),
+    artifacts: planUnit.artifactExpectations,
     logNames: planUnit.logExpectations.map((log) => log.name),
     policies: planUnit.policies,
     correlation: {

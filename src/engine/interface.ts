@@ -4,11 +4,11 @@ import * as Context from "effect/Context"
 import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { DomainError } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
-import { LogRef, RunId } from "../domain/ids.ts"
+import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
 import { WorkflowEvent } from "../domain/events.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
-import { Orchestrator } from "./orchestrator.ts"
+import { Orchestrator, type RunStartOptions } from "./orchestrator.ts"
 import { ArtifactStore } from "./stores/artifact-store.ts"
 import { Planner } from "./planner.ts"
 import { EventLog } from "./stores/event-log.ts"
@@ -19,11 +19,12 @@ export class Engine extends Context.Service<
   {
     readonly validate: (definition: NormalizedWorkflowDefinition) => Effect.Effect<void, DomainError>
     readonly plan: (definition: NormalizedWorkflowDefinition) => Effect.Effect<ExecutionPlan, DomainError>
-    readonly startRun: (plan: ExecutionPlan) => Effect.Effect<WorkflowRunState, DomainError>
+    readonly startRun: (plan: ExecutionPlan, options?: RunStartOptions) => Effect.Effect<WorkflowRunState, DomainError>
     readonly listRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, DomainError>
     readonly inspectRun: (runId: RunId) => Effect.Effect<WorkflowRunState, DomainError>
     readonly readRunEvents: (runId: RunId) => Effect.Effect<ReadonlyArray<WorkflowEvent>, DomainError>
     readonly readArtifacts: (runId: RunId) => Effect.Effect<ReadonlyArray<ArtifactMetadata>, DomainError>
+    readonly readArtifactPayload: (artifactRef: ArtifactRef) => Effect.Effect<string, DomainError>
     readonly readLogs: (runId: RunId) => Effect.Effect<ReadonlyArray<LogMetadata>, DomainError>
     readonly readLogPayload: (logRef: LogRef) => Effect.Effect<string, DomainError>
   }
@@ -41,7 +42,9 @@ export class Engine extends Context.Service<
 
       const plan = Effect.fn("Engine.plan")((definition: NormalizedWorkflowDefinition) => planner.plan(definition))
 
-      const startRun = Effect.fn("Engine.startRun")((executionPlan: ExecutionPlan) => orchestrator.startRun(executionPlan))
+      const startRun = Effect.fn("Engine.startRun")((executionPlan: ExecutionPlan, options?: RunStartOptions) =>
+        orchestrator.startRun(executionPlan, options),
+      )
 
       const listRuns = Effect.fn("Engine.listRuns")(() => stateStore.listRuns())
 
@@ -51,6 +54,10 @@ export class Engine extends Context.Service<
 
       const readArtifacts = Effect.fn("Engine.readArtifacts")((runId: RunId) =>
         inspectRun(runId).pipe(Effect.map((run) => run.artifacts)),
+      )
+
+      const readArtifactPayload = Effect.fn("Engine.readArtifactPayload")((artifactRef: ArtifactRef) =>
+        artifactStore.readArtifactPayload(artifactRef),
       )
 
       const readLogs = Effect.fn("Engine.readLogs")((runId: RunId) =>
@@ -67,6 +74,7 @@ export class Engine extends Context.Service<
         inspectRun,
         readRunEvents,
         readArtifacts,
+        readArtifactPayload,
         readLogs,
         readLogPayload,
       }

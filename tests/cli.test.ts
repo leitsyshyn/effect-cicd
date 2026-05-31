@@ -5,12 +5,16 @@ import { CliOutput, Command } from "effect/unstable/cli"
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
 
 import { cli, cliVersion, makeCliLayer } from "../src/cli/index.ts"
+import { ArtifactRef } from "../src/domain/ids.ts"
 import { WorkflowId, UnitId } from "../src/domain/ids.ts"
+import { PlanId, RunId } from "../src/domain/ids.ts"
+import { ContainerCommandDescriptor, ExecutionPlan, PlanUnit } from "../src/domain/execution-plan.ts"
 import {
   ContainerCommandDeclaration,
   NormalizedWorkflowDefinition,
   UnitDeclaration,
 } from "../src/domain/workflow-definition.ts"
+import { ProgressSummary, WorkflowRunState } from "../src/domain/runtime-state.ts"
 import { DslMaterializer } from "../src/dsl/index.ts"
 import { WorkflowModuleLoader } from "../src/dsl/loader.ts"
 import { Engine } from "../src/engine/interface.ts"
@@ -92,6 +96,7 @@ describe("CLI", () => {
             inspectRun: () => Effect.die("unused"),
             readRunEvents: () => Effect.die("unused"),
             readArtifacts: () => Effect.die("unused"),
+            readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
             readLogs: () => Effect.die("unused"),
             readLogPayload: () => Effect.die("unused"),
           }),
@@ -111,6 +116,7 @@ describe("CLI", () => {
         ["validate", "./tests/fixtures/workflows/valid-workflow.ts"],
         Layer.mergeAll(
           Layer.succeed(WorkflowModuleLoader, {
+            resolve: () => Effect.succeed("/tmp/workflow.ts"),
             load: () =>
               Effect.succeed({
                 workflowId: "workflow:ignored",
@@ -138,6 +144,7 @@ describe("CLI", () => {
             inspectRun: () => Effect.die("unused"),
             readRunEvents: () => Effect.die("unused"),
             readArtifacts: () => Effect.die("unused"),
+            readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
             readLogs: () => Effect.die("unused"),
             readLogPayload: () => Effect.die("unused"),
           }),
@@ -154,6 +161,68 @@ describe("CLI", () => {
       const output = yield* runCli(["validate", "./tests/fixtures/workflows/materialization-error.ts"]).pipe(Effect.exit)
 
       expect(output._tag).toBe("Failure")
+    }),
+  )
+
+  it.effect("run defaults workspace to the workflow module directory", () =>
+    Effect.gen(function* () {
+      let capturedWorkspace: string | undefined
+
+      const output = yield* runCli(
+        ["run", "./examples/demo-workflow.ts"],
+        Layer.mergeAll(
+          Layer.succeed(WorkflowModuleLoader, {
+            resolve: () => Effect.succeed("/repo/examples/demo-workflow.ts"),
+            load: () => Effect.succeed(sampleAuthoredWorkflow()),
+          }),
+          DslMaterializer.layer,
+          Layer.succeed(Engine, {
+            validate: () => Effect.die("unused"),
+            plan: () => Effect.succeed(samplePlan()),
+            startRun: (_plan, options) =>
+              Effect.sync(() => {
+                capturedWorkspace = options?.workspacePath
+                return sampleRunState()
+              }),
+            listRuns: () => Effect.die("unused"),
+            inspectRun: () => Effect.die("unused"),
+            readRunEvents: () => Effect.succeed([]),
+            readArtifacts: () => Effect.succeed([]),
+            readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
+            readLogs: () => Effect.succeed([]),
+            readLogPayload: () => Effect.die("unused"),
+          }),
+        ),
+      )
+
+      expect(capturedWorkspace).toBe("/repo/examples")
+      expect(output).toContain("workspace: /repo/examples")
+    }),
+  )
+
+  it.effect("runs artifact prints persisted artifact payloads through Engine", () =>
+    Effect.gen(function* () {
+      const output = yield* runCli(
+        ["runs", "artifact", "artifact:demo"],
+        Layer.mergeAll(
+          WorkflowModuleLoader.layer,
+          DslMaterializer.layer,
+          Layer.succeed(Engine, {
+            validate: () => Effect.die("unused"),
+            plan: () => Effect.die("unused"),
+            startRun: () => Effect.die("unused"),
+            listRuns: () => Effect.die("unused"),
+            inspectRun: () => Effect.die("unused"),
+            readRunEvents: () => Effect.die("unused"),
+            readArtifacts: () => Effect.die("unused"),
+            readArtifactPayload: () => Effect.succeed('{"artifact":"ok"}\n'),
+            readLogs: () => Effect.die("unused"),
+            readLogPayload: () => Effect.die("unused"),
+          }),
+        ),
+      )
+
+      expect(output).toBe(['artifact: artifact:demo', '{"artifact":"ok"}', ''].join("\n"))
     }),
   )
 })
@@ -197,6 +266,62 @@ const materializedWorkflow = (workflowId: string) =>
     outputs: [],
     artifacts: [],
     reports: [],
+  })
+
+const sampleAuthoredWorkflow = (): AuthoredWorkflow => ({
+  workflowId: "workflow:sample",
+  name: "sample",
+  units: [
+    {
+      unitId: "unit:build",
+      name: "build",
+      command: { _tag: "ContainerCommand", image: "oven/bun:1", command: ["bun", "run", "build"] },
+      artifacts: [{ name: "dist", path: "dist/output.txt" }],
+    },
+  ],
+})
+
+const samplePlan = () =>
+  new ExecutionPlan({
+    planId: PlanId.make("plan:workflow:sample"),
+    schemaVersion: "0.1.0",
+    workflowId: WorkflowId.make("workflow:sample"),
+    workflowName: "sample",
+    metadata: {},
+    units: [
+      new PlanUnit({
+        unitId: UnitId.make("unit:build"),
+        name: "build",
+        dependencies: [],
+        payloadDescriptor: new ContainerCommandDescriptor({
+          image: "oven/bun:1",
+          command: ["bun", "run", "build"],
+          env: {},
+        }),
+        logExpectations: [],
+        artifactExpectations: [],
+        policies: [],
+        diagnostics: [],
+      }),
+    ],
+    dependencies: [],
+    diagnostics: [],
+  })
+
+const sampleRunState = () =>
+  new WorkflowRunState({
+    runId: RunId.make("run:sample"),
+    workflowId: WorkflowId.make("workflow:sample"),
+    planId: PlanId.make("plan:workflow:sample"),
+    status: "succeeded",
+    units: [],
+    progress: new ProgressSummary({ totalUnits: 0, completedUnits: 0, failedUnits: 0, skippedUnits: 0 }),
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+    startedAt: new Date(0),
+    finishedAt: new Date(0),
+    artifacts: [],
+    logs: [],
   })
 
 const terminalLayer = Layer.succeed(

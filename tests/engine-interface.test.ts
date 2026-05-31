@@ -4,7 +4,14 @@ import { Effect, Layer } from "effect"
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../src/domain/artifacts.ts"
 import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanUnit } from "../src/domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
-import { NamedDeclaration, NormalizedWorkflowDefinition, ContainerCommandDeclaration, DependencyDeclaration, UnitDeclaration } from "../src/domain/workflow-definition.ts"
+import {
+  ArtifactDeclaration,
+  NamedDeclaration,
+  NormalizedWorkflowDefinition,
+  ContainerCommandDeclaration,
+  DependencyDeclaration,
+  UnitDeclaration,
+} from "../src/domain/workflow-definition.ts"
 import { Executor, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
 import { Engine } from "../src/engine/interface.ts"
 import { Orchestrator } from "../src/engine/orchestrator.ts"
@@ -119,6 +126,18 @@ describe("Engine interface", () => {
         }),
       ])
     }).pipe(Effect.provide(runtimeLayer({ resultsByUnitId: { "unit:build": successPayloads("workflow:logs", "unit:build") } }))),
+  )
+
+  it.effect("readArtifactPayload returns persisted artifact content through Engine", () =>
+    Effect.gen(function* () {
+      const engine = yield* Engine
+      const run = yield* engine.startRun(plan("workflow:artifact-payload", [planUnit("unit:build")]))
+      const payload = yield* engine.readArtifactPayload(run.artifacts[0]!.artifactRef)
+
+      expect(payload).toContain('"artifact":"dist"')
+    }).pipe(
+      Effect.provide(runtimeLayer({ resultsByUnitId: { "unit:build": successPayloads("workflow:artifact-payload", "unit:build") } })),
+    ),
   )
 
   it.effect("composed runtime layer works end-to-end", () =>
@@ -252,7 +271,7 @@ const planUnit = (unitId: string, dependencies: ReadonlyArray<string> = []) =>
       env: {},
     }),
     logExpectations: [named("stdout")],
-    artifactExpectations: [named("dist")],
+    artifactExpectations: [artifact("dist")],
     policies: [],
     diagnostics: [],
   })
@@ -266,6 +285,15 @@ const planDependency = (from: string, to: string) =>
 const named = (name: string) =>
   new NamedDeclaration({
     name,
+    metadata: {},
+  })
+
+const artifact = (name: string) =>
+  new ArtifactDeclaration({
+    name,
+    kind: "file",
+    path: `artifacts/${name}.txt`,
+    contentType: "text/plain",
     metadata: {},
   })
 
@@ -301,6 +329,8 @@ const successPayloads = (workflowId: string, unitId: string) => {
           status: "available",
           summary: "unit artifact",
         }),
+        payloadBase64: Buffer.from(JSON.stringify({ workflowId, unitId, artifact: "dist" }) + "\n").toString("base64"),
+        contentType: "application/json",
       }),
     ],
   } satisfies NonNullable<TestExecutorLayerOptions["resultsByUnitId"]>[string]

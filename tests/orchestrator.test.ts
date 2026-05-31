@@ -6,7 +6,7 @@ import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanUnit } f
 import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { RunCreated } from "../src/domain/events.ts"
 import { ProgressSummary, WorkflowRunState, ExecutionUnitState, ExecutionAttemptState } from "../src/domain/runtime-state.ts"
-import { NamedDeclaration } from "../src/domain/workflow-definition.ts"
+import { ArtifactDeclaration, NamedDeclaration } from "../src/domain/workflow-definition.ts"
 import { DispatchRequest, Executor, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
 import { Orchestrator } from "../src/engine/orchestrator.ts"
 import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
@@ -102,7 +102,7 @@ describe("Orchestrator", () => {
         expect(requests[0]?.unitId).toBe(UnitId.make("unit:build"))
         expect(requests[0]?.attemptId).toBe(AttemptId.make(`attempt:${requests[0]!.runId}:unit:build:1`))
         expect(requests[0]?.attemptNumber).toBe(1)
-        expect(requests[0]?.artifactNames).toEqual(["dist"])
+        expect(requests[0]?.artifacts.map((artifact) => artifact.name)).toEqual(["dist"])
         expect(requests[0]?.logNames).toEqual(["stdout"])
         expect(requests[0]?.correlation.planId).toBe("plan:workflow:boundary")
         expect(requests[0]?.payloadDescriptor).toBeInstanceOf(ContainerCommandDescriptor)
@@ -261,7 +261,7 @@ const planUnit = (unitId: string, dependencies: ReadonlyArray<string> = []) =>
       env: {},
     }),
     logExpectations: [named("stdout")],
-    artifactExpectations: [named("dist")],
+    artifactExpectations: [artifact("dist")],
     policies: [],
     diagnostics: [],
   })
@@ -275,6 +275,15 @@ const planDependency = (from: string, to: string) =>
 const named = (name: string) =>
   new NamedDeclaration({
     name,
+    metadata: {},
+  })
+
+const artifact = (name: string) =>
+  new ArtifactDeclaration({
+    name,
+    kind: "file",
+    path: `artifacts/${name}.txt`,
+    contentType: "text/plain",
     metadata: {},
   })
 
@@ -310,6 +319,8 @@ const successPayloads = (workflowId: string, unitId: string) => {
           status: "available",
           summary: "unit artifact",
         }),
+        payloadBase64: Buffer.from(JSON.stringify({ workflowId, unitId, artifact: "dist" }) + "\n").toString("base64"),
+        contentType: "application/json",
       }),
     ],
   } satisfies NonNullable<TestExecutorLayerOptions["resultsByUnitId"]>[string]

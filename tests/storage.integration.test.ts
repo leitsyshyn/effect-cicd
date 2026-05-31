@@ -1,3 +1,4 @@
+import { NodeChildProcessSpawner } from "@effect/platform-node-shared"
 import { describe, expect, it } from "@effect/vitest"
 import { ConfigProvider, Console, Effect, FileSystem, Layer, Path, Stdio, Terminal } from "effect"
 import { TestConsole } from "effect/testing"
@@ -10,7 +11,7 @@ import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, RunId, UnitId, Workflo
 import { RunCreated } from "../src/domain/events.ts"
 import { ProgressSummary, WorkflowRunState, ExecutionAttemptState, ExecutionUnitState } from "../src/domain/runtime-state.ts"
 import { DslMaterializer } from "../src/dsl/index.ts"
-import { Executor, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
+import { Executor, LocalContainerExecutor, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
 import { Engine } from "../src/engine/interface.ts"
 import { Orchestrator } from "../src/engine/orchestrator.ts"
 import { Planner } from "../src/engine/planner.ts"
@@ -27,18 +28,26 @@ describe("durable storage integration", () => {
     }
 
       return Effect.gen(function* () {
-      const runOutput = yield* runCli(["run", "./tests/fixtures/workflows/valid-workflow.ts"], durableCliLayer())
+      const runOutput = yield* runCli(
+        ["run", "./tests/fixtures/workflows/valid-workflow.ts"],
+        durableCliLayer({ resultsByUnitId: durableSuccessPayloads() }),
+      )
       const runId = parseLineValue(runOutput, "run: ")
 
       const listOutput = yield* runCli(["runs", "list"], durableCliLayer())
       const showOutput = yield* runCli(["runs", "show", runId], durableCliLayer())
+      const artifactsOutput = yield* runCli(["runs", "artifacts", runId], durableCliLayer())
       const logsOutput = yield* runCli(["runs", "logs", runId], durableCliLayer())
       const logRef = parseLogRef(logsOutput)
+      const artifactRef = parseArtifactRef(artifactsOutput)
       const logOutput = yield* runCli(["runs", "log", logRef], durableCliLayer())
+      const artifactOutput = yield* runCli(["runs", "artifact", artifactRef], durableCliLayer())
 
       expect(listOutput).toContain(runId)
       expect(showOutput).toContain(`run: ${runId}`)
       expect(showOutput).toContain("unit:build succeeded")
+      expect(artifactOutput).toContain(artifactRef)
+      expect(artifactOutput).toContain("\"artifact\":\"dist\"")
       expect(logOutput).toContain(logRef)
       expect(logOutput).toContain("build stdout")
     })
@@ -117,6 +126,8 @@ describe("durable storage integration", () => {
         status: "available",
         summary: "integration artifact",
       }),
+      payloadBase64: Buffer.from('{"artifact":"dist"}\n').toString("base64"),
+      contentType: "application/json",
     })
 
     return Effect.gen(function* () {
@@ -140,11 +151,15 @@ describe("durable storage integration", () => {
       const runs = yield* stateStore.listRuns()
       const events = yield* eventLog.readRunEvents(runId)
       const storedLog = yield* artifactStore.readLog(log.metadata.logRef)
+      const storedArtifact = yield* artifactStore.readArtifact(artifact.metadata.artifactRef)
+      const artifactPayload = yield* artifactStore.readArtifactPayload(artifact.metadata.artifactRef)
       const payload = yield* artifactStore.readLogPayload(log.metadata.logRef)
 
       expect(storedRun.runId).toBe(runId)
       expect(runs.some((candidate) => candidate.runId === runId)).toBe(true)
       expect(events.map((event) => event._tag)).toContain("RunCreated")
+      expect(storedArtifact.artifactRef).toBe(artifact.metadata.artifactRef)
+      expect(artifactPayload).toContain('"artifact":"dist"')
       expect(storedLog.logRef).toBe(log.metadata.logRef)
       expect(payload).toContain("integration stdout")
     }).pipe(Effect.provide(durableStoreLayer()))
@@ -193,11 +208,35 @@ describe("durable storage integration", () => {
       expect(events.map((event) => event._tag)).toEqual(["RunCreated", "RunInterrupted"])
     })
   })
+
+  it.live("runs the demo workflow end-to-end against Docker, Postgres, and MinIO", () => {
+    if (!dockerStorageIntegrationEnabled) {
+      return Effect.void
+    }
+
+    return Effect.gen(function* () {
+      const runOutput = yield* runCli(
+        ["run", "./examples/demo-workflow.ts", "--workspace", "./examples/demo-project"],
+        realDurableCliLayer(),
+      )
+      const runId = parseLineValue(runOutput, "run: ")
+      const artifactsOutput = yield* runCli(["runs", "artifacts", runId], realDurableCliLayer())
+      const artifactRef = parseArtifactRef(artifactsOutput)
+      const artifactOutput = yield* runCli(["runs", "artifact", artifactRef], realDurableCliLayer())
+
+      expect(runOutput).toContain("status: succeeded")
+      expect(runOutput).toContain("workspace: ")
+      expect(runOutput).toContain("examples/demo-project")
+      expect(artifactsOutput).toContain("release-manifest")
+      expect(artifactOutput).toContain('"generatedBy": "effect-cicd-demo"')
+    })
+  })
 })
 
 const durableStoreLayer = () =>
   makeDurableStorageLayer().pipe(
     Layer.provideMerge(storageSupportLayer),
+    Layer.provideMerge(runtimeSupportLayer),
     Layer.provideMerge(storageConfigLayer(false)),
   )
 
@@ -235,7 +274,35 @@ const durableCliLayer = (options: TestExecutorLayerOptions = {}) => {
       Layer.provideMerge(orchestratorLayer),
       Layer.provideMerge(storageLayer),
     ),
-  ).pipe(Layer.provideMerge(storageConfigLayer(false)))
+  ).pipe(Layer.provideMerge(runtimeSupportLayer), Layer.provideMerge(storageConfigLayer(false)))
+}
+
+const realDurableCliLayer = () => {
+  const storageLayer = durableStoreLayer()
+  const orchestratorLayer = Orchestrator.layer.pipe(
+    Layer.provideMerge(storageLayer),
+    Layer.provideMerge(
+      LocalContainerExecutor.layer.pipe(
+        Layer.provideMerge(NodeChildProcessSpawner.layer.pipe(Layer.provideMerge(runtimeSupportLayer))),
+      ),
+    ),
+  )
+
+  return Layer.mergeAll(
+    TestConsole.layer,
+    terminalLayer,
+    Stdio.layerTest({}),
+    CliOutput.layer(CliOutput.defaultFormatter({ colors: false })),
+    DslMaterializer.layer,
+    WorkflowModuleLoader.layer,
+    StorageRuntimeConfig.layer,
+    orchestratorLayer,
+    Engine.layer.pipe(
+      Layer.provideMerge(Planner.layer),
+      Layer.provideMerge(orchestratorLayer),
+      Layer.provideMerge(storageLayer),
+    ),
+  ).pipe(Layer.provideMerge(runtimeSupportLayer), Layer.provideMerge(storageConfigLayer(false)))
 }
 
 const runCli = (args: ReadonlyArray<string>, runtimeLayer: Layer.Layer<any, any, any>) =>
@@ -260,6 +327,17 @@ const parseLogRef = (output: string) => {
   const line = output.split("\n").find((candidate) => candidate.startsWith("stdout "))
   if (line === undefined) {
     throw new Error("Missing stdout log line")
+  }
+
+  return line.split(" ")[1]!
+}
+
+const parseArtifactRef = (output: string) => {
+  const line = output
+    .split("\n")
+    .find((candidate) => candidate !== "artifacts:" && candidate.includes(" status=") && candidate.includes(" artifact:"))
+  if (line === undefined) {
+    throw new Error("Missing artifact line")
   }
 
   return line.split(" ")[1]!
@@ -342,16 +420,61 @@ const terminalLayer = Layer.succeed(
 )
 
 const storageSupportLayer = Layer.mergeAll(
-  FileSystem.layerNoop({}),
-  Path.layer,
   Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make(() => Effect.die("Not implemented")),
   ),
 )
 
+const runtimeSupportLayer = Layer.mergeAll(FileSystem.layerNoop({}), Path.layer)
+
 const runtimeEnv = ((globalThis as { readonly Bun?: { readonly env: Record<string, string | undefined> } }).Bun?.env ??
   process.env) as Record<string, string | undefined>
+
+const durableSuccessPayloads = (): NonNullable<TestExecutorLayerOptions["resultsByUnitId"]> => ({
+  "unit:build": successPayload("workflow:fixture:valid", "unit:build", "dist", "build stdout"),
+  "unit:test": successPayload("workflow:fixture:valid", "unit:test", "coverage", "test stdout"),
+  "unit:deploy": successPayload("workflow:fixture:valid", "unit:deploy", "release-manifest", "deploy stdout"),
+})
+
+const successPayload = (workflowId: string, unitId: string, artifactName: string, logSummary: string) => {
+  const runId = RunId.make(`run:plan:${workflowId}`)
+  const attemptId = AttemptId.make(`attempt:${runId}:${unitId}:1`)
+  const brandedUnitId = UnitId.make(unitId)
+
+  return {
+    logs: [
+      new RegisteredLog({
+        metadata: new LogMetadata({
+          logRef: LogRef.make(`log:${workflowId}:${unitId}:stdout`),
+          runId,
+          unitId: brandedUnitId,
+          attemptId,
+          name: "stdout",
+          status: "available",
+          summary: logSummary,
+        }),
+        content: `${logSummary}\n`,
+      }),
+    ],
+    artifacts: [
+      new RegisteredArtifact({
+        metadata: new ArtifactMetadata({
+          artifactRef: ArtifactRef.make(`artifact:${workflowId}:${unitId}:${artifactName}`),
+          runId,
+          unitId: brandedUnitId,
+          attemptId,
+          name: artifactName,
+          category: "file",
+          status: "available",
+          summary: artifactName,
+        }),
+        payloadBase64: Buffer.from(JSON.stringify({ artifact: artifactName, unitId }) + "\n").toString("base64"),
+        contentType: "application/json",
+      }),
+    ],
+  } satisfies NonNullable<TestExecutorLayerOptions["resultsByUnitId"]>[string]
+}
 
 const storageIntegrationEnabled =
   runtimeEnv.RUN_STORAGE_TESTS === "1" &&
@@ -359,3 +482,12 @@ const storageIntegrationEnabled =
   runtimeEnv.S3_BUCKET !== undefined &&
   (runtimeEnv.S3_SECRET_KEY !== undefined || runtimeEnv.S3_SECRET_ACCESS_KEY !== undefined) &&
   (runtimeEnv.S3_ACCESS_KEY !== undefined || runtimeEnv.S3_ACCESS_KEY_ID !== undefined)
+
+const dockerStorageIntegrationEnabled =
+  storageIntegrationEnabled &&
+  runtimeEnv.RUN_DOCKER_TESTS === "1" &&
+  Bun.spawnSync({
+    cmd: ["docker", "info", "--format", "{{.ServerVersion}}"],
+    stdout: "ignore",
+    stderr: "ignore",
+  }).success

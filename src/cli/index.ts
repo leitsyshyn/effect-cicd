@@ -1,5 +1,6 @@
 import { Console, Effect, Layer, Option } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
+import { dirname, resolve as resolvePath } from "node:path"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
@@ -91,6 +92,12 @@ const exportNameFlag = Flag.string("export").pipe(
   Flag.withDescription("Select a named export (defaults to: default, then `workflow`)")
 )
 
+const workspaceFlag = Flag.string("workspace").pipe(
+  Flag.withAlias("w"),
+  Flag.optional,
+  Flag.withDescription("Workspace directory mounted into execution containers"),
+)
+
 const validateCommand = Command.make(
   "validate",
   { workflowModule: workflowModuleArg, exportName: exportNameFlag },
@@ -114,17 +121,21 @@ const planCommand = Command.make("plan", { workflowModule: workflowModuleArg, ex
   }),
 ).pipe(Command.withDescription("Plan a workflow module (default export or named export `workflow`)"))
 
-const runCommand = Command.make("run", { workflowModule: workflowModuleArg, exportName: exportNameFlag }, ({ workflowModule, exportName }) =>
+const runCommand = Command.make(
+  "run",
+  { workflowModule: workflowModuleArg, exportName: exportNameFlag, workspace: workspaceFlag },
+  ({ workflowModule, exportName, workspace }) =>
   Effect.gen(function* () {
     const engine = yield* Engine
+    const resolvedWorkspace = yield* resolveWorkspacePath(workflowModule, workspace)
     const definition = yield* loadAndMaterializeWorkflow(workflowModule, Option.getOrUndefined(exportName))
     const plan = yield* engine.plan(definition)
-    const run = yield* engine.startRun(plan)
+    const run = yield* engine.startRun(plan, { workspacePath: resolvedWorkspace })
     const events = yield* engine.readRunEvents(run.runId)
     const artifacts = yield* engine.readArtifacts(run.runId)
     const logs = yield* engine.readLogs(run.runId)
 
-    yield* printLines(renderRunSummary(run, events, artifacts, logs))
+    yield* printLines(renderRunSummary(run, events, artifacts, logs, resolvedWorkspace))
   }),
 ).pipe(Command.withDescription("Run a workflow module (default export or named export `workflow`)"))
 
@@ -207,6 +218,20 @@ const runsLogCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Read persisted log payload content"))
 
+const runsArtifactCommand = Command.make(
+  "artifact",
+  {
+    artifactRef: Argument.string("artifactRef"),
+  },
+  ({ artifactRef }) =>
+    Effect.gen(function* () {
+      const engine = yield* Engine
+      const payload = yield* engine.readArtifactPayload(ArtifactRef.make(artifactRef))
+
+      yield* printLines([`artifact: ${artifactRef}`, payload])
+    }),
+).pipe(Command.withDescription("Read persisted artifact payload content"))
+
 const runsCommand = Command.make("runs").pipe(
   Command.withDescription("Inspect persisted workflow runs"),
   Command.withSubcommands([
@@ -214,6 +239,7 @@ const runsCommand = Command.make("runs").pipe(
     runsShowCommand,
     runsEventsCommand,
     runsArtifactsCommand,
+    runsArtifactCommand,
     runsLogsCommand,
     runsLogCommand,
   ]),
@@ -238,6 +264,20 @@ const loadAndMaterializeWorkflow = Effect.fn("cli.loadAndMaterializeWorkflow")(f
   return yield* materializer.materialize(authored)
 })
 
+const resolveWorkspacePath = Effect.fn("cli.resolveWorkspacePath")(function* (
+  workflowModule: string,
+  workspace: Option.Option<string>,
+) {
+  const loader = yield* WorkflowModuleLoader
+  const resolvedModulePath = yield* loader.resolve(workflowModule)
+
+  if (Option.isSome(workspace)) {
+    return resolvePath(process.cwd(), workspace.value)
+  }
+
+  return dirname(resolvedModulePath)
+})
+
 const renderPlanSummary = (plan: ExecutionPlan) => [
   `workflow: ${plan.workflowId}`,
   `name: ${plan.workflowName}`,
@@ -253,9 +293,11 @@ const renderRunSummary = (
   events: ReadonlyArray<{ readonly _tag: string }>,
   artifacts: ReadonlyArray<ArtifactMetadata>,
   logs: ReadonlyArray<LogMetadata>,
+  workspacePath: string,
 ) => [
   `run: ${run.runId}`,
   `status: ${run.status}`,
+  `workspace: ${workspacePath}`,
   "units:",
   ...run.units.map((unit) => `${unit.unitId} ${unit.status}`),
   "events:",
@@ -300,7 +342,10 @@ const renderEventList = (runId: string, events: ReadonlyArray<{ readonly _tag: s
 const renderArtifacts = (runId: string, artifacts: ReadonlyArray<ArtifactMetadata>) => [
   `run: ${runId}`,
   "artifacts:",
-  ...renderPayloadRefs(artifacts, (artifact) => `${artifact.name} ${artifact.artifactRef} status=${artifact.status}`),
+  ...renderPayloadRefs(
+    artifacts,
+    (artifact) => `${artifact.name} ${artifact.artifactRef} status=${artifact.status} summary=${artifact.summary ?? "-"}`,
+  ),
 ]
 
 const renderLogs = (runId: string, logs: ReadonlyArray<LogMetadata>) => [
@@ -376,6 +421,8 @@ const executorResult = (
           status: "available",
           summary: `${unitId} artifact`,
         }),
+        payloadBase64: Buffer.from(JSON.stringify({ artifactName, unitId }, null, 2) + "\n").toString("base64"),
+        contentType: "application/json",
       }),
     ],
   } satisfies NonNullable<TestExecutorLayerOptions["resultsByUnitId"]>[string]

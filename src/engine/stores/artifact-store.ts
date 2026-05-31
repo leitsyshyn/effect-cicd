@@ -15,18 +15,23 @@ export class ArtifactStore extends Context.Service<
     readonly registerArtifact: (artifact: RegisteredArtifact) => Effect.Effect<ArtifactMetadata, StoreUnavailable>
     readonly registerLog: (log: RegisteredLog) => Effect.Effect<LogMetadata, StoreUnavailable>
     readonly readArtifact: (ref: ArtifactRef) => Effect.Effect<ArtifactMetadata, StoreUnavailable>
+    readonly readArtifactPayload: (ref: ArtifactRef) => Effect.Effect<string, StoreUnavailable>
     readonly readLog: (ref: LogRef) => Effect.Effect<LogMetadata, StoreUnavailable>
     readonly readLogPayload: (ref: LogRef) => Effect.Effect<string, StoreUnavailable>
   }
 >()("@effect-cicd/engine/stores/ArtifactStore") {
   static readonly memoryLayer = Layer.sync(ArtifactStore, () => {
     const artifacts = new Map<ArtifactRef, ArtifactMetadata>()
+    const artifactPayloads = new Map<ArtifactRef, string>()
     const logs = new Map<LogRef, LogMetadata>()
     const logPayloads = new Map<LogRef, string>()
 
-    const registerArtifact = ({ metadata }: RegisteredArtifact) =>
+    const registerArtifact = ({ metadata, payloadBase64 }: RegisteredArtifact) =>
       Effect.sync(() => {
         artifacts.set(metadata.artifactRef, metadata)
+        if (payloadBase64 !== undefined) {
+          artifactPayloads.set(metadata.artifactRef, Buffer.from(payloadBase64, "base64").toString("utf-8"))
+        }
         return metadata
       })
 
@@ -48,6 +53,20 @@ export class ArtifactStore extends Context.Service<
                 }),
               )
             : Effect.succeed(metadata),
+        ),
+      )
+
+    const readArtifactPayload = (ref: ArtifactRef) =>
+      Effect.sync(() => artifactPayloads.get(ref)).pipe(
+        Effect.flatMap((payload) =>
+          payload === undefined
+            ? Effect.fail(
+                new StoreUnavailable({
+                  store: "ArtifactStore",
+                  message: `Artifact payload not found for ref ${ref}`,
+                }),
+              )
+            : Effect.succeed(payload),
         ),
       )
 
@@ -79,7 +98,7 @@ export class ArtifactStore extends Context.Service<
         ),
       )
 
-    return { registerArtifact, registerLog, readArtifact, readLog, readLogPayload }
+    return { registerArtifact, registerLog, readArtifact, readArtifactPayload, readLog, readLogPayload }
   })
 
   static readonly s3Layer = Layer.effect(
@@ -197,6 +216,27 @@ export class ArtifactStore extends Context.Service<
         return decodeArtifactMetadata(row.metadata_json)
       })
 
+      const readArtifactRow = (ref: ArtifactRef) =>
+        catchSql("read artifact metadata", sql<{ readonly metadata_json: unknown; readonly object_key: string }>`
+          SELECT metadata_json, object_key
+          FROM artifact_metadata
+          WHERE artifact_ref = ${ref}
+        `)
+
+      const readArtifactPayload = Effect.fn("ArtifactStore.readArtifactPayload")(function* (ref: ArtifactRef) {
+        const rows = yield* readArtifactRow(ref)
+        const row = rows[0]
+
+        if (row === undefined) {
+          return yield* new StoreUnavailable({
+            store: "ArtifactStore",
+            message: `Artifact metadata not found for ref ${ref}`,
+          })
+        }
+
+        return yield* objectStorage.readText(row.object_key)
+      })
+
       const readLogRow = (ref: LogRef) =>
         catchSql("read log metadata", sql<{ readonly metadata_json: unknown; readonly object_key: string }>`
           SELECT metadata_json, object_key
@@ -232,7 +272,7 @@ export class ArtifactStore extends Context.Service<
         return yield* objectStorage.readText(row.object_key)
       })
 
-      return { registerArtifact, registerLog, readArtifact, readLog, readLogPayload }
+      return { registerArtifact, registerLog, readArtifact, readArtifactPayload, readLog, readLogPayload }
     }),
   )
 }

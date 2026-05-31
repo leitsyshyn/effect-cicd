@@ -6,9 +6,11 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 
 import { ContainerCommandDescriptor } from "../src/domain/execution-plan.ts"
 import { AttemptId, RunId, UnitId } from "../src/domain/ids.ts"
+import { ArtifactDeclaration } from "../src/domain/workflow-definition.ts"
 import {
   DispatchInput,
   DispatchRequest,
+  DispatchWorkspace,
   Executor,
   ExecutorFailureSummary,
   LocalContainerExecutor,
@@ -113,6 +115,50 @@ describe("Executor", () => {
         ),
       )
     },
+  )
+
+  it.effect("LocalContainerExecutor mounts the workspace and extracts file artifacts", () =>
+    Effect.gen(function* () {
+      const artifactFileName = `effect-cicd-artifact-${crypto.randomUUID()}.txt`
+      const artifactContent = "artifact from workspace\n"
+      yield* Effect.promise(() => Bun.write(`/tmp/${artifactFileName}`, artifactContent))
+
+      const executor = yield* Executor
+      const result = yield* executor.execute(
+        request({
+          workspace: new DispatchWorkspace({ hostPath: "/tmp", mountPath: "/workspace" }),
+          payloadDescriptor: new ContainerCommandDescriptor({
+            image: "oven/bun:1",
+            command: ["bun", "run", "build"],
+            env: {},
+            workingDirectory: ".",
+          }),
+          artifacts: [
+            new ArtifactDeclaration({
+              name: "release-manifest",
+              kind: "file",
+              path: artifactFileName,
+              contentType: "text/plain",
+              metadata: {},
+            }),
+          ],
+        }),
+      )
+
+      expect(result.outcome).toBe("succeeded")
+      expect(result.artifacts).toHaveLength(1)
+      expect(result.artifacts[0]?.metadata.name).toBe("release-manifest")
+      expect(result.artifacts[0]?.metadata.status).toBe("available")
+      expect(result.artifacts[0]?.metadata.summary).toBe(artifactFileName)
+      expect(result.artifacts[0]?.contentType).toBe("text/plain")
+      expect(Buffer.from(result.artifacts[0]?.payloadBase64 ?? "", "base64").toString("utf-8")).toBe(artifactContent)
+    }).pipe(
+      Effect.provide(
+        localExecutorLayer({
+          stdout: "built\n",
+        }),
+      ),
+    ),
   )
 
   it.effect("LocalContainerExecutor maps non-zero container exit to failed outcome", () =>
@@ -246,7 +292,15 @@ const request = (overrides: Partial<ConstructorParameters<typeof DispatchRequest
       env: {},
     }),
     inputs: [],
-    artifactNames: [],
+    artifacts: [
+      new ArtifactDeclaration({
+        name: "dist",
+        kind: "file",
+        path: "artifacts/dist.txt",
+        contentType: "text/plain",
+        metadata: {},
+      }),
+    ],
     logNames: ["stdout"],
     policies: [],
     correlation: {},

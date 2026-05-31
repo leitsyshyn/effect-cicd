@@ -90,6 +90,16 @@ const validateDefinition = (definition: NormalizedWorkflowDefinition): string | 
         return `Unit ${unit.unitId} retry maxAttempts greater than 1 is not supported`
       }
     }
+
+    for (const artifact of unit.artifacts) {
+      if (artifact.path.trim().length === 0) {
+        return `Unit ${unit.unitId} artifact ${artifact.name} path must be non-empty`
+      }
+
+      if (artifact.path.startsWith("/")) {
+        return `Unit ${unit.unitId} artifact ${artifact.name} path must be relative to the workspace root`
+      }
+    }
   }
 
   const dependencyIds = new Set<string>()

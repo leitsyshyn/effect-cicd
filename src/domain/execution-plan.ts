@@ -1,7 +1,7 @@
 import { Schema } from "effect"
 
 import { PlanId, UnitId, WorkflowId } from "./ids.ts"
-import { NamedDeclaration, SourceMetadata } from "./workflow-definition.ts"
+import { ArtifactDeclaration, NamedDeclaration, SourceMetadata } from "./workflow-definition.ts"
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
 const PositiveNumber = Schema.Number.check(Schema.isGreaterThan(0))
@@ -58,7 +58,7 @@ export class PlanUnit extends Schema.Class<PlanUnit>("PlanUnit")({
   dependencies: Schema.Array(UnitId),
   payloadDescriptor: PayloadDescriptor,
   logExpectations: Schema.Array(NamedDeclaration),
-  artifactExpectations: Schema.Array(NamedDeclaration),
+  artifactExpectations: Schema.Array(ArtifactDeclaration),
   policies: Schema.Array(PlanPolicy),
   source: Schema.optional(SourceMetadata),
   diagnostics: Schema.Array(PlanningDiagnostic),
