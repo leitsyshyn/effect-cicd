@@ -103,9 +103,6 @@ export class GitHubCheckRuns extends Context.Service<
       const ensureCheckRun = (run: WorkflowRunState, link: GitHubRunLink) =>
         Effect.gen(function* () {
           const lifecycle = toGitHubCheckLifecycle(run)
-          if (link.checkRunId !== undefined && lifecycle.status !== "completed") {
-            return link.checkRunId
-          }
 
           const checkRunId = yield* gitHubApi.upsertCheckRun({
             installationId: link.installationId,

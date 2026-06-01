@@ -88,8 +88,6 @@ export class GitHubBindingStore extends Context.Service<
             ${binding.workflowModulePath},
             ${binding.workspaceSubdir ?? null},
             ${binding.enabled},
-            null,
-            null,
             ${binding.createdAt},
             ${binding.updatedAt},
             ${bindingJson}::jsonb

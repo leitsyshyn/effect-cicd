@@ -16,13 +16,15 @@
     "infra:up": "docker compose -f compose.demo.yml up -d",
     "infra:down": "docker compose -f compose.demo.yml down",
     "infra:logs": "docker compose -f compose.demo.yml logs -f",
+    "smee": "smee --url https://smee.io/D5fIyuSgmdy8hij --target http://127.0.0.1:3000/api/github/webhooks",
     "test:storage": "RUN_STORAGE_TESTS=1 bun run test"
   },
   "devDependencies": {
     "@effect/language-service": "^0.86.2",
-    "@effect/vitest": "^4.0.0-beta.74",
     "@effect/platform-node-shared": "^4.0.0-beta.74",
+    "@effect/vitest": "^4.0.0-beta.74",
     "@types/bun": "latest",
+    "smee-client": "^5.0.0",
     "typescript": "^5",
     "vitest": "^4.1.7"
   },

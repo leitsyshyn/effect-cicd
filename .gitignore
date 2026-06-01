@@ -5,4 +5,5 @@
 !/.vscode/settings.json
 /tsconfig.tsbuildinfo
 .env
+.effect-cicd/
 .DS_Store
