@@ -7,12 +7,14 @@ import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { DomainError, EngineUnavailable } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { WorkflowEvent } from "../domain/events.ts"
+import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubTriggerResponse } from "../domain/github.ts"
 import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
 import { RunExecutionOptions, WorkflowRunState, WorkflowRunStatus } from "../domain/runtime-state.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
 import { Engine } from "../engine/interface.ts"
 import { type RunStartOptions } from "../engine/orchestrator.ts"
 import { RunUpdate } from "../engine/run-updates.ts"
+import { GitHubIntegration, type GitHubTriggerRequest } from "../github/integration.ts"
 import { EngineServiceConfig } from "../runtime/config.ts"
 import { RunActionRequest, RunSubmissionRequest, ServiceErrorResponse } from "./contracts.ts"
 import { decodeJson, encodeJson } from "./schema-json.ts"
@@ -139,6 +141,54 @@ export const engineServiceClientLayer = Layer.effect(
 )
 
 export const defaultEngineServiceClientLayer = engineServiceClientLayer.pipe(
+  Layer.provide(FetchHttpClient.layer),
+  Layer.provide(EngineServiceConfig.layer),
+)
+
+export const gitHubIntegrationClientLayer = Layer.effect(
+  GitHubIntegration,
+  Effect.gen(function* () {
+    const config = yield* EngineServiceConfig
+    const http = (yield* HttpClient.HttpClient).pipe(
+      HttpClient.mapRequest(flow(HttpClientRequest.prependUrl(config.baseUrl), HttpClientRequest.acceptJson)),
+    )
+
+    const addBinding = Effect.fn("GitHubIntegrationClient.addBinding")((binding: GitHubBindingCreateRequest) =>
+      requestJson(
+        http,
+        HttpClientRequest.post("/api/bindings/github").pipe(
+          HttpClientRequest.bodyJsonUnsafe(encodeJson(GitHubBindingCreateRequest, binding)),
+        ),
+        GitHubBindingSummary,
+      ),
+    )
+
+    const listBindings = Effect.fn("GitHubIntegrationClient.listBindings")(() =>
+      requestJson(http, HttpClientRequest.get("/api/bindings"), Schema.Array(GitHubBindingSummary)),
+    )
+
+    const triggerPush = Effect.fn("GitHubIntegrationClient.triggerPush")((request: GitHubTriggerRequest) =>
+      requestJson(
+        http,
+        HttpClientRequest.post("/api/triggers/github").pipe(
+          HttpClientRequest.setHeader("content-type", "application/json"),
+          HttpClientRequest.setHeader("x-github-event", request.event ?? "push"),
+          HttpClientRequest.setHeader("x-hub-signature-256", request.signature ?? ""),
+          HttpClientRequest.bodyText(request.rawBody),
+        ),
+        GitHubTriggerResponse,
+      ),
+    )
+
+    return {
+      addBinding,
+      listBindings,
+      triggerPush,
+    }
+  }),
+)
+
+export const defaultGitHubIntegrationClientLayer = gitHubIntegrationClientLayer.pipe(
   Layer.provide(FetchHttpClient.layer),
   Layer.provide(EngineServiceConfig.layer),
 )

@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "cli": "bun run index.ts",
     "prepare": "effect-language-service patch",
     "typecheck": "tsc --noEmit",
     "test": "bun run --bun vitest run",

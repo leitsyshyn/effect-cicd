@@ -78,6 +78,8 @@ All CLI commands below assume the CLI talks to the running service:
 export ENGINE_BASE_URL=http://127.0.0.1:3000
 ```
 
+You can use either `bun run cli ...` or `bun run index.ts ...` for the CLI examples below.
+
 Validate the workflow:
 
 ```bash
@@ -162,6 +164,66 @@ Retry a terminal run as a new run:
 ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs retry <runId>
 ```
 
+## GitHub Push Triggers
+
+Register a GitHub binding:
+
+```bash
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run cli bindings add github acme/widgets workflow.ts --clone-url /absolute/path/to/local-or-bare-repo --branch main
+```
+
+Optional binding flags:
+
+- `--workspace-subdir <path>` run the workflow from a repository subdirectory inside the acquired snapshot
+- `--webhook-secret <secret>` require a valid `X-Hub-Signature-256` signature for this binding
+- `--access-token <token>` use a GitHub token for private repository clone access
+- `--clone-url <url>` override the default `https://github.com/<owner>/<repo>.git`
+
+List configured bindings:
+
+```bash
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run cli bindings list
+```
+
+Simulate a GitHub push locally:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/triggers/github \
+  -H 'content-type: application/json' \
+  -H 'x-github-event: push' \
+  -d '{
+    "ref": "refs/heads/main",
+    "after": "<commit-sha>",
+    "repository": {
+      "name": "widgets",
+      "full_name": "acme/widgets",
+      "clone_url": "https://github.com/acme/widgets.git",
+      "owner": { "login": "acme" }
+    }
+  }'
+```
+
+If the binding has a webhook secret, add:
+
+```text
+X-Hub-Signature-256: sha256=<hmac-of-raw-json-body>
+```
+
+Inspect the resulting run later:
+
+```bash
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run cli runs list
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run cli runs show <runId>
+```
+
+Snapshot acquisition behavior:
+
+- The service acquires a git snapshot for the pushed commit SHA under `GITHUB_WORKSPACE_ROOT`.
+- If `GITHUB_WORKSPACE_ROOT` is unset, the default root is `.effect-cicd/github` under the service working directory.
+- Snapshot directories are commit-specific and deterministic: `<workspace-root>/<owner>/<repo>/<commit-sha>`.
+- Existing snapshot directories are reused when the same commit is triggered again.
+- The current prototype does not implement eviction or garbage collection for cached snapshots.
+
 ## Dashboard MVP
 
 Start the dashboard proxy:
@@ -233,9 +295,12 @@ For the demo workflow, `runs artifact <artifactRef>` should print JSON like:
 
 - `POST /api/workflows/validate`
 - `POST /api/workflows/plan`
+- `POST /api/bindings/github`
+- `POST /api/triggers/github`
 - `POST /api/runs`
 - `POST /api/runs/:runId/cancel`
 - `POST /api/runs/:runId/retry`
+- `GET /api/bindings`
 - `GET /api/runs`
 - `GET /api/runs/stream`
 - `GET /api/runs/:runId`

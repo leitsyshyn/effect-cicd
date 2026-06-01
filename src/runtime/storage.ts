@@ -185,6 +185,49 @@ export const storageMigrationLayer = PgMigrator.layer({
       )`
 
       yield* sql`CREATE INDEX IF NOT EXISTS log_metadata_run_id_idx ON log_metadata (run_id, log_ref)`
+
+      yield* sql`CREATE TABLE IF NOT EXISTS github_bindings (
+        binding_id text PRIMARY KEY,
+        provider text NOT NULL,
+        repo_owner text NOT NULL,
+        repo_name text NOT NULL,
+        clone_url text NOT NULL,
+        branch text,
+        workflow_module_path text NOT NULL,
+        workspace_subdir text,
+        enabled boolean NOT NULL,
+        webhook_secret text,
+        access_token text,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL,
+        binding_json jsonb NOT NULL
+      )`
+
+      yield* sql`CREATE INDEX IF NOT EXISTS github_bindings_repo_idx
+        ON github_bindings (repo_owner, repo_name, enabled, updated_at DESC, binding_id ASC)`
+    }),
+    "0002_github_bindings": Effect.gen(function* () {
+      const sql = yield* SqlClient
+
+      yield* sql`CREATE TABLE IF NOT EXISTS github_bindings (
+        binding_id text PRIMARY KEY,
+        provider text NOT NULL,
+        repo_owner text NOT NULL,
+        repo_name text NOT NULL,
+        clone_url text NOT NULL,
+        branch text,
+        workflow_module_path text NOT NULL,
+        workspace_subdir text,
+        enabled boolean NOT NULL,
+        webhook_secret text,
+        access_token text,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL,
+        binding_json jsonb NOT NULL
+      )`
+
+      yield* sql`CREATE INDEX IF NOT EXISTS github_bindings_repo_idx
+        ON github_bindings (repo_owner, repo_name, enabled, updated_at DESC, binding_id ASC)`
     }),
   }),
 })

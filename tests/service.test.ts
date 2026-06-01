@@ -9,6 +9,7 @@ import { ContainerCommandDeclaration, NormalizedWorkflowDefinition, UnitDeclarat
 import { Engine } from "../src/engine/interface.ts"
 import { RunController } from "../src/engine/run-controller.ts"
 import { RunUpdate } from "../src/engine/run-updates.ts"
+import { GitHubIntegration } from "../src/github/integration.ts"
 import { EngineServiceConfig, StorageRuntimeConfig } from "../src/runtime/config.ts"
 import { makeInMemoryServiceEngineLayer } from "../src/runtime/layers.ts"
 import { engineServiceClientLayer } from "../src/service/client.ts"
@@ -55,6 +56,11 @@ describe("service boundary", () => {
             cancelRun: () => Effect.succeed(sampleRunState()),
             retryRun: () => Effect.succeed(sampleRunState()),
             recoverOnStartup: () => Effect.succeed([]),
+          }),
+          Layer.succeed(GitHubIntegration, {
+            addBinding: () => Effect.die("unused"),
+            listBindings: () => Effect.succeed([]),
+            triggerPush: () => Effect.die("unused"),
           }),
         ),
       )
@@ -122,6 +128,11 @@ describe("service boundary", () => {
         makeInMemoryServiceEngineLayer(),
         Layer.succeed(EngineServiceConfig, { baseUrl, port }),
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
+        Layer.succeed(GitHubIntegration, {
+          addBinding: () => Effect.die("unused"),
+          listBindings: () => Effect.succeed([]),
+          triggerPush: () => Effect.die("unused"),
+        }),
       )
 
       const server = yield* withServer(serviceLayer)

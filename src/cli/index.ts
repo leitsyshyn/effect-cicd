@@ -4,16 +4,18 @@ import { dirname, resolve as resolvePath } from "node:path"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
+import { GitHubBindingCreateRequest, GitHubBindingSummary } from "../domain/github.ts"
 import { ArtifactRef, AttemptId, LogRef, RunId, UnitId } from "../domain/ids.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
 import { DslMaterializer, WorkflowModuleLoader } from "../dsl/index.ts"
 import { type TestExecutorLayerOptions } from "../engine/executor.ts"
 import { Engine } from "../engine/interface.ts"
+import { GitHubIntegration } from "../github/integration.ts"
 import { makeDurableStorageLayer, makeInMemoryEngineLayer } from "../runtime/layers.ts"
 import { FetchHttpClient } from "effect/unstable/http"
 
 import { EngineServiceConfig } from "../runtime/config.ts"
-import { engineServiceClientLayer } from "../service/client.ts"
+import { engineServiceClientLayer, gitHubIntegrationClientLayer } from "../service/client.ts"
 
 export const cliVersion = "0.0.0"
 
@@ -34,6 +36,10 @@ export const makeAppLayer = () =>
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provideMerge(EngineServiceConfig.layer),
     ),
+    gitHubIntegrationClientLayer.pipe(
+      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(EngineServiceConfig.layer),
+    ),
   )
 
 const workflowModuleArg = Argument.string("workflow-module").pipe(
@@ -50,6 +56,31 @@ const workspaceFlag = Flag.string("workspace").pipe(
   Flag.withAlias("w"),
   Flag.optional,
   Flag.withDescription("Workspace directory mounted into execution containers"),
+)
+
+const cloneUrlFlag = Flag.string("clone-url").pipe(
+  Flag.optional,
+  Flag.withDescription("Override the repository clone URL"),
+)
+
+const branchFlag = Flag.string("branch").pipe(
+  Flag.optional,
+  Flag.withDescription("Restrict the binding to a branch name"),
+)
+
+const workspaceSubdirFlag = Flag.string("workspace-subdir").pipe(
+  Flag.optional,
+  Flag.withDescription("Run the workflow inside a repository subdirectory"),
+)
+
+const webhookSecretFlag = Flag.string("webhook-secret").pipe(
+  Flag.optional,
+  Flag.withDescription("Verify GitHub webhook signatures with this secret"),
+)
+
+const accessTokenFlag = Flag.string("access-token").pipe(
+  Flag.optional,
+  Flag.withDescription("Use this GitHub token when cloning private repositories"),
 )
 
 const validateCommand = Command.make(
@@ -230,9 +261,58 @@ const runsCommand = Command.make("runs").pipe(
   ]),
 )
 
+const bindingsAddGitHubCommand = Command.make(
+  "github",
+  {
+    repository: Argument.string("repository"),
+    workflowModulePath: Argument.string("workflow-module-path"),
+    cloneUrl: cloneUrlFlag,
+    branch: branchFlag,
+    workspaceSubdir: workspaceSubdirFlag,
+    webhookSecret: webhookSecretFlag,
+    accessToken: accessTokenFlag,
+  },
+  ({ repository, workflowModulePath, cloneUrl, branch, workspaceSubdir, webhookSecret, accessToken }) =>
+    Effect.gen(function* () {
+      const gitHubIntegration = yield* GitHubIntegration
+      const binding = yield* gitHubIntegration.addBinding(
+        new GitHubBindingCreateRequest({
+          repository,
+          workflowModulePath,
+          cloneUrl: Option.getOrUndefined(cloneUrl),
+          branch: Option.getOrUndefined(branch),
+          workspaceSubdir: Option.getOrUndefined(workspaceSubdir),
+          webhookSecret: Option.getOrUndefined(webhookSecret),
+          accessToken: Option.getOrUndefined(accessToken),
+        }),
+      )
+
+      yield* printLines(renderBindingSummary(binding))
+    }),
+).pipe(Command.withDescription("Create a GitHub repository binding"))
+
+const bindingsAddCommand = Command.make("add").pipe(
+  Command.withDescription("Create repository trigger bindings"),
+  Command.withSubcommands([bindingsAddGitHubCommand]),
+)
+
+const bindingsListCommand = Command.make("list", {}, () =>
+  Effect.gen(function* () {
+    const gitHubIntegration = yield* GitHubIntegration
+    const bindings = yield* gitHubIntegration.listBindings()
+
+    yield* printLines(renderBindingsList(bindings))
+  }),
+).pipe(Command.withDescription("List configured repository bindings"))
+
+const bindingsCommand = Command.make("bindings").pipe(
+  Command.withDescription("Manage repository trigger bindings"),
+  Command.withSubcommands([bindingsAddCommand, bindingsListCommand]),
+)
+
 export const cli = Command.make("effect-cicd").pipe(
   Command.withDescription("Minimal Engine-backed CLI MVP"),
-  Command.withSubcommands([validateCommand, planCommand, runCommand, runsCommand]),
+  Command.withSubcommands([validateCommand, planCommand, runCommand, runsCommand, bindingsCommand]),
 )
 
 export const cliProgram = Command.run(cli, { version: cliVersion })
@@ -328,14 +408,34 @@ const renderRunState = (run: WorkflowRunState) => [
   `workflow: ${run.workflowId}`,
   `plan: ${run.planId}`,
   `status: ${run.status}`,
+  `workspace: ${run.execution.options.workspacePath ?? "-"}`,
   `createdAt: ${run.createdAt.toISOString()}`,
   `updatedAt: ${run.updatedAt.toISOString()}`,
   `startedAt: ${formatDate(run.startedAt)}`,
   `finishedAt: ${formatDate(run.finishedAt)}`,
   `progress: ${run.progress.completedUnits}/${run.progress.totalUnits} completed, ${run.progress.failedUnits} failed, ${run.progress.skippedUnits} skipped`,
   `failure: ${run.failure?.message ?? "-"}`,
+  ...renderTriggerMetadata(run),
   "units:",
   ...run.units.map((unit) => `${unit.unitId} ${unit.status}`),
+]
+
+const renderBindingsList = (bindings: ReadonlyArray<GitHubBindingSummary>) => [
+  "bindings:",
+  ...(bindings.length === 0 ? ["-"] : bindings.flatMap((binding) => renderBindingSummary(binding))),
+]
+
+const renderBindingSummary = (binding: GitHubBindingSummary) => [
+  `binding: ${binding.bindingId}`,
+  `provider: ${binding.provider}`,
+  `repository: ${binding.repository}`,
+  `cloneUrl: ${binding.cloneUrl}`,
+  `branch: ${binding.branch ?? "*"}`,
+  `workflowModulePath: ${binding.workflowModulePath}`,
+  `workspaceSubdir: ${binding.workspaceSubdir ?? "-"}`,
+  `enabled: ${binding.enabled}`,
+  `webhookSecret: ${binding.hasWebhookSecret ? "configured" : "-"}`,
+  `accessMode: ${binding.accessMode}`,
 ]
 
 const renderEventList = (runId: string, events: ReadonlyArray<{ readonly _tag: string; readonly sequence: number }>) => [
@@ -365,6 +465,26 @@ const renderPayloadRefs = <A>(items: ReadonlyArray<A>, render: (item: A) => stri
 const formatNames = (names: ReadonlyArray<string>) => (names.length === 0 ? "-" : names.join(", "))
 
 const formatDate = (value: Date | undefined) => (value === undefined ? "-" : value.toISOString())
+
+const renderTriggerMetadata = (run: WorkflowRunState) => {
+  const metadata = run.execution.plan.metadata as Record<string, unknown>
+  const trigger = asRecord(metadata.trigger)
+
+  if (trigger?.provider !== "github") {
+    return []
+  }
+
+  return [
+    `trigger: github`,
+    `repository: ${String(trigger.repository ?? "-")}`,
+    `ref: ${String(trigger.ref ?? "-")}`,
+    `commitSha: ${String(trigger.commitSha ?? "-")}`,
+    `binding: ${String(trigger.bindingId ?? "-")}`,
+  ]
+}
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined
 
 const mergeExecutorOptions = (options: TestExecutorLayerOptions): TestExecutorLayerOptions => {
   return {

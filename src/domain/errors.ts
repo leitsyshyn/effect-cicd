@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 
-import { AttemptId, PlanId, RunId, UnitId, WorkflowId } from "./ids.ts"
+import { AttemptId, BindingId, PlanId, RunId, UnitId, WorkflowId } from "./ids.ts"
 
 export class DslMaterializationFailed extends Schema.TaggedErrorClass<DslMaterializationFailed>()(
   "DslMaterializationFailed",
@@ -63,6 +63,26 @@ export class ExecutorFailed extends Schema.TaggedErrorClass<ExecutorFailed>()("E
   message: Schema.String,
 }) {}
 
+export class GitHubBindingRejected extends Schema.TaggedErrorClass<GitHubBindingRejected>()("GitHubBindingRejected", {
+  message: Schema.String,
+}) {}
+
+export class GitHubWebhookUnauthorized extends Schema.TaggedErrorClass<GitHubWebhookUnauthorized>()(
+  "GitHubWebhookUnauthorized",
+  {
+    repository: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+export class SourceAcquisitionFailed extends Schema.TaggedErrorClass<SourceAcquisitionFailed>()("SourceAcquisitionFailed", {
+  repository: Schema.String,
+  ref: Schema.String,
+  commitSha: Schema.String,
+  bindingId: BindingId,
+  message: Schema.String,
+}) {}
+
 export const DomainError = Schema.Union([
   DslMaterializationFailed,
   WorkflowDefinitionInvalid,
@@ -75,5 +95,8 @@ export const DomainError = Schema.Union([
   StoreUnavailable,
   EngineUnavailable,
   ExecutorFailed,
+  GitHubBindingRejected,
+  GitHubWebhookUnauthorized,
+  SourceAcquisitionFailed,
 ])
 export type DomainError = typeof DomainError.Type

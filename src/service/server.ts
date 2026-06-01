@@ -5,14 +5,20 @@ import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { DomainError } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { WorkflowEvent } from "../domain/events.ts"
+import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubPushWebhookPayload, GitHubTriggerResponse } from "../domain/github.ts"
 import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
 import { WorkflowRunState, type WorkflowRunStatus } from "../domain/runtime-state.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
 import { Engine } from "../engine/interface.ts"
 import { RunController } from "../engine/run-controller.ts"
 import { RunUpdate } from "../engine/run-updates.ts"
-import { EngineServiceConfig, StorageRuntimeConfig } from "../runtime/config.ts"
+import { DslMaterializer, WorkflowModuleLoader } from "../dsl/index.ts"
+import { GitHubBindingStore } from "../github/binding-store.ts"
+import { GitHubIntegration } from "../github/integration.ts"
+import { GitHubSourceSnapshots } from "../github/source-snapshots.ts"
+import { EngineServiceConfig, GitHubTriggerConfig, StorageRuntimeConfig } from "../runtime/config.ts"
 import { makeServiceEngineLayer } from "../runtime/layers.ts"
+import { sqlClientLayer } from "../runtime/storage.ts"
 import { RunActionRequest, RunSubmissionRequest, ServiceErrorResponse } from "./contracts.ts"
 import { decodeJson, encodeJson } from "./schema-json.ts"
 
@@ -23,13 +29,38 @@ class RequestBodyInvalid extends Schema.TaggedErrorClass<RequestBodyInvalid>()("
 }) {}
 
 export const makeServiceLayer = () =>
-  Layer.mergeAll(makeServiceEngineLayer(), StorageRuntimeConfig.layer, EngineServiceConfig.layer)
+  {
+    const engineLayer = makeServiceEngineLayer()
+    const bindingStoreLayer = GitHubBindingStore.postgresLayer.pipe(Layer.provideMerge(sqlClientLayer))
+    const triggerConfigLayer = GitHubTriggerConfig.layer
+    const snapshotLayer = GitHubSourceSnapshots.layer.pipe(Layer.provideMerge(triggerConfigLayer))
+    const gitHubLayer = GitHubIntegration.layer.pipe(
+      Layer.provideMerge(engineLayer),
+      Layer.provideMerge(bindingStoreLayer),
+      Layer.provideMerge(snapshotLayer),
+      Layer.provideMerge(DslMaterializer.layer),
+      Layer.provideMerge(WorkflowModuleLoader.layer),
+    )
+
+    return Layer.mergeAll(
+      engineLayer,
+      bindingStoreLayer,
+      triggerConfigLayer,
+      snapshotLayer,
+      DslMaterializer.layer,
+      WorkflowModuleLoader.layer,
+      gitHubLayer,
+      StorageRuntimeConfig.layer,
+      EngineServiceConfig.layer,
+    )
+  }
 
 export const startServiceServer = Effect.gen(function* () {
   const runtimeConfig = yield* StorageRuntimeConfig
   const serviceConfig = yield* EngineServiceConfig
   const engine = yield* Engine
   const runController = yield* RunController
+  const gitHubIntegration = yield* GitHubIntegration
 
   if (runtimeConfig.runRecoveryOnStartup) {
     yield* runController.recoverOnStartup()
@@ -50,6 +81,15 @@ export const startServiceServer = Effect.gen(function* () {
       "/api/runs": {
         GET: () => runJsonEffect(engine.listRuns(), { schema: Schema.Array(WorkflowRunState) }),
         POST: (request) => runJsonEffect(submitRun(engine, request), { schema: WorkflowRunState }),
+      },
+      "/api/bindings": {
+        GET: () => runJsonEffect(gitHubIntegration.listBindings(), { schema: Schema.Array(GitHubBindingSummary) }),
+      },
+      "/api/bindings/github": {
+        POST: (request) => runJsonEffect(createGitHubBinding(gitHubIntegration, request), { schema: GitHubBindingSummary, status: 201 }),
+      },
+      "/api/triggers/github": {
+        POST: (request) => runJsonEffect(triggerGitHubPush(gitHubIntegration, request), { schema: GitHubTriggerResponse, status: 202 }),
       },
       "/api/runs/stream": {
         GET: () => runStreamEffect(engine.streamRuns()),
@@ -122,6 +162,25 @@ const submitRun = (engine: EngineService, request: Request) =>
     )
   })
 
+const createGitHubBinding = (gitHubIntegration: typeof GitHubIntegration.Service, request: Request) =>
+  Effect.gen(function* () {
+    const binding = yield* parseRequestBody(request, GitHubBindingCreateRequest)
+    return yield* gitHubIntegration.addBinding(binding)
+  })
+
+const triggerGitHubPush = (gitHubIntegration: typeof GitHubIntegration.Service, request: Request) =>
+  Effect.gen(function* () {
+    const rawBody = yield* readRequestText(request)
+    const payload = yield* decodeJsonText(rawBody, GitHubPushWebhookPayload)
+
+    return yield* gitHubIntegration.triggerPush({
+      event: request.headers.get("x-github-event"),
+      signature: request.headers.get("x-hub-signature-256"),
+      rawBody,
+      payload,
+    })
+  })
+
 const cancelRun = (engine: EngineService, request: Request, runId: RunId) =>
   Effect.gen(function* () {
     const reason = yield* parseOptionalReason(request, runId)
@@ -135,10 +194,19 @@ const retryRun = (engine: EngineService, request: Request, runId: RunId) =>
   })
 
 const parseRequestBody = <A, I, RD, RE>(request: Request, schema: Schema.Codec<A, I, RD, RE>) =>
+  readRequestText(request).pipe(Effect.flatMap((text) => decodeJsonText(text, schema)))
+
+const readRequestText = (request: Request) =>
   Effect.tryPromise({
-    try: () => request.json(),
+    try: () => request.text(),
     catch: (error) => new RequestBodyInvalid({ message: error instanceof Error ? error.message : String(error) }),
-  }).pipe(Effect.flatMap((body) => Effect.sync(() => decodeJson(schema, body))))
+  })
+
+const decodeJsonText = <A, I, RD, RE>(text: string, schema: Schema.Codec<A, I, RD, RE>) =>
+  Effect.try({
+    try: () => decodeJson(schema, JSON.parse(text)),
+    catch: (error) => new RequestBodyInvalid({ message: error instanceof Error ? error.message : String(error) }),
+  })
 
 const parseOptionalReason = (request: Request, runId: RunId) =>
   Effect.tryPromise({
@@ -176,7 +244,7 @@ const runScopedStream = (engine: EngineService, runId: RunId) =>
 
 const runJsonEffect = async <A, I, RD, RE>(
   effect: Effect.Effect<A, any, any>,
-  options: { readonly schema?: Schema.Codec<A, I, RD, RE>; readonly noContent?: boolean },
+  options: { readonly schema?: Schema.Codec<A, I, RD, RE>; readonly noContent?: boolean; readonly status?: number },
 ) => {
   try {
     const value = await Effect.runPromise(effect as Effect.Effect<A, any, never>)
@@ -185,7 +253,7 @@ const runJsonEffect = async <A, I, RD, RE>(
       return new Response(null, { status: 204 })
     }
 
-    return Response.json(encodeJson(options.schema!, value))
+    return Response.json(encodeJson(options.schema!, value), { status: options.status ?? 200 })
   } catch (error) {
     return errorResponse(error)
   }
@@ -267,6 +335,10 @@ const statusForError = (error: DomainError) => {
     case "StoreUnavailable":
     case "EngineUnavailable":
       return 503
+    case "GitHubWebhookUnauthorized":
+      return 401
+    case "GitHubBindingRejected":
+      return 400
     default:
       return 500
   }

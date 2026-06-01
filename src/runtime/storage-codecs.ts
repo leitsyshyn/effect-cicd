@@ -2,17 +2,20 @@ import { Schema } from "effect"
 
 import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { WorkflowEvent } from "../domain/events.ts"
+import { GitHubBinding } from "../domain/github.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
 
 const WorkflowRunStateJson = Schema.toCodecJson(WorkflowRunState)
 const WorkflowEventJson = Schema.toCodecJson(WorkflowEvent)
 const ArtifactMetadataJson = Schema.toCodecJson(ArtifactMetadata)
 const LogMetadataJson = Schema.toCodecJson(LogMetadata)
+const GitHubBindingJson = Schema.toCodecJson(GitHubBinding)
 
 export const encodeWorkflowRunState = Schema.encodeSync(WorkflowRunStateJson)
 export const encodeWorkflowEvent = Schema.encodeSync(WorkflowEventJson)
 export const encodeArtifactMetadata = Schema.encodeSync(ArtifactMetadataJson)
 export const encodeLogMetadata = Schema.encodeSync(LogMetadataJson)
+export const encodeGitHubBinding = Schema.encodeSync(GitHubBindingJson)
 
 export const decodeWorkflowRunState = (value: unknown) =>
   Schema.decodeUnknownSync(WorkflowRunStateJson)(upgradeLegacyWorkflowRunStateJson(normalizeJson(value)))
@@ -23,6 +26,8 @@ export const decodeArtifactMetadata = (value: unknown) =>
   Schema.decodeUnknownSync(ArtifactMetadataJson)(normalizeJson(value))
 
 export const decodeLogMetadata = (value: unknown) => Schema.decodeUnknownSync(LogMetadataJson)(normalizeJson(value))
+
+export const decodeGitHubBinding = (value: unknown) => Schema.decodeUnknownSync(GitHubBindingJson)(normalizeJson(value))
 
 const normalizeJson = (value: unknown): unknown => {
   if (typeof value !== "string") {

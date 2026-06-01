@@ -9,6 +9,7 @@ import { ArtifactRef } from "../src/domain/ids.ts"
 import { WorkflowId, UnitId } from "../src/domain/ids.ts"
 import { PlanId, RunId } from "../src/domain/ids.ts"
 import { ContainerCommandDescriptor, ExecutionPlan, PlanUnit } from "../src/domain/execution-plan.ts"
+import { GitHubBindingSummary } from "../src/domain/github.ts"
 import {
   ContainerCommandDeclaration,
   NormalizedWorkflowDefinition,
@@ -18,6 +19,7 @@ import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunS
 import { DslMaterializer } from "../src/dsl/index.ts"
 import { WorkflowModuleLoader } from "../src/dsl/loader.ts"
 import { Engine } from "../src/engine/interface.ts"
+import { GitHubIntegration } from "../src/github/integration.ts"
 import type { AuthoredWorkflow } from "../src/dsl/authored-workflow.ts"
 
 describe("CLI", () => {
@@ -245,6 +247,50 @@ describe("CLI", () => {
       expect(output).toBe(['artifact: artifact:demo', '{"artifact":"ok"}', ''].join("\n"))
     }),
   )
+
+  it.effect("bindings add github calls GitHubIntegration and prints the created binding", () =>
+    Effect.gen(function* () {
+      let seenRepository: string | undefined
+      let seenWorkflowModulePath: string | undefined
+
+      const output = yield* runCli(
+        ["bindings", "add", "github", "acme/widgets", ".effect/workflow.ts", "--branch", "main"],
+        Layer.succeed(GitHubIntegration, {
+          addBinding: (request) =>
+            Effect.sync(() => {
+              seenRepository = request.repository
+              seenWorkflowModulePath = request.workflowModulePath
+              return sampleBindingSummary()
+            }),
+          listBindings: () => Effect.die("unused"),
+          triggerPush: () => Effect.die("unused"),
+        }),
+      )
+
+      expect(seenRepository).toBe("acme/widgets")
+      expect(seenWorkflowModulePath).toBe(".effect/workflow.ts")
+      expect(output).toContain("binding: binding:github:demo")
+      expect(output).toContain("repository: acme/widgets")
+      expect(output).toContain("branch: main")
+    }),
+  )
+
+  it.effect("bindings list prints configured bindings", () =>
+    Effect.gen(function* () {
+      const output = yield* runCli(
+        ["bindings", "list"],
+        Layer.succeed(GitHubIntegration, {
+          addBinding: () => Effect.die("unused"),
+          listBindings: () => Effect.succeed([sampleBindingSummary()]),
+          triggerPush: () => Effect.die("unused"),
+        }),
+      )
+
+      expect(output).toContain("bindings:")
+      expect(output).toContain("binding: binding:github:demo")
+      expect(output).toContain("workflowModulePath: .effect/workflow.ts")
+    }),
+  )
 })
 
 const runCli = (args: ReadonlyArray<string>, runtimeLayer: Layer.Layer<any, any, any> = makeCliLayer()) =>
@@ -347,6 +393,21 @@ const sampleRunState = () =>
     finishedAt: new Date(0),
     artifacts: [],
     logs: [],
+  })
+
+const sampleBindingSummary = () =>
+  new GitHubBindingSummary({
+    bindingId: "binding:github:demo" as any,
+    provider: "github",
+    repository: "acme/widgets",
+    cloneUrl: "https://github.com/acme/widgets.git",
+    branch: "main",
+    workflowModulePath: ".effect/workflow.ts",
+    enabled: true,
+    hasWebhookSecret: false,
+    accessMode: "anonymous",
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
   })
 
 const terminalLayer = Layer.succeed(

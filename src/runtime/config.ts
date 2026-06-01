@@ -1,6 +1,7 @@
 import { Config, Effect, Layer, Redacted } from "effect"
 import type * as Duration from "effect/Duration"
 import * as Context from "effect/Context"
+import { resolve as resolvePath } from "node:path"
 
 export class PostgresConfig extends Context.Service<
   PostgresConfig,
@@ -142,6 +143,24 @@ export class EngineServiceConfig extends Context.Service<
         baseUrl,
         port,
       }
+    }),
+  )
+}
+
+export class GitHubTriggerConfig extends Context.Service<
+  GitHubTriggerConfig,
+  {
+    readonly workspaceRoot: string
+  }
+>()("@effect-cicd/runtime/GitHubTriggerConfig") {
+  static readonly layer = Layer.effect(
+    GitHubTriggerConfig,
+    Effect.gen(function* () {
+      const workspaceRoot = yield* Config.string("GITHUB_WORKSPACE_ROOT").pipe(
+        Config.orElse(() => Config.succeed(resolvePath(process.cwd(), ".effect-cicd", "github"))),
+      )
+
+      return { workspaceRoot }
     }),
   )
 }

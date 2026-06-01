@@ -1,5 +1,7 @@
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
+import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 
 import type { AuthoredWorkflow } from "./authored-workflow.ts";
 
@@ -115,7 +117,17 @@ const loadWorkflowModule = Effect.fn("dsl.loadWorkflowModule")(function* (
 
 const resolveWorkflowModulePath = (modulePath: string) =>
   Effect.try({
-    try: () => Bun.resolveSync(modulePath, process.cwd()),
+    try: () => {
+      if (isAbsolute(modulePath)) {
+        if (!existsSync(modulePath)) {
+          throw new Error(`Module path does not exist: ${modulePath}`);
+        }
+
+        return modulePath;
+      }
+
+      return Bun.resolveSync(modulePath, process.cwd());
+    },
     catch: (error) =>
       new WorkflowModuleNotFound({
         modulePath,
