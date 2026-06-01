@@ -24,7 +24,7 @@ import {
 } from "../domain/github.ts"
 import { BindingId } from "../domain/ids.ts"
 import { ProjectSummary, deriveGitHubProjectId } from "../domain/project.ts"
-import { NormalizedWorkflowDefinition, SourceMetadata } from "../domain/workflow-definition.ts"
+import { GitHubPushTriggerDeclaration, NormalizedWorkflowDefinition, SourceMetadata } from "../domain/workflow-definition.ts"
 import { DslMaterializer, WorkflowModuleLoader } from "../dsl/index.ts"
 import { Engine } from "../engine/interface.ts"
 import { GitHubAppConfig } from "../runtime/config.ts"
@@ -65,7 +65,7 @@ export class GitHubIntegration extends Context.Service<
       const appConfig = yield* GitHubAppConfig
       const runLinkStore = yield* GitHubRunLinkStore
       const triggerDeliveryStore = yield* GitHubTriggerDeliveryStore
-      const inflightTriggers = new Map<string, Fiber.Fiber<GitHubTriggeredRun, DomainError>>()
+      const inflightTriggers = new Map<string, Fiber.Fiber<GitHubTriggeredRun | undefined, DomainError>>()
 
       const addBinding = Effect.fn("GitHubIntegration.addBinding")(
         function* (request: GitHubBindingCreateRequest) {
@@ -196,7 +196,7 @@ const handlePushEvent = (
   materializer: typeof DslMaterializer.Service,
   engine: typeof Engine.Service,
   triggerDeliveryStore: typeof GitHubTriggerDeliveryStore.Service,
-  inflightTriggers: Map<string, Fiber.Fiber<GitHubTriggeredRun, DomainError>>,
+  inflightTriggers: Map<string, Fiber.Fiber<GitHubTriggeredRun | undefined, DomainError>>,
 ) =>
   Effect.gen(function* () {
     const repository = payload.repository.full_name
@@ -262,7 +262,7 @@ const handlePushEvent = (
         triggerDeliveryStore,
         inflightTriggers,
       ),
-    ).pipe(Effect.map((runs) => runs as ReadonlyArray<GitHubTriggeredRun>))
+    ).pipe(Effect.map((runs) => runs.filter((run): run is GitHubTriggeredRun => run !== undefined)))
 
     return new GitHubTriggerResponse({
       event: "push",
@@ -286,7 +286,7 @@ const triggerBinding = (
   materializer: typeof DslMaterializer.Service,
   engine: typeof Engine.Service,
   triggerDeliveryStore: typeof GitHubTriggerDeliveryStore.Service,
-  inflightTriggers: Map<string, Fiber.Fiber<GitHubTriggeredRun, DomainError>>,
+  inflightTriggers: Map<string, Fiber.Fiber<GitHubTriggeredRun | undefined, DomainError>>,
 ) =>
   Effect.gen(function* () {
     if (binding.installationId === undefined || binding.repositoryId === undefined) {
@@ -304,7 +304,7 @@ const triggerBinding = (
     const inflight = inflightTriggers.get(idempotencyKey)
     if (inflight !== undefined && inflight.pollUnsafe() === undefined) {
       const triggered = yield* Fiber.join(inflight)
-      return new GitHubTriggeredRun({ ...triggered, deduped: true })
+      return triggered === undefined ? undefined : new GitHubTriggeredRun({ ...triggered, deduped: true })
     }
 
     const fiber = yield* executeTriggeredBinding(
@@ -368,6 +368,10 @@ const executeTriggeredBinding = (
           }),
       ),
     )
+
+    if (!supportsGitHubPushTrigger(definition, payload.ref)) {
+      return undefined
+    }
 
     const enrichedDefinition = annotateDefinition(definition, binding, payload, deliveryId, snapshot)
     const plan = yield* engine.plan(enrichedDefinition)
@@ -433,6 +437,7 @@ const annotateDefinition = (
       ...definition.metadata,
       trigger: {
         provider: "github",
+        event: "github.push",
         projectId: binding.projectId,
         bindingId: binding.bindingId,
         installationId: binding.installationId,
@@ -442,6 +447,7 @@ const annotateDefinition = (
         repository: payload.repository.full_name,
         ref: payload.ref,
         branch: branchNameFromRef(payload.ref),
+        tag: tagNameFromRef(payload.ref),
         commitSha: payload.after,
         deliveryId: deliveryId ?? undefined,
       },
@@ -617,4 +623,26 @@ export const verifyWebhookSignature = (body: string, signature: string | null, s
 
 export const branchNameFromRef = (ref: string) => (ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : undefined)
 
+export const tagNameFromRef = (ref: string) => (ref.startsWith("refs/tags/") ? ref.slice("refs/tags/".length) : undefined)
+
 const isZeroSha = (commitSha: string) => /^0+$/.test(commitSha)
+
+const supportsGitHubPushTrigger = (definition: NormalizedWorkflowDefinition, ref: string) => {
+  const pushTrigger = (definition.triggers ?? []).find((trigger) => trigger._tag === "GitHubPushTriggerDeclaration") as
+    | GitHubPushTriggerDeclaration
+    | undefined
+
+  if (pushTrigger === undefined) {
+    return false
+  }
+
+  const branch = branchNameFromRef(ref)
+  const tag = tagNameFromRef(ref)
+
+  return matchesOptionalSet(pushTrigger.refs, ref) &&
+    matchesOptionalSet(pushTrigger.branches, branch) &&
+    matchesOptionalSet(pushTrigger.tags, tag)
+}
+
+const matchesOptionalSet = (values: ReadonlyArray<string> | undefined, candidate: string | undefined) =>
+  values === undefined || values.length === 0 ? true : candidate !== undefined && values.includes(candidate)

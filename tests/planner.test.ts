@@ -9,6 +9,7 @@ import {
   CancellationPolicyDeclaration,
   ContainerCommandDeclaration,
   DependencyDeclaration,
+  GitHubPushTriggerDeclaration,
   NamedDeclaration,
   NormalizedWorkflowDefinition,
   OutputDeclaration,
@@ -16,9 +17,11 @@ import {
   RetryPolicyDeclaration,
   SourceMetadata,
   TimeoutPolicyDeclaration,
+  TriggerBranchConditionDeclaration,
   UnitInputDeclaration,
   UnitOutputSourceDeclaration,
   UnitDeclaration,
+  UpstreamStatusConditionDeclaration,
   WorkflowInputSourceDeclaration,
   WorkflowOutputDeclaration,
 } from "../src/domain/workflow-definition.ts"
@@ -301,6 +304,31 @@ describe("Planner", () => {
       expect(plan.diagnostics).toEqual([])
     }),
   )
+
+  it.effect("plans explicit triggers and conditions", () =>
+    Effect.gen(function* () {
+      const planner = yield* Planner
+      const plan = yield* planner.plan(
+        workflow({
+          triggers: [new GitHubPushTriggerDeclaration({ branches: ["main"] })],
+          units: [
+            unit("unit:build", {
+              conditions: [new TriggerBranchConditionDeclaration({ branch: "main" })],
+            }),
+            unit("unit:notify", {
+              conditions: [new UpstreamStatusConditionDeclaration({ unitId: UnitId.make("unit:build"), status: "failed" })],
+            }),
+          ],
+          dependencies: [dependency("unit:build", "unit:notify")],
+        }),
+      )
+
+      expect(plan.triggers?.map((trigger) => trigger._tag)).toEqual(["GitHubPushTriggerDeclaration"])
+      expect(plan.units.find((planUnit) => planUnit.unitId === UnitId.make("unit:notify"))?.conditions?.map((condition) => condition._tag)).toEqual([
+        "UpstreamStatusConditionDeclaration",
+      ])
+    }).pipe(Effect.provide(Planner.layer)),
+  )
 })
 
 const workflow = (overrides: Partial<ConstructorParameters<typeof NormalizedWorkflowDefinition>[0]> = {}) =>
@@ -309,6 +337,7 @@ const workflow = (overrides: Partial<ConstructorParameters<typeof NormalizedWork
     workflowId: WorkflowId.make("workflow:test"),
     name: "test workflow",
     metadata: { owner: "ci" },
+    triggers: [],
     units: [unit("unit:build")],
     dependencies: [],
     inputs: [],
@@ -329,6 +358,7 @@ const unit = (unitId: string, overrides: Partial<ConstructorParameters<typeof Un
     metadata: {},
     inputs: [],
     outputs: [],
+    conditions: [],
     artifacts: [],
     policies: [],
     ...overrides,

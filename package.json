@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "cli": "bun run index.ts",
+    "local": "bun run index.local.ts",
     "prepare": "effect-language-service patch",
     "typecheck": "tsc --noEmit",
     "test": "bun run --bun vitest run",

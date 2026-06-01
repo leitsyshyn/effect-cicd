@@ -15,7 +15,7 @@ import {
   NormalizedWorkflowDefinition,
   UnitDeclaration,
 } from "../src/domain/workflow-definition.ts"
-import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState } from "../src/domain/runtime-state.ts"
+import { ExecutionUnitState, ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState } from "../src/domain/runtime-state.ts"
 import { DslMaterializer } from "../src/dsl/index.ts"
 import { WorkflowModuleLoader } from "../src/dsl/loader.ts"
 import { Engine } from "../src/engine/interface.ts"
@@ -201,12 +201,12 @@ describe("CLI", () => {
           Layer.succeed(Engine, {
             validate: () => Effect.die("unused"),
             plan: () => Effect.succeed(samplePlan()),
-            startRun: () => Effect.die("unused"),
-            submitRun: (_plan, options) =>
+            startRun: (_plan, options) =>
               Effect.sync(() => {
                 capturedWorkspace = options?.workspacePath
                 return sampleRunState()
               }),
+            submitRun: () => Effect.die("unused"),
             cancelRun: () => Effect.die("unused"),
             retryRun: () => Effect.die("unused"),
             listRuns: () => Effect.die("unused"),
@@ -246,12 +246,12 @@ describe("CLI", () => {
           Layer.succeed(Engine, {
             validate: () => Effect.die("unused"),
             plan: () => Effect.succeed(samplePlan()),
-            startRun: () => Effect.die("unused"),
-            submitRun: (_plan, options) =>
+            startRun: (_plan, options) =>
               Effect.sync(() => {
                 capturedInputs = options?.inputValues
                 return sampleRunState()
               }),
+            submitRun: () => Effect.die("unused"),
             cancelRun: () => Effect.die("unused"),
             retryRun: () => Effect.die("unused"),
             listRuns: () => Effect.die("unused"),
@@ -392,6 +392,54 @@ describe("CLI", () => {
 
       expect(canceledRunId).toBe("run:demo")
       expect(output).toContain("status: canceled")
+    }),
+  )
+
+  it.effect("runs show includes skip reasons for skipped units", () =>
+    Effect.gen(function* () {
+      const output = yield* runCli(
+        ["runs", "show", "run:demo"],
+        Layer.mergeAll(
+          WorkflowModuleLoader.layer,
+          DslMaterializer.layer,
+          Layer.succeed(Engine, {
+            validate: () => Effect.die("unused"),
+            plan: () => Effect.die("unused"),
+            startRun: () => Effect.die("unused"),
+            submitRun: () => Effect.die("unused"),
+            cancelRun: () => Effect.die("unused"),
+            retryRun: () => Effect.die("unused"),
+            listRuns: () => Effect.die("unused"),
+            inspectRun: () =>
+              Effect.succeed(
+                new WorkflowRunState({
+                  ...sampleRunState(),
+                  runId: RunId.make("run:demo"),
+                  units: [
+                    new ExecutionUnitState({
+                      ...sampleRunUnitState(),
+                      status: "skipped",
+                      skipReason: "Condition false: branch is not main",
+                    }),
+                  ],
+                }),
+              ),
+            streamRuns: () => Stream.empty,
+            streamRun: () => Stream.empty,
+            readRunEvents: () => Effect.die("unused"),
+            readArtifacts: () => Effect.die("unused"),
+            readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
+            readLogs: () => Effect.die("unused"),
+            readLogPayload: () => Effect.die("unused"),
+            deleteArtifact: () => Effect.die("unused"),
+            deleteLog: () => Effect.die("unused"),
+            gcRunArtifacts: () => Effect.die("unused"),
+            version: () => Effect.succeed("0.0.0"),
+          }),
+        ),
+      )
+
+      expect(output).toContain("skipped=Condition false: branch is not main")
     }),
   )
 
@@ -686,6 +734,17 @@ const sampleRunState = () =>
     updatedAt: new Date(0),
     startedAt: new Date(0),
     finishedAt: new Date(0),
+    artifacts: [],
+    logs: [],
+  })
+
+const sampleRunUnitState = () =>
+  new ExecutionUnitState({
+    runId: RunId.make("run:sample"),
+    unitId: UnitId.make("unit:build"),
+    status: "pending",
+    dependencies: [],
+    attempts: [],
     artifacts: [],
     logs: [],
   })

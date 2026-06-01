@@ -178,6 +178,39 @@ describe("GitHub integration", () => {
       }).pipe(Effect.provide(gitHubIntegrationLayer(fixture, mock)), Effect.ensuring(cleanupFixture(fixture)))
     }),
   )
+
+  it.effect("ignores matched bindings when the workflow trigger does not match the pushed branch", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeWorkflowSnapshotFixture("release")
+      const mock = makeGitHubApiMock()
+
+      yield* Effect.gen(function* () {
+        const service = yield* GitHubIntegration
+        const engine = yield* Engine
+
+        yield* service.addBinding(
+          new GitHubBindingCreateRequest({
+            repository: "acme/widgets",
+            installationId: 1001,
+            branch: "main",
+            workflowModulePath: "workflow.ts",
+          }),
+        )
+
+        const rawBody = JSON.stringify(samplePushPayload())
+        const response = yield* service.handleWebhook({
+          event: "push",
+          signature: signWebhook(rawBody),
+          deliveryId: "delivery-ignore",
+          rawBody,
+        })
+
+        expect(response.matchedBindings).toBe(1)
+        expect(response.triggeredRuns).toEqual([])
+        expect((yield* engine.listRuns())).toEqual([])
+      }).pipe(Effect.provide(gitHubIntegrationLayer(fixture, mock)), Effect.ensuring(cleanupFixture(fixture)))
+    }),
+  )
 })
 
 const gitHubIntegrationLayer = (fixture: WorkflowFixture, mock: GitHubApiMock) => {
@@ -269,12 +302,12 @@ interface WorkflowFixture {
   readonly workspacePath: string
 }
 
-const makeWorkflowSnapshotFixture = () =>
+const makeWorkflowSnapshotFixture = (branch = "main") =>
   Effect.promise(async () => {
     const snapshotPath = await mkdtemp(join(tmpdir(), "effect-cicd-github-snapshot-"))
     const workspacePath = join(snapshotPath, "packages", "app")
     await mkdir(workspacePath, { recursive: true })
-    await Bun.write(join(snapshotPath, "workflow.ts"), workflowModuleText())
+    await Bun.write(join(snapshotPath, "workflow.ts"), workflowModuleText(branch))
     await Bun.write(join(workspacePath, ".keep"), "")
 
     return { snapshotPath, workspacePath }
@@ -308,10 +341,16 @@ const waitForTerminalRun = (engine: typeof Engine.Service, runId: string): Effec
     ),
   )
 
-const workflowModuleText = () => `
+const workflowModuleText = (branch: string) => `
 export default {
   workflowId: "workflow:github:test",
   name: "github test workflow",
+  triggers: [
+    {
+      _tag: "GitHubPushTrigger",
+      branches: [${JSON.stringify(branch)}],
+    },
+  ],
   units: [
     {
       unitId: "unit:build",

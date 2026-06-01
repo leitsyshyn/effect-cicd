@@ -1,18 +1,24 @@
 import { SecretRef } from "../domain/secrets.ts"
 import type {
+  AuthoredCondition,
   AuthoredArtifactDeclaration,
   AuthoredCancellationPolicy,
   AuthoredContainerCommand,
+  AuthoredGitHubPushTrigger,
+  AuthoredManualTrigger,
   AuthoredOutputDeclaration,
   AuthoredReportDeclaration,
   AuthoredRetryPolicy,
+  AuthoredTrigger,
   AuthoredTimeoutPolicy,
   AuthoredUnit,
   AuthoredUnitInputDeclaration,
   AuthoredUnitOutputSource,
   AuthoredWorkflow,
+  AuthoredWorkflowInputEqualsCondition,
   AuthoredWorkflowInputSource,
   AuthoredWorkflowOutputDeclaration,
+  AuthoredUpstreamStatusCondition,
 } from "./authored-workflow.ts"
 
 export const workflow = (definition: AuthoredWorkflow): AuthoredWorkflow => definition
@@ -31,6 +37,19 @@ export const artifact = (definition: AuthoredArtifactDeclaration): AuthoredArtif
   ...definition,
 })
 
+export const manualTrigger = (): AuthoredManualTrigger => ({
+  _tag: "ManualTrigger",
+})
+
+export const githubPushTrigger = (
+  definition: Omit<AuthoredGitHubPushTrigger, "_tag"> = {},
+): AuthoredGitHubPushTrigger => ({
+  _tag: "GitHubPushTrigger",
+  ...definition,
+})
+
+export const trigger = <A extends AuthoredTrigger>(definition: A): A => definition
+
 export const workflowInput = (name: string): AuthoredWorkflowInputSource => ({
   _tag: "WorkflowInputSource",
   inputName: name,
@@ -47,6 +66,46 @@ export const input = (definition: AuthoredUnitInputDeclaration): AuthoredUnitInp
 export const output = <A extends AuthoredOutputDeclaration | AuthoredWorkflowOutputDeclaration>(definition: A): A => definition
 
 export const report = (definition: AuthoredReportDeclaration): AuthoredReportDeclaration => definition
+
+export const whenTriggerEvent = (event: "manual" | "github.push"): AuthoredCondition => ({
+  _tag: "TriggerEventCondition",
+  event,
+})
+
+export const whenBranch = (branch: string): AuthoredCondition => ({
+  _tag: "TriggerBranchCondition",
+  branch,
+})
+
+export const whenRef = (ref: string): AuthoredCondition => ({
+  _tag: "TriggerRefCondition",
+  ref,
+})
+
+export const whenTag = (tag: string): AuthoredCondition => ({
+  _tag: "TriggerTagCondition",
+  tag,
+})
+
+export const whenInputEquals = (
+  inputName: string,
+  value: unknown,
+): AuthoredWorkflowInputEqualsCondition => ({
+  _tag: "WorkflowInputEqualsCondition",
+  inputName,
+  value,
+})
+
+export const whenUpstreamStatus = (
+  unitId: string,
+  status: AuthoredUpstreamStatusCondition["status"],
+): AuthoredUpstreamStatusCondition => ({
+  _tag: "UpstreamStatusCondition",
+  unitId,
+  status,
+})
+
+export const condition = <A extends AuthoredCondition>(definition: A): A => definition
 
 export const retry = (definition: Omit<AuthoredRetryPolicy, "_tag">): AuthoredRetryPolicy => ({
   _tag: "RetryPolicy",

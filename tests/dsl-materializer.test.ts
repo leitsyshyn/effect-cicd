@@ -6,9 +6,12 @@ import {
   artifact,
   containerCommand,
   DslMaterializer,
+  githubPushTrigger,
   retry,
   secret,
   unit,
+  whenBranch,
+  whenInputEquals,
   workflow,
   type AuthoredUnit,
   type AuthoredWorkflow,
@@ -168,6 +171,29 @@ describe("DslMaterializer", () => {
       )
 
       expect(definition.units[0]?.payloadDeclaration.env).toEqual({ NPM_TOKEN: secret("NPM_TOKEN") })
+    }).pipe(Effect.provide(DslMaterializer.layer)),
+  )
+
+  it.effect("materializes explicit triggers and unit conditions", () =>
+    Effect.gen(function* () {
+      const materializer = yield* DslMaterializer
+      const definition = yield* materializer.materialize(
+        authoredWorkflow({
+          triggers: [githubPushTrigger({ branches: ["main"] })],
+          inputs: [{ name: "release", metadata: {} }],
+          units: [
+            authoredUnit("unit:build", {
+              conditions: [whenBranch("main"), whenInputEquals("release", "stable")],
+            }),
+          ],
+        }),
+      )
+
+      expect(definition.triggers?.map((trigger) => trigger._tag)).toEqual(["GitHubPushTriggerDeclaration"])
+      expect(definition.units[0]?.conditions?.map((condition) => condition._tag)).toEqual([
+        "TriggerBranchConditionDeclaration",
+        "WorkflowInputEqualsConditionDeclaration",
+      ])
     }).pipe(Effect.provide(DslMaterializer.layer)),
   )
 })

@@ -89,6 +89,23 @@ export class DependencyDeclaration extends Schema.Class<DependencyDeclaration>("
   source: Schema.optional(SourceMetadata),
 }) {}
 
+export class ManualTriggerDeclaration extends Schema.TaggedClass<ManualTriggerDeclaration>()(
+  "ManualTriggerDeclaration",
+  {},
+) {}
+
+export class GitHubPushTriggerDeclaration extends Schema.TaggedClass<GitHubPushTriggerDeclaration>()(
+  "GitHubPushTriggerDeclaration",
+  {
+    branches: Schema.optional(Schema.Array(Schema.String)),
+    refs: Schema.optional(Schema.Array(Schema.String)),
+    tags: Schema.optional(Schema.Array(Schema.String)),
+  },
+) {}
+
+export const TriggerDeclaration = Schema.Union([ManualTriggerDeclaration, GitHubPushTriggerDeclaration])
+export type TriggerDeclaration = typeof TriggerDeclaration.Type
+
 export class ContainerCommandDeclaration extends Schema.TaggedClass<ContainerCommandDeclaration>()(
   "ContainerCommandDeclaration",
   {
@@ -127,6 +144,60 @@ export class CancellationPolicyDeclaration extends Schema.TaggedClass<Cancellati
   },
 ) {}
 
+export class TriggerEventConditionDeclaration extends Schema.TaggedClass<TriggerEventConditionDeclaration>()(
+  "TriggerEventConditionDeclaration",
+  {
+    event: Schema.Literals(["manual", "github.push"]),
+  },
+) {}
+
+export class TriggerBranchConditionDeclaration extends Schema.TaggedClass<TriggerBranchConditionDeclaration>()(
+  "TriggerBranchConditionDeclaration",
+  {
+    branch: Schema.String,
+  },
+) {}
+
+export class TriggerRefConditionDeclaration extends Schema.TaggedClass<TriggerRefConditionDeclaration>()(
+  "TriggerRefConditionDeclaration",
+  {
+    ref: Schema.String,
+  },
+) {}
+
+export class TriggerTagConditionDeclaration extends Schema.TaggedClass<TriggerTagConditionDeclaration>()(
+  "TriggerTagConditionDeclaration",
+  {
+    tag: Schema.String,
+  },
+) {}
+
+export class WorkflowInputEqualsConditionDeclaration extends Schema.TaggedClass<WorkflowInputEqualsConditionDeclaration>()(
+  "WorkflowInputEqualsConditionDeclaration",
+  {
+    inputName: Schema.String,
+    value: Schema.Unknown,
+  },
+) {}
+
+export class UpstreamStatusConditionDeclaration extends Schema.TaggedClass<UpstreamStatusConditionDeclaration>()(
+  "UpstreamStatusConditionDeclaration",
+  {
+    unitId: UnitId,
+    status: Schema.Literals(["succeeded", "failed", "timed_out", "skipped", "canceled"]),
+  },
+) {}
+
+export const ConditionDeclaration = Schema.Union([
+  TriggerEventConditionDeclaration,
+  TriggerBranchConditionDeclaration,
+  TriggerRefConditionDeclaration,
+  TriggerTagConditionDeclaration,
+  WorkflowInputEqualsConditionDeclaration,
+  UpstreamStatusConditionDeclaration,
+])
+export type ConditionDeclaration = typeof ConditionDeclaration.Type
+
 export const PolicyDeclaration = Schema.Union([
   RetryPolicyDeclaration,
   TimeoutPolicyDeclaration,
@@ -143,6 +214,7 @@ export class UnitDeclaration extends Schema.Class<UnitDeclaration>("UnitDeclarat
   outputs: Schema.optional(Schema.Array(OutputDeclaration)),
   reports: Schema.optional(Schema.Array(ReportDeclaration)),
   artifacts: Schema.Array(ArtifactDeclaration),
+  conditions: Schema.optional(Schema.Array(ConditionDeclaration)),
   policies: Schema.Array(PolicyDeclaration),
   source: Schema.optional(SourceMetadata),
 }) {}
@@ -154,6 +226,7 @@ export class NormalizedWorkflowDefinition extends Schema.Class<NormalizedWorkflo
   workflowId: WorkflowId,
   name: Schema.String,
   metadata: Schema.Record(Schema.String, Schema.Unknown),
+  triggers: Schema.optional(Schema.Array(TriggerDeclaration)),
   units: Schema.Array(UnitDeclaration),
   dependencies: Schema.Array(DependencyDeclaration),
   inputs: Schema.Array(NamedDeclaration),

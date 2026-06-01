@@ -105,6 +105,7 @@ export class ExecutionUnitState extends Schema.Class<ExecutionUnitState>("Execut
   finishedAt: Schema.optional(Schema.Date),
   failure: Schema.optional(FailureSummary),
   cancellationReason: Schema.optional(Schema.String),
+  skipReason: Schema.optional(Schema.String),
   resolvedInputs: Schema.optional(Schema.Array(ResolvedInputValue)),
   outputs: Schema.optional(Schema.Array(OutputValueSummary)),
   reports: Schema.optional(Schema.Array(ReportSummary)),

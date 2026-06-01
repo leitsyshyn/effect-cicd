@@ -10,11 +10,13 @@ import { RunCreated } from "../src/domain/events.ts"
 import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState, ExecutionUnitState, ExecutionAttemptState } from "../src/domain/runtime-state.ts"
 import {
   ArtifactDeclaration,
+  TriggerBranchConditionDeclaration,
   NamedDeclaration,
   OutputDeclaration,
   ReportDeclaration,
   UnitInputDeclaration,
   UnitOutputSourceDeclaration,
+  UpstreamStatusConditionDeclaration,
   WorkflowInputSourceDeclaration,
   WorkflowOutputDeclaration,
 } from "../src/domain/workflow-definition.ts"
@@ -596,6 +598,60 @@ describe("Orchestrator", () => {
       ),
     ),
   )
+
+  it.effect("false trigger conditions skip units visibly and still succeed the run", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+      const eventLog = yield* EventLog
+
+      const run = yield* orchestrator.startRun(
+        plan("workflow:conditional-skip", [planUnit("unit:build", [], {}, { conditions: [new TriggerBranchConditionDeclaration({ branch: "main" })] })]),
+      )
+      const events = yield* eventLog.readRunEvents(run.runId)
+
+      expect(run.status).toBe("succeeded")
+      expect(run.units[0]?.status).toBe("skipped")
+      expect(run.units[0]?.skipReason).toContain("branch is not main")
+      expect(events.map((event) => event._tag)).toContain("UnitSkipped")
+      expect(events.map((event) => event._tag)).toContain("RunSucceeded")
+    }).pipe(Effect.provide(runtimeLayer())),
+  )
+
+  it.effect("upstream status conditions can run follow-up units after failure", () =>
+    {
+      const requests = new Array<DispatchRequest>()
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator
+        const run = yield* orchestrator.startRun(
+          plan(
+            "workflow:on-failure",
+            [
+              planUnit("unit:build"),
+              planUnit("unit:notify", ["unit:build"], {}, {
+                conditions: [new UpstreamStatusConditionDeclaration({ unitId: UnitId.make("unit:build"), status: "failed" })],
+              }),
+            ],
+            [planDependency("unit:build", "unit:notify")],
+          ),
+        )
+
+        expect(run.status).toBe("failed")
+        expect(run.units.find((unit) => unit.unitId === UnitId.make("unit:build"))?.status).toBe("failed")
+        expect(run.units.find((unit) => unit.unitId === UnitId.make("unit:notify"))?.status).toBe("succeeded")
+        expect(requests.map((request) => request.unitId)).toEqual([UnitId.make("unit:build"), UnitId.make("unit:notify")])
+      }).pipe(
+        Effect.provide(
+          runtimeLayer({
+            requests,
+            resultsByUnitId: {
+              "unit:build": { outcome: "failed" },
+            },
+          }),
+        ),
+      )
+    },
+  )
 })
 
 const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
@@ -623,6 +679,7 @@ const plan = (
     workflowId: WorkflowId.make(workflowId),
     workflowName: workflowId.replace("workflow:", ""),
     metadata,
+    triggers: [],
     inputs,
     outputs,
     units,
@@ -650,6 +707,7 @@ const planUnit = (
     reports: [],
     logExpectations: [named("stdout")],
     artifactExpectations: [artifact("dist")],
+    conditions: [],
     policies: [],
     diagnostics: [],
     ...overrides,

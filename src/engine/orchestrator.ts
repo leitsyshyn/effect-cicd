@@ -39,6 +39,7 @@ import { ExecutionPlan, PlanRetryPolicy, PlanTimeoutPolicy, PlanUnit } from "../
 import { AttemptId, EventId, ProjectId, RunId, UnitId } from "../domain/ids.ts"
 import { ProducedReport, ReportSummary } from "../domain/reports.ts"
 import { isSecretRef } from "../domain/secrets.ts"
+import { ConditionDeclaration } from "../domain/workflow-definition.ts"
 import {
   ExecutionAttemptState,
   ExecutionUnitState,
@@ -252,7 +253,16 @@ export class Orchestrator extends Context.Service<
             return yield* finalizeCancellationState(run, "Cancellation requested")
           }
 
-          const readyUnitIds = getReadyUnitIds(run)
+          run = yield* evaluatePendingUnits(plan, run)
+          if (isTerminalRun(run)) {
+            return run
+          }
+
+          if (allUnitsTerminal(run)) {
+            return yield* finalizeTerminalRun(run)
+          }
+
+          const readyUnitIds = getReadyUnitIds(plan, run)
           if (readyUnitIds.length === 0) {
             return run
           }
@@ -388,6 +398,7 @@ export class Orchestrator extends Context.Service<
               ...runningUnit,
               status: "succeeded",
               finishedAt,
+              skipReason: undefined,
               resolvedInputs,
               outputs: outputValues,
               reports,
@@ -399,22 +410,14 @@ export class Orchestrator extends Context.Service<
 
           run = replaceUnit(appendRunPayloads(run, logs, artifacts, reports, finishedAt), succeededUnit, finishedAt)
 
-          if (run.units.every((unit) => unit.status === "succeeded")) {
-            run = finalizeRun(run, "succeeded", finishedAt)
-          }
-
           yield* storageTransactor.run(
             Effect.gen(function* () {
               yield* persistRun(run)
               yield* appendEvent(run.runId, (base) => new AttemptSucceeded({ ...base, unitId, attemptId }))
               yield* appendEvent(run.runId, (base) => new UnitSucceeded({ ...base, unitId }))
-
-              if (run.status === "succeeded") {
-                yield* appendEvent(run.runId, (base) => new RunSucceeded(base))
-              }
             }),
           )
-          yield* publishRunUpdate(run, run.status === "succeeded" ? "RunSucceeded" : "UnitSucceeded")
+          yield* publishRunUpdate(run, "UnitSucceeded")
 
           return run
         }
@@ -439,6 +442,7 @@ export class Orchestrator extends Context.Service<
               status: "timed_out",
               finishedAt,
               failure,
+              skipReason: undefined,
               resolvedInputs,
               outputs: outputValues,
               reports,
@@ -448,31 +452,16 @@ export class Orchestrator extends Context.Service<
             timedOutAttempt,
           )
 
-          const skippedUnitIds = getBlockedDescendantUnitIds(plan, unitId)
           run = replaceUnit(appendRunPayloads(run, logs, artifacts, reports, finishedAt), timedOutUnit, finishedAt)
-          run = applySkippedUnits(run, skippedUnitIds, finishedAt)
-          run = finalizeRun(run, "timed_out", finishedAt, failure)
 
           yield* storageTransactor.run(
             Effect.gen(function* () {
               yield* persistRun(run)
               yield* appendEvent(run.runId, (base) => new AttemptTimedOut({ ...base, unitId, attemptId, failure }))
               yield* appendEvent(run.runId, (base) => new UnitTimedOut({ ...base, unitId, failure }))
-
-              for (const skippedUnitId of skippedUnitIds) {
-                const skippedUnit = run.units.find((unit) => unit.unitId === skippedUnitId)
-                if (skippedUnit?.status === "skipped") {
-                  yield* appendEvent(
-                    run.runId,
-                    (base) => new UnitSkipped({ ...base, unitId: skippedUnitId, reason: `Blocked by ${unitId}` }),
-                  )
-                }
-              }
-
-              yield* appendEvent(run.runId, (base) => new RunTimedOut({ ...base, failure }))
             }),
           )
-          yield* publishRunUpdate(run, "RunTimedOut")
+          yield* publishRunUpdate(run, "UnitTimedOut")
 
           return run
         }
@@ -556,16 +545,12 @@ export class Orchestrator extends Context.Service<
           status: "failed",
           finishedAt,
           failure,
+          skipReason: undefined,
         })
 
-        const skippedUnitIds = getBlockedDescendantUnitIds(plan, unitId)
         run = replaceUnit(appendRunPayloads(run, logs, artifacts, reports, finishedAt), failedUnit, finishedAt)
-        run = applySkippedUnits(run, skippedUnitIds, finishedAt)
-        run = finalizeRun(run, "failed", finishedAt, failure)
         yield* Effect.sync(() => {
           metric.incrementCounter("units_total", { status: "failed" })
-          metric.incrementCounter("runs_total", { status: "failed" })
-          metric.setGauge("runs_active", undefined, 0)
         })
 
         yield* storageTransactor.run(
@@ -573,23 +558,96 @@ export class Orchestrator extends Context.Service<
             yield* persistRun(run)
             yield* appendEvent(run.runId, (base) => new AttemptFailed({ ...base, unitId, attemptId, failure }))
             yield* appendEvent(run.runId, (base) => new UnitFailed({ ...base, unitId, failure }))
-
-            for (const skippedUnitId of skippedUnitIds) {
-              const skippedUnit = run.units.find((unit) => unit.unitId === skippedUnitId)
-              if (skippedUnit?.status === "skipped") {
-                yield* appendEvent(
-                  run.runId,
-                  (base) => new UnitSkipped({ ...base, unitId: skippedUnitId, reason: `Blocked by ${unitId}` }),
-                )
-              }
-            }
-
-            yield* appendEvent(run.runId, (base) => new RunFailed({ ...base, failure }))
           }),
         )
-        yield* publishRunUpdate(run, "RunFailed")
+        yield* publishRunUpdate(run, "UnitFailed")
 
         return run
+      })
+
+      const evaluatePendingUnits: (
+        plan: ExecutionPlan,
+        initialRun: WorkflowRunState,
+      ) => Effect.Effect<WorkflowRunState, StoreUnavailable, never> = Effect.fn("Orchestrator.evaluatePendingUnits")(function* (
+        plan: ExecutionPlan,
+        initialRun: WorkflowRunState,
+      ) {
+        let run = initialRun
+        const skipped = new Array<{ readonly unitId: UnitId; readonly reason: string }>()
+        let changed = true
+
+        while (changed) {
+          changed = false
+
+          for (const unit of run.units.filter((candidate) => candidate.status === "pending").sort(compareUnitsById)) {
+            const planUnit = yield* getPlanUnit(plan, unit.unitId)
+            const decision = decidePendingUnit(run, planUnit)
+            if (decision._tag !== "skip") {
+              continue
+            }
+
+            run = applySkippedUnit(run, unit.unitId, decision.reason, yield* nowDate)
+            skipped.push({ unitId: unit.unitId, reason: decision.reason })
+            changed = true
+          }
+        }
+
+        if (skipped.length === 0) {
+          return run
+        }
+
+        yield* storageTransactor.run(
+          Effect.gen(function* () {
+            yield* persistRun(run)
+            for (const unit of skipped) {
+              yield* appendEvent(run.runId, (base) => new UnitSkipped({ ...base, unitId: unit.unitId, reason: unit.reason }))
+            }
+          }),
+        )
+        yield* publishRunUpdate(run, "UnitSkipped")
+
+        return run
+      })
+
+      const finalizeTerminalRun: (
+        run: WorkflowRunState,
+      ) => Effect.Effect<WorkflowRunState, StoreUnavailable, never> = Effect.fn("Orchestrator.finalizeTerminalRun")(function* (
+        run: WorkflowRunState,
+      ) {
+        if (isTerminalRun(run) || !allUnitsTerminal(run)) {
+          return run
+        }
+
+        const finishedAt = yield* nowDate
+        const outcome = determineRunOutcome(run)
+        const finalizedRun = finalizeRun(run, outcome.status, finishedAt, outcome.failure)
+
+        yield* storageTransactor.run(
+          Effect.gen(function* () {
+            yield* persistRun(finalizedRun)
+            switch (outcome.status) {
+              case "succeeded":
+                yield* appendEvent(finalizedRun.runId, (base) => new RunSucceeded(base))
+                break
+              case "failed":
+                yield* appendEvent(finalizedRun.runId, (base) => new RunFailed({ ...base, failure: outcome.failure! }))
+                break
+              case "timed_out":
+                yield* appendEvent(finalizedRun.runId, (base) => new RunTimedOut({ ...base, failure: outcome.failure! }))
+                break
+            }
+          }),
+        )
+        yield* Effect.sync(() => {
+          metric.incrementCounter("runs_total", { status: outcome.status })
+          metric.setGauge("runs_active", undefined, 0)
+        })
+        yield* publishRunUpdate(
+          finalizedRun,
+          outcome.status === "succeeded" ? "RunSucceeded" : outcome.status === "failed" ? "RunFailed" : "RunTimedOut",
+        )
+
+        return finalizedRun
       })
 
       const finalizeCancellationState = Effect.fn("Orchestrator.finalizeCancellationState")(function* (
@@ -860,6 +918,7 @@ const createInitialRun = (
   options?: RunStartOptions,
   retriedFromRunId?: RunId,
 ) => {
+  const executionPlan = ensureManualTriggerMetadata(plan)
   const units = plan.units.map(
     (unit) =>
       new ExecutionUnitState({
@@ -868,6 +927,7 @@ const createInitialRun = (
         status: "pending",
         dependencies: unit.dependencies,
         attempts: [],
+        skipReason: undefined,
         resolvedInputs: [],
         outputs: [],
         reports: [],
@@ -882,7 +942,7 @@ const createInitialRun = (
     workflowId: plan.workflowId,
     planId: plan.planId,
     execution: new RunExecutionContext({
-      plan,
+      plan: executionPlan,
       options: new RunExecutionOptions({ workspacePath: options?.workspacePath, inputValues: options?.inputValues }),
       submittedAt: createdAt,
       retriedFromRunId,
@@ -893,7 +953,7 @@ const createInitialRun = (
     createdAt,
     updatedAt: createdAt,
     inputs: [...inputs],
-    outputs: resolveWorkflowOutputs(plan, inputs, units),
+    outputs: resolveWorkflowOutputs(executionPlan, inputs, units),
     reports: [],
     artifacts: [],
     logs: [],
@@ -1318,30 +1378,6 @@ const finalizeRun = (
     }),
   )
 
-const applySkippedUnits = (run: WorkflowRunState, skippedUnitIds: ReadonlyArray<UnitId>, finishedAt: Date) => {
-  const skippedIds = new Set(skippedUnitIds)
-  const units = run.units.map((unit) => {
-    if (!skippedIds.has(unit.unitId) || (unit.status !== "pending" && unit.status !== "ready")) {
-      return unit
-    }
-
-    return new ExecutionUnitState({
-      ...unit,
-      status: "skipped",
-      finishedAt,
-    })
-  })
-
-  return withResolvedWorkflowOutputs(
-    new WorkflowRunState({
-      ...run,
-      units,
-      progress: summarizeProgress(units),
-      updatedAt: finishedAt,
-    }),
-  )
-}
-
 const recoverRun = (run: WorkflowRunState, recoveredAt: Date) => {
   const units = run.units.map((unit) => {
     const attempts = unit.attempts.map((attempt) => {
@@ -1369,6 +1405,7 @@ const recoverRun = (run: WorkflowRunState, recoveredAt: Date) => {
       finishedAt: undefined,
       failure: undefined,
       cancellationReason: undefined,
+      skipReason: undefined,
       resolvedInputs: [],
       outputs: [],
       reports: [],
@@ -1418,6 +1455,7 @@ const cancelRunState = (run: WorkflowRunState, canceledAt: Date, reason: string)
       finishedAt: canceledAt,
       failure: undefined,
       cancellationReason: reason,
+      skipReason: undefined,
       attempts,
     })
   })
@@ -1444,12 +1482,10 @@ const toFailureSummary = (result: ExecutorResult) =>
 
 const isTerminalRun = (run: WorkflowRunState) => terminalRunStatuses.has(run.status)
 
-const getReadyUnitIds = (run: WorkflowRunState) =>
+const getReadyUnitIds = (plan: ExecutionPlan, run: WorkflowRunState) =>
   run.units
     .filter(
-      (unit) =>
-        unit.status === "pending" &&
-        unit.dependencies.every((dependency) => run.units.find((candidate) => candidate.unitId === dependency)?.status === "succeeded"),
+      (unit) => unit.status === "pending" && decidePendingUnit(run, getPlanUnitSync(plan, unit.unitId))._tag === "ready",
     )
     .map((unit) => unit.unitId)
     .sort(compareUnitIds)
@@ -1478,26 +1514,6 @@ const getRunUnit = (run: WorkflowRunState, unitId: UnitId) => {
         }),
       )
     : Effect.succeed(unit)
-}
-
-const getBlockedDescendantUnitIds = (plan: ExecutionPlan, failedUnitId: UnitId) => {
-  const descendants = new Set<UnitId>()
-  const queue = [failedUnitId]
-
-  while (queue.length > 0) {
-    const current = queue.shift()!
-
-    for (const dependency of plan.dependencies) {
-      if (dependency.from !== current || descendants.has(dependency.to)) {
-        continue
-      }
-
-      descendants.add(dependency.to)
-      queue.push(dependency.to)
-    }
-  }
-
-  return [...descendants].sort(compareUnitIds)
 }
 
 const getNextAttemptNumber = (unit: ExecutionUnitState) =>
@@ -1548,6 +1564,167 @@ const computeRetryDelayMillis = (policy: PlanRetryPolicy, attemptNumber: number)
 
 const compareUnitIds = (left: UnitId, right: UnitId) => (left < right ? -1 : left > right ? 1 : 0)
 
+const compareUnitsById = (left: { readonly unitId: UnitId }, right: { readonly unitId: UnitId }) => compareUnitIds(left.unitId, right.unitId)
+
 const terminalRunStatuses = new Set(["succeeded", "failed", "timed_out", "canceled", "interrupted"])
 
 const terminalUnitStatuses = new Set(["succeeded", "failed", "timed_out", "skipped", "canceled"])
+
+const isTerminalUnitState = (unit: ExecutionUnitState) => terminalUnitStatuses.has(unit.status) && unit.nextRetryAt === undefined
+
+const allUnitsTerminal = (run: WorkflowRunState) => run.units.every(isTerminalUnitState)
+
+const determineRunOutcome = (run: WorkflowRunState): { readonly status: "succeeded" | "failed" | "timed_out"; readonly failure?: FailureSummary } => {
+  const timedOutUnit = run.units.find((unit) => unit.status === "timed_out")
+  if (timedOutUnit !== undefined) {
+    return timedOutUnit.failure === undefined
+      ? { status: "timed_out" }
+      : { status: "timed_out", failure: timedOutUnit.failure }
+  }
+
+  const failedUnit = run.units.find((unit) => unit.status === "failed")
+  if (failedUnit !== undefined) {
+    return failedUnit.failure === undefined ? { status: "failed" } : { status: "failed", failure: failedUnit.failure }
+  }
+
+  return { status: "succeeded" }
+}
+
+const decidePendingUnit = (
+  run: WorkflowRunState,
+  planUnit: PlanUnit,
+):
+  | { readonly _tag: "waiting" }
+  | { readonly _tag: "ready" }
+  | { readonly _tag: "skip"; readonly reason: string } => {
+  const dependencyStates = planUnit.dependencies.map((dependencyId) => run.units.find((candidate) => candidate.unitId === dependencyId))
+  if (dependencyStates.some((unit) => unit === undefined)) {
+    return { _tag: "waiting" }
+  }
+
+  for (const dependency of dependencyStates) {
+    if (!isDependencySatisfiedForEvaluation(planUnit, dependency!)) {
+      return { _tag: "waiting" }
+    }
+  }
+
+  for (const dependency of dependencyStates) {
+    if (!isDependencyAllowedToProceed(planUnit, dependency!)) {
+      return { _tag: "skip", reason: `Blocked by ${dependency!.unitId}` }
+    }
+  }
+
+  for (const condition of planUnit.conditions ?? []) {
+    const result = evaluateCondition(run, condition)
+    if (result._tag !== "ready") {
+      return result
+    }
+  }
+
+  return { _tag: "ready" }
+}
+
+const isDependencySatisfiedForEvaluation = (planUnit: PlanUnit, dependency: ExecutionUnitState) =>
+  hasUpstreamStatusCondition(planUnit, dependency.unitId)
+    ? isTerminalUnitState(dependency)
+    : dependency.status === "succeeded" || isTerminalUnitState(dependency)
+
+const isDependencyAllowedToProceed = (planUnit: PlanUnit, dependency: ExecutionUnitState) => {
+  if (!hasUpstreamStatusCondition(planUnit, dependency.unitId)) {
+    return dependency.status === "succeeded"
+  }
+
+  return isTerminalUnitState(dependency)
+}
+
+const hasUpstreamStatusCondition = (planUnit: PlanUnit, dependencyUnitId: UnitId) =>
+  (planUnit.conditions ?? []).some((condition) => condition._tag === "UpstreamStatusConditionDeclaration" && condition.unitId === dependencyUnitId)
+
+const evaluateCondition = (
+  run: WorkflowRunState,
+  condition: ConditionDeclaration,
+): { readonly _tag: "waiting" } | { readonly _tag: "ready" } | { readonly _tag: "skip"; readonly reason: string } => {
+  const trigger = asRecord(run.execution.plan.metadata.trigger)
+
+  switch (condition._tag) {
+    case "TriggerEventConditionDeclaration":
+      return trigger?.event === condition.event
+        ? { _tag: "ready" }
+        : { _tag: "skip", reason: `Condition false: trigger event is not ${condition.event}` }
+    case "TriggerBranchConditionDeclaration":
+      return trigger?.branch === condition.branch
+        ? { _tag: "ready" }
+        : { _tag: "skip", reason: `Condition false: branch is not ${condition.branch}` }
+    case "TriggerRefConditionDeclaration":
+      return trigger?.ref === condition.ref
+        ? { _tag: "ready" }
+        : { _tag: "skip", reason: `Condition false: ref is not ${condition.ref}` }
+    case "TriggerTagConditionDeclaration":
+      return trigger?.tag === condition.tag
+        ? { _tag: "ready" }
+        : { _tag: "skip", reason: `Condition false: tag is not ${condition.tag}` }
+    case "WorkflowInputEqualsConditionDeclaration": {
+      const input = (run.inputs ?? []).find((candidate) => candidate.name === condition.inputName)
+      return input !== undefined && Object.is(input.value, condition.value)
+        ? { _tag: "ready" }
+        : { _tag: "skip", reason: `Condition false: workflow input ${condition.inputName} did not equal ${JSON.stringify(condition.value)}` }
+    }
+    case "UpstreamStatusConditionDeclaration": {
+      const dependency = run.units.find((candidate) => candidate.unitId === condition.unitId)
+      if (dependency === undefined || !isTerminalUnitState(dependency)) {
+        return { _tag: "waiting" }
+      }
+
+      return dependency.status === condition.status
+        ? { _tag: "ready" }
+        : { _tag: "skip", reason: `Condition false: ${condition.unitId} status is ${dependency.status}, expected ${condition.status}` }
+    }
+  }
+}
+
+const applySkippedUnit = (run: WorkflowRunState, unitId: UnitId, reason: string, finishedAt: Date) => {
+  const unit = run.units.find((candidate) => candidate.unitId === unitId)
+  if (unit === undefined || unit.status !== "pending") {
+    return run
+  }
+
+  return replaceUnit(
+    run,
+    new ExecutionUnitState({
+      ...unit,
+      status: "skipped",
+      finishedAt,
+      skipReason: reason,
+    }),
+    finishedAt,
+  )
+}
+
+const getPlanUnitSync = (plan: ExecutionPlan, unitId: UnitId) => {
+  const unit = plan.units.find((candidate) => candidate.unitId === unitId)
+  if (unit === undefined) {
+    throw new Error(`Execution plan missing unit ${unitId}`)
+  }
+  return unit
+}
+
+const ensureManualTriggerMetadata = (plan: ExecutionPlan) => {
+  const trigger = asRecord(plan.metadata.trigger)
+  if (trigger !== undefined) {
+    return plan
+  }
+
+  return new ExecutionPlan({
+    ...plan,
+    metadata: {
+      ...plan.metadata,
+      trigger: {
+        provider: "manual",
+        event: "manual",
+      },
+    },
+  })
+}
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined

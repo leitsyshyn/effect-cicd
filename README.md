@@ -62,6 +62,14 @@ The package step writes a real artifact at `dist/release.json`, which is persist
 
 ## MVP Demo Walkthrough
 
+Single-command local path:
+
+```bash
+bun run local run ./examples/demo-workflow.ts --workspace ./examples/demo-project
+```
+
+`bun run local ...` boots the same HTTP engine service used in self-hosted mode, runs the CLI against it, then shuts it down.
+
 Start the persistent engine service:
 
 ```bash
@@ -170,7 +178,7 @@ ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs retry <runId>
 
 ## Workflow Semantics
 
-The runtime now honors declared workflow inputs, unit inputs, unit outputs, reports, per-unit timeouts, and run cancellation.
+The runtime now honors declared workflow triggers, workflow inputs, unit inputs, unit outputs, unit conditions, reports, per-unit timeouts, and run cancellation.
 
 Detailed semantics and DSL examples live in `docs/workflow-semantics.md`.
 
@@ -198,11 +206,16 @@ curl -X POST http://127.0.0.1:3000/api/runs \
 
 Current semantics in brief:
 
+- Trigger declarations are workflow-owned metadata. V1 supports `manual` and `GitHub push`.
+- Workflows default to `manual` when no explicit trigger is declared.
+- GitHub webhook execution requires both a repository binding and a matching workflow `GitHubPushTrigger` declaration.
 - Declared workflow inputs are required when starting a run.
 - Unit inputs must reference a workflow input or an upstream unit output explicitly.
+- Unit conditions are engine-evaluated declarations. V1 supports trigger event, branch/ref/tag, workflow input equality, and upstream unit status.
+- False conditions mark the unit `skipped` with a recorded reason; downstream units may still run when they explicitly depend on upstream terminal status conditions.
 - Unit outputs are collected from workspace-relative files and support `json` or `text` values.
 - Reports are collected from declared files and persisted as first-class report summaries plus artifact payloads.
-- Per-unit timeouts end the unit and run in `timed_out` and skip blocked downstream units.
+- Per-unit timeouts end the unit in `timed_out`; the run reaches `timed_out` after remaining schedulable units finish or skip.
 - Run cancellation is engine-owned, marks pending units `canceled`, and performs best-effort interruption of the running unit.
 - Output/report collection currently requires a mounted workspace.
 
@@ -388,16 +401,17 @@ ENGINE_BASE_URL=http://127.0.0.1:3000 bun run cli bindings list
 
 ### 6. What happens on a real push
 
-For an installed and bound repository, a GitHub `push` event now does this:
+For an installed, bound, and trigger-enabled repository workflow, a GitHub `push` event now does this:
 
 1. `POST /api/github/webhooks`
 2. Verify `X-Hub-Signature-256` with `GITHUB_WEBHOOK_SECRET`
 3. Resolve the installation + repository binding
 4. Download the exact commit snapshot with an installation token using the GitHub archive API
 5. Load and materialize the workflow from that snapshot
-6. Submit the run to the persistent engine service
-7. Create/update one workflow-level GitHub Check Run for the engine run
-8. Persist the GitHub-to-run correlation for later updates and inspection
+6. Confirm the workflow declares a matching `GitHubPushTrigger`
+7. Submit the run to the persistent engine service
+8. Create/update one workflow-level GitHub Check Run for the engine run
+9. Persist the GitHub-to-run correlation for later updates and inspection
 
 ### 7. Simulate a push locally
 
@@ -451,6 +465,7 @@ If `PUBLIC_BASE_URL` is configured, the GitHub Check Run `details_url` points to
 
 - GitHub only. No multi-provider SCM abstraction yet.
 - Push only. PR review, merge queue, and deployment-oriented GitHub features are intentionally out of scope.
+- Trigger config is intentionally narrow: `manual` plus `GitHub push`, with repository selection living in bindings and workflow-level enablement/filtering living in the workflow definition.
 - One workflow-level Check Run per engine run. Per-unit checks are not implemented.
 - Installation and repository webhook events are acknowledged but not yet used to mutate bindings automatically.
 - Snapshot retention is cache-only with no cleanup worker yet.

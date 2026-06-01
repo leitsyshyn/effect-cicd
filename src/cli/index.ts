@@ -53,6 +53,30 @@ export const makeAppLayer = () =>
     ),
   )
 
+export const makeAppLayerForBaseUrl = (baseUrl: string) =>
+  Layer.mergeAll(
+    DslMaterializer.layer,
+    WorkflowModuleLoader.layer,
+    engineServiceClientLayer.pipe(
+      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(localEngineServiceConfigLayer(baseUrl)),
+    ),
+    gitHubIntegrationClientLayer.pipe(
+      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(localEngineServiceConfigLayer(baseUrl)),
+    ),
+    SecretsClient.layer.pipe(
+      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(localEngineServiceConfigLayer(baseUrl)),
+    ),
+  )
+
+const localEngineServiceConfigLayer = (baseUrl: string) =>
+  Layer.succeed(EngineServiceConfig, {
+    baseUrl,
+    port: new URL(baseUrl).port.length === 0 ? 80 : Number(new URL(baseUrl).port),
+  })
+
 const workflowModuleArg = Argument.string("workflow-module").pipe(
   Argument.withDescription("Local workflow module path (TypeScript/JavaScript)"),
 )
@@ -131,11 +155,10 @@ const runCommand = Command.make(
     const inputValues = yield* parseInputValues(inputs)
     const definition = yield* loadAndMaterializeWorkflow(workflowModule, Option.getOrUndefined(exportName))
     const plan = yield* engine.plan(definition)
-    const submitted = yield* engine.submitRun(plan, {
+    const run = yield* engine.startRun(plan, {
       workspacePath: resolvedWorkspace,
       ...(inputValues === undefined ? {} : { inputValues }),
     })
-    const run = yield* waitForTerminalRun(engine, submitted.runId)
     const events = yield* engine.readRunEvents(run.runId)
     const artifacts = yield* engine.readArtifacts(run.runId)
     const logs = yield* engine.readLogs(run.runId)
@@ -543,7 +566,7 @@ const renderRunState = (run: WorkflowRunState) => [
   "units:",
   ...run.units.map(
     (unit) =>
-      `${unit.unitId} ${unit.status} inputs=${formatResolvedValues(unit.resolvedInputs ?? [])} outputs=${formatOutputValues(unit.outputs ?? [])} reports=${formatReports(unit.reports ?? [])}${unit.cancellationReason === undefined ? "" : ` canceled=${unit.cancellationReason}`}`,
+      `${unit.unitId} ${unit.status} inputs=${formatResolvedValues(unit.resolvedInputs ?? [])} outputs=${formatOutputValues(unit.outputs ?? [])} reports=${formatReports(unit.reports ?? [])}${unit.skipReason === undefined ? "" : ` skipped=${unit.skipReason}`}${unit.cancellationReason === undefined ? "" : ` canceled=${unit.cancellationReason}`}`,
   ),
 ]
 
@@ -750,4 +773,4 @@ const executorResult = (
   } satisfies NonNullable<TestExecutorLayerOptions["resultsByUnitId"]>[string]
 }
 
-const terminalRunStatuses = new Set(["succeeded", "failed", "canceled", "interrupted"])
+const terminalRunStatuses = new Set(["succeeded", "failed", "timed_out", "canceled", "interrupted"])

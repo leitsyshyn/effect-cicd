@@ -13,8 +13,11 @@ import {
 } from "../domain/execution-plan.ts"
 import { PlanId, UnitId } from "../domain/ids.ts"
 import {
+  ConditionDeclaration,
+  GitHubPushTriggerDeclaration,
   NamedDeclaration,
   NormalizedWorkflowDefinition,
+  UpstreamStatusConditionDeclaration,
   type PayloadDeclaration,
   type PolicyDeclaration,
   UnitInputDeclaration,
@@ -72,6 +75,11 @@ const validateDefinition = (definition: NormalizedWorkflowDefinition): string | 
 
   if (definition.units.length === 0) {
     return "Workflow must declare at least one unit"
+  }
+
+  const triggerValidationFailure = validateTriggers(definition)
+  if (triggerValidationFailure !== undefined) {
+    return triggerValidationFailure
   }
 
   const workflowInputNames = new Set<string>()
@@ -215,6 +223,13 @@ const validateDefinition = (definition: NormalizedWorkflowDefinition): string | 
         return sourceError
       }
     }
+
+    for (const condition of unit.conditions ?? []) {
+      const conditionError = validateCondition(unit.unitId, condition, workflowInputNames, unitIds, dependencyKeys)
+      if (conditionError !== undefined) {
+        return conditionError
+      }
+    }
   }
 
   for (const output of definition.outputs ?? []) {
@@ -290,6 +305,7 @@ const createPlan = (definition: NormalizedWorkflowDefinition) => {
     workflowId: definition.workflowId,
     workflowName: definition.name,
     metadata: definition.metadata,
+    triggers: definition.triggers ?? [],
     inputs: definition.inputs,
     outputs: definition.outputs ?? [],
     units: [...definition.units].sort(compareUnits).map(
@@ -304,6 +320,7 @@ const createPlan = (definition: NormalizedWorkflowDefinition) => {
           reports: unit.reports ?? [],
           logExpectations: [new NamedDeclaration({ name: "stdout", metadata: {} })],
           artifactExpectations: unit.artifacts,
+          conditions: unit.conditions ?? [],
           policies: unit.policies.map(convertPolicyDeclaration),
           source: unit.source,
           diagnostics: [],
@@ -401,6 +418,82 @@ const validateWorkflowOutputSource = (
   return (producerUnit.outputs ?? []).some((unitOutput) => unitOutput.name === outputSource.outputName)
     ? undefined
     : `Workflow output ${output.name} references unknown output ${outputSource.outputName} from ${outputSource.unitId}`
+}
+
+const validateTriggers = (definition: NormalizedWorkflowDefinition): string | undefined => {
+  let manualTriggers = 0
+  let gitHubPushTriggers = 0
+
+  for (const trigger of definition.triggers ?? []) {
+    switch (trigger._tag) {
+      case "ManualTriggerDeclaration":
+        manualTriggers += 1
+        break
+      case "GitHubPushTriggerDeclaration": {
+        gitHubPushTriggers += 1
+        const pushTrigger = trigger as GitHubPushTriggerDeclaration
+        for (const branch of pushTrigger.branches ?? []) {
+          if (branch.trim().length === 0) {
+            return "GitHub push trigger branches must be non-empty"
+          }
+        }
+        for (const ref of pushTrigger.refs ?? []) {
+          if (ref.trim().length === 0) {
+            return "GitHub push trigger refs must be non-empty"
+          }
+        }
+        for (const tag of pushTrigger.tags ?? []) {
+          if (tag.trim().length === 0) {
+            return "GitHub push trigger tags must be non-empty"
+          }
+        }
+        break
+      }
+    }
+  }
+
+  if (manualTriggers > 1) {
+    return "Workflow declares duplicate manual triggers"
+  }
+
+  if (gitHubPushTriggers > 1) {
+    return "Workflow declares duplicate GitHub push triggers"
+  }
+
+  return undefined
+}
+
+const validateCondition = (
+  consumerUnitId: UnitId,
+  condition: ConditionDeclaration,
+  workflowInputNames: ReadonlySet<string>,
+  unitIds: ReadonlySet<string>,
+  dependencyKeys: ReadonlySet<string>,
+): string | undefined => {
+  switch (condition._tag) {
+    case "TriggerEventConditionDeclaration":
+      return undefined
+    case "TriggerBranchConditionDeclaration":
+      return condition.branch.trim().length === 0 ? `Unit ${consumerUnitId} branch condition must be non-empty` : undefined
+    case "TriggerRefConditionDeclaration":
+      return condition.ref.trim().length === 0 ? `Unit ${consumerUnitId} ref condition must be non-empty` : undefined
+    case "TriggerTagConditionDeclaration":
+      return condition.tag.trim().length === 0 ? `Unit ${consumerUnitId} tag condition must be non-empty` : undefined
+    case "WorkflowInputEqualsConditionDeclaration":
+      return workflowInputNames.has(condition.inputName)
+        ? undefined
+        : `Unit ${consumerUnitId} condition references unknown workflow input ${condition.inputName}`
+    case "UpstreamStatusConditionDeclaration": {
+      const upstream = condition as UpstreamStatusConditionDeclaration
+      if (!unitIds.has(upstream.unitId.toString())) {
+        return `Unit ${consumerUnitId} condition references unknown unit ${upstream.unitId}`
+      }
+
+      return dependencyKeys.has(dependencyKey(upstream.unitId, consumerUnitId))
+        ? undefined
+        : `Unit ${consumerUnitId} condition references ${upstream.unitId} without an explicit dependency edge`
+    }
+  }
 }
 
 const compareUnits = (left: { readonly unitId: UnitId }, right: { readonly unitId: UnitId }) =>

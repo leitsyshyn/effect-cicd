@@ -17,6 +17,19 @@ export interface AuthoredNamedDeclaration {
 
 export type AuthoredDataValueFormat = "json" | "text"
 
+export interface AuthoredManualTrigger {
+  readonly _tag: "ManualTrigger"
+}
+
+export interface AuthoredGitHubPushTrigger {
+  readonly _tag: "GitHubPushTrigger"
+  readonly branches?: ReadonlyArray<string>
+  readonly refs?: ReadonlyArray<string>
+  readonly tags?: ReadonlyArray<string>
+}
+
+export type AuthoredTrigger = AuthoredManualTrigger | AuthoredGitHubPushTrigger
+
 export interface AuthoredWorkflowInputSource {
   readonly _tag: "WorkflowInputSource"
   readonly inputName: string
@@ -84,6 +97,46 @@ export interface AuthoredCancellationPolicy {
 
 export type AuthoredPolicy = AuthoredRetryPolicy | AuthoredTimeoutPolicy | AuthoredCancellationPolicy
 
+export interface AuthoredTriggerEventCondition {
+  readonly _tag: "TriggerEventCondition"
+  readonly event: "manual" | "github.push"
+}
+
+export interface AuthoredTriggerBranchCondition {
+  readonly _tag: "TriggerBranchCondition"
+  readonly branch: string
+}
+
+export interface AuthoredTriggerRefCondition {
+  readonly _tag: "TriggerRefCondition"
+  readonly ref: string
+}
+
+export interface AuthoredTriggerTagCondition {
+  readonly _tag: "TriggerTagCondition"
+  readonly tag: string
+}
+
+export interface AuthoredWorkflowInputEqualsCondition {
+  readonly _tag: "WorkflowInputEqualsCondition"
+  readonly inputName: string
+  readonly value: unknown
+}
+
+export interface AuthoredUpstreamStatusCondition {
+  readonly _tag: "UpstreamStatusCondition"
+  readonly unitId: string
+  readonly status: "succeeded" | "failed" | "timed_out" | "skipped" | "canceled"
+}
+
+export type AuthoredCondition =
+  | AuthoredTriggerEventCondition
+  | AuthoredTriggerBranchCondition
+  | AuthoredTriggerRefCondition
+  | AuthoredTriggerTagCondition
+  | AuthoredWorkflowInputEqualsCondition
+  | AuthoredUpstreamStatusCondition
+
 export interface AuthoredUnit {
   readonly unitId: string
   readonly name: string
@@ -94,6 +147,7 @@ export interface AuthoredUnit {
   readonly outputs?: ReadonlyArray<AuthoredOutputDeclaration>
   readonly reports?: ReadonlyArray<AuthoredReportDeclaration>
   readonly artifacts?: ReadonlyArray<AuthoredArtifactDeclaration>
+  readonly conditions?: ReadonlyArray<AuthoredCondition>
   readonly policies?: ReadonlyArray<AuthoredPolicy>
   readonly source?: AuthoredSourceMetadata
 }
@@ -102,6 +156,7 @@ export interface AuthoredWorkflow {
   readonly workflowId: string
   readonly name: string
   readonly metadata?: AuthoredMetadata
+  readonly triggers?: ReadonlyArray<AuthoredTrigger>
   readonly units: ReadonlyArray<AuthoredUnit>
   readonly inputs?: ReadonlyArray<AuthoredNamedDeclaration>
   readonly outputs?: ReadonlyArray<AuthoredWorkflowOutputDeclaration>

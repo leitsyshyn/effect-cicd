@@ -4,11 +4,13 @@ import { PlanId, UnitId, WorkflowId } from "./ids.ts"
 import { SecretRef } from "./secrets.ts"
 import {
   ArtifactDeclaration,
+  ConditionDeclaration,
   JitterMode,
   NamedDeclaration,
   OutputDeclaration,
   ReportDeclaration,
   SourceMetadata,
+  TriggerDeclaration,
   UnitInputDeclaration,
   WorkflowOutputDeclaration,
 } from "./workflow-definition.ts"
@@ -76,6 +78,7 @@ export class PlanUnit extends Schema.Class<PlanUnit>("PlanUnit")({
   reports: Schema.optional(Schema.Array(ReportDeclaration)),
   logExpectations: Schema.Array(NamedDeclaration),
   artifactExpectations: Schema.Array(ArtifactDeclaration),
+  conditions: Schema.optional(Schema.Array(ConditionDeclaration)),
   policies: Schema.Array(PlanPolicy),
   source: Schema.optional(SourceMetadata),
   diagnostics: Schema.Array(PlanningDiagnostic),
@@ -87,6 +90,7 @@ export class ExecutionPlan extends Schema.Class<ExecutionPlan>("ExecutionPlan")(
   workflowId: WorkflowId,
   workflowName: Schema.String,
   metadata: Schema.Record(Schema.String, Schema.Unknown),
+  triggers: Schema.optional(Schema.Array(TriggerDeclaration)),
   inputs: Schema.optional(Schema.Array(NamedDeclaration)),
   outputs: Schema.optional(Schema.Array(WorkflowOutputDeclaration)),
   units: Schema.Array(PlanUnit),

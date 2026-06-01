@@ -7,29 +7,40 @@ import { isSecretRef } from "../domain/secrets.ts"
 import {
   ArtifactDeclaration,
   CancellationPolicyDeclaration,
+  ConditionDeclaration,
   ContainerCommandDeclaration,
   DependencyDeclaration,
+  GitHubPushTriggerDeclaration,
+  ManualTriggerDeclaration,
   NamedDeclaration,
   OutputDeclaration,
   ReportDeclaration,
   RetryPolicyDeclaration,
   SourceMetadata,
   TimeoutPolicyDeclaration,
+  TriggerBranchConditionDeclaration,
+  TriggerEventConditionDeclaration,
+  TriggerRefConditionDeclaration,
+  TriggerTagConditionDeclaration,
+  WorkflowInputEqualsConditionDeclaration,
   UnitDeclaration,
   UnitInputDeclaration,
   UnitOutputSourceDeclaration,
+  UpstreamStatusConditionDeclaration,
   WorkflowInputSourceDeclaration,
   WorkflowOutputDeclaration,
 } from "../domain/workflow-definition.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
 import type {
   AuthoredArtifactDeclaration,
+  AuthoredCondition,
   AuthoredContainerCommand,
   AuthoredNamedDeclaration,
   AuthoredOutputDeclaration,
   AuthoredPolicy,
   AuthoredReportDeclaration,
   AuthoredSourceMetadata,
+  AuthoredTrigger,
   AuthoredUnit,
   AuthoredUnitInputDeclaration,
   AuthoredValueSource,
@@ -80,6 +91,7 @@ const materialize = Effect.fn("dsl.materialize")(function* (authored: AuthoredWo
       yield* validateInputs(authoredUnit)
       yield* validateOutputs(authoredUnit)
       yield* validateReports(authoredUnit)
+      yield* validateConditions(authoredUnit)
       yield* validatePolicies(authoredUnit)
     }
 
@@ -117,6 +129,7 @@ const materialize = Effect.fn("dsl.materialize")(function* (authored: AuthoredWo
     workflowId: WorkflowId.make(authored.workflowId),
     name: authored.name,
     metadata: toMetadata(authored.metadata),
+    triggers: toTriggerDeclarations(authored.triggers),
     units: authored.units.map(toUnitDeclaration),
     dependencies,
     inputs: toNamedDeclarations(authored.inputs),
@@ -154,6 +167,22 @@ const validatePolicies = Effect.fn("dsl.validatePolicies")(function* (authoredUn
         break
       default:
         return yield* fail(`Unit ${authoredUnit.unitId} uses an unsupported policy declaration`)
+    }
+  }
+})
+
+const validateConditions = Effect.fn("dsl.validateConditions")(function* (authoredUnit: AuthoredUnit) {
+  for (const condition of authoredUnit.conditions ?? []) {
+    switch (condition._tag) {
+      case "TriggerEventCondition":
+      case "TriggerBranchCondition":
+      case "TriggerRefCondition":
+      case "TriggerTagCondition":
+      case "WorkflowInputEqualsCondition":
+      case "UpstreamStatusCondition":
+        break
+      default:
+        return yield* fail(`Unit ${authoredUnit.unitId} uses an unsupported condition declaration`)
     }
   }
 })
@@ -212,9 +241,26 @@ const toUnitDeclaration = (authoredUnit: AuthoredUnit) =>
     outputs: toOutputDeclarations(authoredUnit.outputs),
     reports: toReportDeclarations(authoredUnit.reports),
     artifacts: toArtifactDeclarations(authoredUnit.artifacts),
+    conditions: toConditionDeclarations(authoredUnit.conditions),
     policies: toPolicyDeclarations(authoredUnit.policies),
     source: toSourceMetadata(authoredUnit.source),
   })
+
+const toTriggerDeclarations = (triggers: ReadonlyArray<AuthoredTrigger> | undefined) => {
+  const authoredTriggers = triggers === undefined || triggers.length === 0 ? [{ _tag: "ManualTrigger" } satisfies AuthoredTrigger] : triggers
+  return authoredTriggers.map((trigger) => {
+    switch (trigger._tag) {
+      case "ManualTrigger":
+        return new ManualTriggerDeclaration({})
+      case "GitHubPushTrigger":
+        return new GitHubPushTriggerDeclaration({
+          branches: toOptionalStrings(trigger.branches),
+          refs: toOptionalStrings(trigger.refs),
+          tags: toOptionalStrings(trigger.tags),
+        })
+    }
+  })
+}
 
 const toCommandDeclaration = (command: AuthoredContainerCommand) =>
   new ContainerCommandDeclaration({
@@ -312,6 +358,24 @@ const toPolicyDeclarations = (policies: ReadonlyArray<AuthoredPolicy> | undefine
       }
   })
 
+const toConditionDeclarations = (conditions: ReadonlyArray<AuthoredCondition> | undefined): ReadonlyArray<ConditionDeclaration> =>
+  (conditions ?? []).map((condition) => {
+    switch (condition._tag) {
+      case "TriggerEventCondition":
+        return new TriggerEventConditionDeclaration({ event: condition.event })
+      case "TriggerBranchCondition":
+        return new TriggerBranchConditionDeclaration({ branch: condition.branch })
+      case "TriggerRefCondition":
+        return new TriggerRefConditionDeclaration({ ref: condition.ref })
+      case "TriggerTagCondition":
+        return new TriggerTagConditionDeclaration({ tag: condition.tag })
+      case "WorkflowInputEqualsCondition":
+        return new WorkflowInputEqualsConditionDeclaration({ inputName: condition.inputName, value: condition.value })
+      case "UpstreamStatusCondition":
+        return new UpstreamStatusConditionDeclaration({ unitId: UnitId.make(condition.unitId), status: condition.status })
+    }
+  })
+
 const toValueSourceDeclaration = (source: AuthoredValueSource) => {
   switch (source._tag) {
     case "WorkflowInputSource":
@@ -325,6 +389,9 @@ const toValueSourceDeclaration = (source: AuthoredValueSource) => {
 }
 
 const toMetadata = (metadata: Readonly<Record<string, unknown>> | undefined) => ({ ...(metadata ?? {}) })
+
+const toOptionalStrings = (values: ReadonlyArray<string> | undefined) =>
+  values === undefined || values.length === 0 ? undefined : [...values]
 
 const toSourceMetadata = (source: AuthoredSourceMetadata | undefined) =>
   source === undefined
