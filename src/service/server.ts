@@ -32,6 +32,7 @@ import { ObjectStorageClient, sqlClientLayer } from "../runtime/storage.ts"
 import { appVersion } from "../runtime/version.ts"
 import { SecretStore } from "../secrets/store.ts"
 import { ArtifactGc } from "../engine/stores/artifact-gc.ts"
+import { ArtifactStore } from "../engine/stores/artifact-store.ts"
 import { RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse } from "./contracts.ts"
 import { decodeJson, encodeJson } from "./schema-json.ts"
 
@@ -104,6 +105,7 @@ export const startServiceServer = Effect.gen(function* () {
   const gitHubChecks = yield* Effect.serviceOption(GitHubCheckRuns)
   const gitHubIntegration = yield* GitHubIntegration
   const secretStore = yield* SecretStore
+  const artifactStore = yield* ArtifactStore
   const sql = yield* Effect.serviceOption(SqlClient)
   const objectStorage = yield* Effect.serviceOption(ObjectStorageClient)
   const metrics = yield* Effect.serviceOption(Metrics)
@@ -130,10 +132,7 @@ export const startServiceServer = Effect.gen(function* () {
         GET: () => new Response("ok", { headers: { "content-type": "text/plain; charset=utf-8" } }),
       },
       "/readyz": {
-        GET: () =>
-          runJsonEffect(readiness(sql, objectStorage), {
-            schema: Schema.Struct({ status: Schema.String, checks: Schema.Record(Schema.String, Schema.String) }),
-          }),
+        GET: () => runReadinessEffect(readiness(sql, objectStorage)),
       },
       "/metrics": {
         GET: () =>
@@ -203,7 +202,7 @@ export const startServiceServer = Effect.gen(function* () {
           runJsonEffect(engine.readArtifacts(RunId.make(request.params.runId)), { schema: Schema.Array(ArtifactMetadata) }),
       },
       "/api/artifacts/:artifactRef": {
-        GET: (request) => runTextEffect(engine.readArtifactPayload(ArtifactRef.make(request.params.artifactRef))),
+        GET: (request) => runArtifactEffect(artifactStore.readArtifactContent(ArtifactRef.make(request.params.artifactRef))),
         DELETE: (request) => runJsonEffect(engine.deleteArtifact(ArtifactRef.make(request.params.artifactRef)), { noContent: true }),
       },
       "/api/runs/:runId/gc": {
@@ -271,13 +270,22 @@ const readiness = (sql: Option.Option<any>, objectStorage: Option.Option<any>) =
       }))),
     })
 
-    return { status: "ok", checks }
+    const status = Object.values(checks).every((value) => value === "ok") ? "ok" : "unavailable"
+    return { status, checks }
   }).pipe(
     Effect.catch((error) => {
       const message = error instanceof Error ? error.message : String(error)
-      return Effect.fail(new RequestBodyInvalid({ message }))
+      return Effect.fail(
+        new ServiceUnavailable({
+          message,
+        }),
+      )
     }),
   )
+
+class ServiceUnavailable extends Schema.TaggedErrorClass<ServiceUnavailable>()("ServiceUnavailable", {
+  message: Schema.String,
+}) {}
 
 const validateWorkflow = (engine: EngineService, request: Request) =>
   Effect.gen(function* () {
@@ -432,6 +440,31 @@ const runTextEffect = async (effect: Effect.Effect<string, any, any>) => {
   }
 }
 
+const runArtifactEffect = async (
+  effect: Effect.Effect<{ readonly metadata: ArtifactMetadata; readonly payload: Uint8Array; readonly contentType?: string }, any, any>,
+) => {
+  try {
+    const { metadata, payload, contentType } = await Effect.runPromise(effect as Effect.Effect<any, any, never>)
+    return new Response(payload, {
+      headers: {
+        "content-type": contentType ?? "application/octet-stream",
+        ...(metadata.name.length === 0 ? {} : { "content-disposition": `inline; filename="${metadata.name}"` }),
+      },
+    })
+  } catch (error) {
+    return errorResponse(error)
+  }
+}
+
+const runReadinessEffect = async (effect: Effect.Effect<{ readonly status: string; readonly checks: Record<string, string> }, any, any>) => {
+  try {
+    const value = await Effect.runPromise(effect as Effect.Effect<any, any, never>)
+    return Response.json(value, { status: value.status === "ok" ? 200 : 503 })
+  } catch (error) {
+    return errorResponse(error)
+  }
+}
+
 const runStreamEffect = async (stream: Stream.Stream<RunUpdate, any, any>) => {
   try {
     const readable = Stream.toReadableStream(
@@ -474,6 +507,19 @@ const errorResponse = (error: unknown) => {
         }),
       ),
       { status: 400 },
+    )
+  }
+
+  if (error instanceof ServiceUnavailable) {
+    return Response.json(
+      encodeJson(
+        ServiceErrorResponse,
+        new ServiceErrorResponse({
+          error: error.message,
+          tag: error._tag,
+        }),
+      ),
+      { status: 503 },
     )
   }
 

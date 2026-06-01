@@ -7,7 +7,7 @@ import { ContainerCommandDescriptor, ExecutionPlan, PlanCancellationPolicy, Plan
 import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, ProjectId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { ProducedReport } from "../src/domain/reports.ts"
 import { RunCreated } from "../src/domain/events.ts"
-import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState, ExecutionUnitState, ExecutionAttemptState } from "../src/domain/runtime-state.ts"
+import { FailureSummary, ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState, ExecutionUnitState, ExecutionAttemptState } from "../src/domain/runtime-state.ts"
 import {
   ArtifactDeclaration,
   TriggerBranchConditionDeclaration,
@@ -347,6 +347,40 @@ describe("Orchestrator", () => {
       expect(events.map((event) => event._tag)).toContain("RunResumed")
       expect(events.map((event) => event._tag)).toContain("RunSucceeded")
     }).pipe(Effect.provide(runtimeLayer())),
+  )
+
+  it.effect("resumeIncompleteRuns restores scheduled retries after restart", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+      const stateStore = yield* StateStore
+
+      const seededRun = scheduledRetrySeedRun("workflow:resume-retry")
+      yield* stateStore.createRun(seededRun)
+
+      const resumed = yield* orchestrator.resumeIncompleteRuns()
+      const resumedRun = resumed[0]
+
+      expect(resumedRun?.status).toBe("running")
+      expect(resumedRun?.units[0]?.nextRetryAt).toBeInstanceOf(Date)
+
+      yield* TestClock.adjust("1 second")
+
+      const stored = yield* stateStore.getRun(seededRun.runId)
+      expect(stored.status).toBe("succeeded")
+      expect(stored.units[0]?.status).toBe("succeeded")
+      expect(stored.units[0]?.nextRetryAt).toBeUndefined()
+      expect(stored.units[0]?.attempts).toHaveLength(2)
+    }).pipe(
+      Effect.provide(
+        runtimeLayer({
+          resultsByUnitId: {
+            "unit:build": {
+              outcome: "succeeded",
+            },
+          },
+        }),
+      ),
+    ),
   )
 
   it.effect("workflow inputs, upstream outputs, workflow outputs, and reports are persisted without mutating the plan", () => {
@@ -1015,6 +1049,65 @@ const interruptedSeedRun = (workflowId: string) => {
       totalUnits: 3,
       completedUnits: 0,
       failedUnits: 0,
+      skippedUnits: 0,
+    }),
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+    startedAt: new Date(0),
+    artifacts: [],
+    logs: [],
+  })
+}
+
+const scheduledRetrySeedRun = (workflowId: string) => {
+  const runId = RunId.make(`run:plan:${workflowId}`)
+  const attemptId = AttemptId.make(`attempt:${runId}:unit:build:1`)
+  const retryAt = new Date(1000)
+
+  return new WorkflowRunState({
+    runId,
+    projectId: ProjectId.make(`project:${workflowId}`),
+    workflowId: WorkflowId.make(workflowId),
+    planId: PlanId.make(`plan:${workflowId}`),
+    execution: new RunExecutionContext({
+      plan: plan(workflowId, [planUnit("unit:build", [], {}, { policies: [retryPolicy(2)] })]),
+      options: new RunExecutionOptions({ workspacePath: "/repo/workspace" }),
+      submittedAt: new Date(0),
+    }),
+    status: "running",
+    units: [
+      new ExecutionUnitState({
+        runId,
+        unitId: UnitId.make("unit:build"),
+        status: "failed",
+        dependencies: [],
+        latestAttemptId: attemptId,
+        nextRetryAt: retryAt,
+        attempts: [
+          new ExecutionAttemptState({
+            attemptId,
+            runId,
+            unitId: UnitId.make("unit:build"),
+            attemptNumber: 1,
+            status: "failed",
+            startedAt: new Date(0),
+            finishedAt: new Date(0),
+            failure: new FailureSummary({ message: "retry me" }),
+            artifacts: [],
+            logs: [],
+          }),
+        ],
+        startedAt: new Date(0),
+        finishedAt: new Date(0),
+        failure: new FailureSummary({ message: "retry me" }),
+        artifacts: [],
+        logs: [],
+      }),
+    ],
+    progress: new ProgressSummary({
+      totalUnits: 1,
+      completedUnits: 0,
+      failedUnits: 1,
       skippedUnits: 0,
     }),
     createdAt: new Date(0),

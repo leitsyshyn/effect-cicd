@@ -22,6 +22,7 @@ import {
 import { Engine } from "../src/engine/interface.ts"
 import { RunController } from "../src/engine/run-controller.ts"
 import { RunUpdate } from "../src/engine/run-updates.ts"
+import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { ExecutorResult } from "../src/engine/executor.ts"
 import { GitHubIntegration } from "../src/github/integration.ts"
 import { EngineServiceConfig, StorageRuntimeConfig } from "../src/runtime/config.ts"
@@ -83,6 +84,7 @@ describe("service boundary", () => {
             handleWebhook: () => Effect.die("unused"),
             triggerPush: () => Effect.die("unused"),
           }),
+          ArtifactStore.memoryLayer,
           SecretStore.memoryLayer,
         ),
       )
@@ -357,6 +359,89 @@ describe("service boundary", () => {
       yield* stopServer(server)
     })
   })
+
+  it.live("artifact payload endpoint serves binary bytes and deletion marks persisted metadata missing", () =>
+    Effect.gen(function* () {
+      const port = randomPort()
+      const baseUrl = `http://127.0.0.1:${port}`
+      const serviceLayer = Layer.mergeAll(
+        makeInMemoryServiceEngineLayer({
+          resultsByUnitId: {
+            "unit:build": {
+              artifacts: [sampleArtifactPayload("workflow:service:artifact-bytes", "unit:build", "dist", new Uint8Array([0, 255, 1, 2]))],
+            },
+          },
+        }),
+        Layer.succeed(EngineServiceConfig, { baseUrl, port }),
+        Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
+        Layer.succeed(GitHubIntegration, {
+          addBinding: () => Effect.die("unused"),
+          listBindings: () => Effect.succeed([]),
+          listProjects: () => Effect.succeed([]),
+          handleWebhook: () => Effect.die("unused"),
+          triggerPush: () => Effect.die("unused"),
+        }),
+        SecretStore.memoryLayer,
+      )
+
+      const server = yield* withServer(serviceLayer)
+
+      const { run, artifactRef } = yield* Effect.gen(function* () {
+        const engine = yield* Engine
+        const submitted = yield* engine.submitRun(samplePlan())
+        const run = yield* waitForTerminalRun(engine, submitted.runId)
+        return { run, artifactRef: run.artifacts[0]!.artifactRef }
+      }).pipe(Effect.provide(engineServiceClientLayer.pipe(Layer.provideMerge(FetchHttpClient.layer), Layer.provideMerge(Layer.succeed(EngineServiceConfig, { baseUrl, port })))))
+
+      const artifactResponse = yield* Effect.promise(() => fetch(`${baseUrl}/api/artifacts/${encodeURIComponent(artifactRef)}`))
+      const artifactBytes = new Uint8Array(yield* Effect.promise(() => artifactResponse.arrayBuffer()))
+
+      expect(artifactResponse.status).toBe(200)
+      expect(artifactResponse.headers.get("content-type")).toBe("application/octet-stream")
+      expect([...artifactBytes]).toEqual([0, 255, 1, 2])
+
+      const deleteResponse = yield* Effect.promise(() => fetch(`${baseUrl}/api/artifacts/${encodeURIComponent(artifactRef)}`, { method: "DELETE" }))
+      const artifactMetadataResponse = yield* Effect.promise(() => fetch(`${baseUrl}/api/runs/${encodeURIComponent(run.runId)}/artifacts`))
+      const artifactMetadata = yield* Effect.promise(
+        () => artifactMetadataResponse.json() as Promise<Array<{ readonly artifactRef: string; readonly status: string }>>,
+      )
+
+      expect(deleteResponse.status).toBe(204)
+      expect(artifactMetadata[0]?.status).toBe("missing")
+
+      yield* stopServer(server)
+    }),
+  )
+
+  it.live("readyz returns 503 when backing services are unavailable", () =>
+    Effect.gen(function* () {
+      const port = randomPort()
+      const baseUrl = `http://127.0.0.1:${port}`
+      const serviceLayer = Layer.mergeAll(
+        makeInMemoryServiceEngineLayer(),
+        Layer.succeed(EngineServiceConfig, { baseUrl, port }),
+        Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
+        Layer.succeed(GitHubIntegration, {
+          addBinding: () => Effect.die("unused"),
+          listBindings: () => Effect.succeed([]),
+          listProjects: () => Effect.succeed([]),
+          handleWebhook: () => Effect.die("unused"),
+          triggerPush: () => Effect.die("unused"),
+        }),
+        SecretStore.memoryLayer,
+      )
+
+      const server = yield* withServer(serviceLayer)
+      const response = yield* Effect.promise(() => fetch(`${baseUrl}/readyz`))
+      const payload = yield* Effect.promise(() => response.json() as Promise<{ readonly status: string; readonly checks: Record<string, string> }>)
+
+      expect(response.status).toBe(503)
+      expect(payload.status).toBe("unavailable")
+      expect(payload.checks).toEqual({ postgres: "unavailable", s3: "unavailable" })
+
+      yield* stopServer(server)
+    }),
+  )
 })
 
 const withServer = (layer: Layer.Layer<any, any, any>) => startServiceServer.pipe(Effect.provide(layer))
@@ -554,6 +639,22 @@ const sampleReportPayload = (workflowId: string, unitId: string, name: string) =
       payloadBase64: Buffer.from(`${name}\n`).toString("base64"),
       contentType: "text/plain",
     }),
+  })
+
+const sampleArtifactPayload = (workflowId: string, unitId: string, name: string, bytes: Uint8Array) =>
+  new RegisteredArtifact({
+    metadata: new ArtifactMetadata({
+      artifactRef: ArtifactRef.make(`artifact:${workflowId}:${unitId}:${name}`),
+      runId: RunId.make(`run:plan:${workflowId}`),
+      unitId: UnitId.make(unitId),
+      attemptId: AttemptId.make(`attempt:run:plan:${workflowId}:${unitId}:1`),
+      name,
+      category: "build-output",
+      status: "available",
+      summary: name,
+    }),
+    payloadBase64: Buffer.from(bytes).toString("base64"),
+    contentType: "application/octet-stream",
   })
 
 const sampleRunState = () =>

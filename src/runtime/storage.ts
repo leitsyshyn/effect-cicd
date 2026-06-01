@@ -56,6 +56,7 @@ export class ObjectStorageClient extends Context.Service<
       },
     ) => Effect.Effect<void, StoreUnavailable>
     readonly readText: (key: string) => Effect.Effect<string, StoreUnavailable>
+    readonly readBytes: (key: string) => Effect.Effect<Uint8Array, StoreUnavailable>
     readonly deleteObject: (key: string) => Effect.Effect<void, StoreUnavailable>
     readonly checkHealth: () => Effect.Effect<void, StoreUnavailable>
   }
@@ -116,6 +117,18 @@ export class ObjectStorageClient extends Context.Service<
             "read",
             Effect.tryPromise({
               try: () => client.file(key).text(),
+              catch: (error) =>
+                new StoreUnavailable({
+                  store: "ArtifactStore",
+                  message: `Failed to read object ${key}: ${toErrorMessage(error)}`,
+                }),
+            }),
+          ),
+        readBytes: (key) =>
+          withS3Retry(
+            "read",
+            Effect.tryPromise({
+              try: async () => new Uint8Array(await client.file(key).arrayBuffer()),
               catch: (error) =>
                 new StoreUnavailable({
                   store: "ArtifactStore",

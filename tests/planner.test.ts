@@ -329,6 +329,28 @@ describe("Planner", () => {
       ])
     }).pipe(Effect.provide(Planner.layer)),
   )
+
+  it.effect("rejects output, report, and artifact paths that escape the workspace", () =>
+    Effect.gen(function* () {
+      const planner = yield* Planner
+      const error = yield* planner
+        .validate(
+          workflow({
+            units: [
+              unit("unit:build", {
+                outputs: [new OutputDeclaration({ name: "digest", path: "../outputs/digest.json", format: "json", metadata: {} })],
+                reports: [new ReportDeclaration({ name: "summary", path: "../reports/summary.txt", format: "text", contentType: "text/plain", metadata: {} })],
+                artifacts: [new ArtifactDeclaration({ name: "dist", path: "../dist/app.tgz", kind: "file", contentType: "application/gzip", metadata: {} })],
+              }),
+            ],
+          }),
+        )
+        .pipe(Effect.flip)
+
+      expect(error._tag).toBe("WorkflowDefinitionInvalid")
+      expect(error.message).toContain("relative to the workspace root")
+    }).pipe(Effect.provide(Planner.layer)),
+  )
 })
 
 const workflow = (overrides: Partial<ConstructorParameters<typeof NormalizedWorkflowDefinition>[0]> = {}) =>

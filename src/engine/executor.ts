@@ -2,7 +2,7 @@ import { Clock, Effect, Layer, Schema, Stream } from "effect"
 import * as Context from "effect/Context"
 import * as ChildProcess from "effect/unstable/process/ChildProcess"
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner"
-import { join, posix } from "node:path"
+import { posix, resolve as resolvePath } from "node:path"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
 import { ExecutorFailed } from "../domain/errors.ts"
@@ -279,7 +279,7 @@ const collectArtifacts = Effect.fn("LocalContainerExecutor.collectArtifacts")(fu
   const registered = new Array<RegisteredArtifact>()
 
   for (const artifact of request.artifacts) {
-    const hostPath = join(request.workspace.hostPath, artifact.path)
+    const hostPath = yield* resolveWorkspaceHostPath(request, artifact.path)
     const file = Bun.file(hostPath)
     const exists = yield* Effect.tryPromise({
       try: () => file.exists(),
@@ -354,7 +354,7 @@ const collectOutputs = Effect.fn("LocalContainerExecutor.collectOutputs")(functi
   const collected: Record<string, unknown> = {}
 
   for (const output of request.outputs ?? []) {
-    const file = Bun.file(join(request.workspace.hostPath, output.path))
+    const file = Bun.file(yield* resolveWorkspaceHostPath(request, output.path))
     const exists = yield* Effect.tryPromise({
       try: () => file.exists(),
       catch: (error) =>
@@ -427,7 +427,7 @@ const collectReports = Effect.fn("LocalContainerExecutor.collectReports")(functi
   const registered = new Array<ProducedReport>()
 
   for (const report of request.reports ?? []) {
-    const hostPath = join(request.workspace.hostPath, report.path)
+    const hostPath = yield* resolveWorkspaceHostPath(request, report.path)
     const file = Bun.file(hostPath)
     const exists = yield* Effect.tryPromise({
       try: () => file.exists(),
@@ -653,4 +653,20 @@ const toErrorMessage = (error: unknown) => {
   }
 
   return String(error)
+}
+
+const resolveWorkspaceHostPath = (request: DispatchRequest, declaredPath: string) => {
+  const workspaceRoot = resolvePath(request.workspace!.hostPath)
+  const resolvedPath = resolvePath(workspaceRoot, declaredPath)
+
+  return resolvedPath === workspaceRoot || resolvedPath.startsWith(`${workspaceRoot}/`)
+    ? Effect.succeed(resolvedPath)
+    : Effect.fail(
+        new ExecutorFailed({
+          runId: request.runId,
+          unitId: request.unitId,
+          attemptId: request.attemptId,
+          message: `Declared path escapes the workspace root: ${declaredPath}`,
+        }),
+      )
 }

@@ -1,5 +1,6 @@
 import { Effect, Layer } from "effect"
 import * as Context from "effect/Context"
+import { normalize } from "node:path"
 
 import { WorkflowDefinitionInvalid } from "../domain/errors.ts"
 import {
@@ -150,7 +151,7 @@ const validateDefinition = (definition: NormalizedWorkflowDefinition): string | 
         return `Unit ${unit.unitId} output ${output.name} path must be non-empty`
       }
 
-      if (output.path.startsWith("/")) {
+      if (!isWorkspaceRelativePath(output.path)) {
         return `Unit ${unit.unitId} output ${output.name} path must be relative to the workspace root`
       }
 
@@ -171,7 +172,7 @@ const validateDefinition = (definition: NormalizedWorkflowDefinition): string | 
         return `Unit ${unit.unitId} report ${report.name} path must be non-empty`
       }
 
-      if (report.path.startsWith("/")) {
+      if (!isWorkspaceRelativePath(report.path)) {
         return `Unit ${unit.unitId} report ${report.name} path must be relative to the workspace root`
       }
 
@@ -183,7 +184,7 @@ const validateDefinition = (definition: NormalizedWorkflowDefinition): string | 
         return `Unit ${unit.unitId} artifact ${artifact.name} path must be non-empty`
       }
 
-      if (artifact.path.startsWith("/")) {
+      if (!isWorkspaceRelativePath(artifact.path)) {
         return `Unit ${unit.unitId} artifact ${artifact.name} path must be relative to the workspace root`
       }
     }
@@ -509,3 +510,12 @@ const compareUnitIds = (left: UnitId, right: UnitId) => compareStrings(left, rig
 const compareStrings = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0)
 
 const dependencyKey = (from: UnitId, to: UnitId) => `${from}\u0000${to}`
+
+const isWorkspaceRelativePath = (value: string) => {
+  if (value.startsWith("/")) {
+    return false
+  }
+
+  const normalized = normalize(value).replace(/\\/g, "/")
+  return normalized !== ".." && !normalized.startsWith("../")
+}

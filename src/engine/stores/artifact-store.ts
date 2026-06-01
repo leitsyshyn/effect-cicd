@@ -17,6 +17,9 @@ export class ArtifactStore extends Context.Service<
     readonly registerLog: (log: RegisteredLog) => Effect.Effect<LogMetadata, StoreUnavailable>
     readonly readArtifact: (ref: ArtifactRef) => Effect.Effect<ArtifactMetadata, StoreUnavailable>
     readonly readArtifactPayload: (ref: ArtifactRef) => Effect.Effect<string, StoreUnavailable>
+    readonly readArtifactContent: (
+      ref: ArtifactRef,
+    ) => Effect.Effect<{ readonly metadata: ArtifactMetadata; readonly payload: Uint8Array; readonly contentType?: string }, StoreUnavailable>
     readonly readLog: (ref: LogRef) => Effect.Effect<LogMetadata, StoreUnavailable>
     readonly readLogPayload: (ref: LogRef) => Effect.Effect<string, StoreUnavailable>
     readonly deleteArtifact: (ref: ArtifactRef) => Effect.Effect<void, StoreUnavailable>
@@ -27,16 +30,18 @@ export class ArtifactStore extends Context.Service<
 >()("@effect-cicd/engine/stores/ArtifactStore") {
   static readonly memoryLayer = Layer.sync(ArtifactStore, () => {
     const artifacts = new Map<ArtifactRef, ArtifactMetadata>()
-    const artifactPayloads = new Map<ArtifactRef, string>()
+    const artifactPayloads = new Map<ArtifactRef, Uint8Array>()
+    const artifactContentTypes = new Map<ArtifactRef, string | undefined>()
     const logs = new Map<LogRef, LogMetadata>()
     const logPayloads = new Map<LogRef, string>()
 
-    const registerArtifact = ({ metadata, payloadBase64 }: RegisteredArtifact) =>
+    const registerArtifact = ({ metadata, payloadBase64, contentType }: RegisteredArtifact) =>
       Effect.sync(() => {
         artifacts.set(metadata.artifactRef, metadata)
         if (payloadBase64 !== undefined) {
-          artifactPayloads.set(metadata.artifactRef, Buffer.from(payloadBase64, "base64").toString("utf-8"))
+          artifactPayloads.set(metadata.artifactRef, Uint8Array.from(Buffer.from(payloadBase64, "base64")))
         }
+        artifactContentTypes.set(metadata.artifactRef, contentType)
         return metadata
       })
 
@@ -71,7 +76,25 @@ export class ArtifactStore extends Context.Service<
                   message: `Artifact payload not found for ref ${ref}`,
                 }),
               )
-            : Effect.succeed(payload),
+            : Effect.succeed(Buffer.from(payload).toString("utf-8")),
+        ),
+      )
+
+    const readArtifactContent = (ref: ArtifactRef) =>
+      Effect.all([readArtifact(ref), Effect.sync(() => artifactPayloads.get(ref))]).pipe(
+        Effect.flatMap(([metadata, payload]) =>
+          payload === undefined
+            ? Effect.fail(
+                new StoreUnavailable({
+                  store: "ArtifactStore",
+                  message: `Artifact payload not found for ref ${ref}`,
+                }),
+              )
+            : Effect.succeed({
+                metadata,
+                payload,
+                ...(artifactContentTypes.get(ref) === undefined ? {} : { contentType: artifactContentTypes.get(ref)! }),
+              }),
         ),
       )
 
@@ -107,6 +130,7 @@ export class ArtifactStore extends Context.Service<
       Effect.sync(() => {
         artifacts.delete(ref)
         artifactPayloads.delete(ref)
+        artifactContentTypes.delete(ref)
       })
 
     const deleteLog = (ref: LogRef) =>
@@ -126,6 +150,7 @@ export class ArtifactStore extends Context.Service<
             bytesFreed += metadata.sizeBytes ?? 0
             artifacts.delete(ref)
             artifactPayloads.delete(ref)
+            artifactContentTypes.delete(ref)
           }
         }
 
@@ -152,6 +177,7 @@ export class ArtifactStore extends Context.Service<
             bytesFreed += metadata.sizeBytes ?? 0
             artifacts.delete(ref)
             artifactPayloads.delete(ref)
+            artifactContentTypes.delete(ref)
           }
         }
 
@@ -167,7 +193,19 @@ export class ArtifactStore extends Context.Service<
         return { deletedCount, bytesFreed }
       })
 
-    return { registerArtifact, registerLog, readArtifact, readArtifactPayload, readLog, readLogPayload, deleteArtifact, deleteLog, gcRunArtifacts, runGc }
+    return {
+      registerArtifact,
+      registerLog,
+      readArtifact,
+      readArtifactPayload,
+      readArtifactContent,
+      readLog,
+      readLogPayload,
+      deleteArtifact,
+      deleteLog,
+      gcRunArtifacts,
+      runGc,
+    }
   })
 
   static readonly s3Layer = Layer.effect(
@@ -314,8 +352,8 @@ export class ArtifactStore extends Context.Service<
       })
 
       const readArtifactRow = (ref: ArtifactRef) =>
-        catchSql("read artifact metadata", sql<{ readonly metadata_json: unknown; readonly object_key: string }>`
-          SELECT metadata_json, object_key
+        catchSql("read artifact metadata", sql<{ readonly metadata_json: unknown; readonly object_key: string; readonly content_type: string | null }>`
+          SELECT metadata_json, object_key, content_type
           FROM artifact_metadata
           WHERE artifact_ref = ${ref}
         `)
@@ -332,6 +370,24 @@ export class ArtifactStore extends Context.Service<
         }
 
         return yield* objectStorage.readText(row.object_key)
+      })
+
+      const readArtifactContent = Effect.fn("ArtifactStore.readArtifactContent")(function* (ref: ArtifactRef) {
+        const rows = yield* readArtifactRow(ref)
+        const row = rows[0]
+
+        if (row === undefined) {
+          return yield* new StoreUnavailable({
+            store: "ArtifactStore",
+            message: `Artifact metadata not found for ref ${ref}`,
+          })
+        }
+
+        return {
+          metadata: decodeArtifactMetadata(row.metadata_json),
+          payload: yield* objectStorage.readBytes(row.object_key),
+          ...(row.content_type === null ? {} : { contentType: row.content_type }),
+        }
       })
 
       const readLogRow = (ref: LogRef) =>
@@ -467,7 +523,19 @@ export class ArtifactStore extends Context.Service<
         return { deletedCount, bytesFreed }
       })
 
-      return { registerArtifact, registerLog, readArtifact, readArtifactPayload, readLog, readLogPayload, deleteArtifact, deleteLog, gcRunArtifacts, runGc }
+      return {
+        registerArtifact,
+        registerLog,
+        readArtifact,
+        readArtifactPayload,
+        readArtifactContent,
+        readLog,
+        readLogPayload,
+        deleteArtifact,
+        deleteLog,
+        gcRunArtifacts,
+        runGc,
+      }
     }),
   )
 }

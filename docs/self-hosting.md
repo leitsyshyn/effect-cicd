@@ -14,6 +14,8 @@ cp .env.demo .env
 docker compose up --build
 ```
 
+`SECRETS_MASTER_KEY` is required on startup, even if you are not using secrets yet, because the durable secret store is initialized with the service.
+
 Service endpoints:
 
 - `GET /healthz`
@@ -53,7 +55,7 @@ bun run server.ts
 | `MAX_CONCURRENT_RUNS` | `1` | Global run concurrency |
 | `MAX_CONCURRENT_RUNS_PER_PROJECT` | `1` | Per-project concurrency |
 | `RUN_RECOVERY_ON_STARTUP` | `true` | Resume non-terminal runs |
-| `SECRETS_MASTER_KEY` | required for secrets | Secret encryption key |
+| `SECRETS_MASTER_KEY` | required | Secret encryption key |
 
 ## Migrations
 

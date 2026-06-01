@@ -7,7 +7,7 @@ import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
 import { appVersion } from "../runtime/version.ts"
 import { WorkflowEvent } from "../domain/events.ts"
-import { WorkflowRunState } from "../domain/runtime-state.ts"
+import { ExecutionAttemptState, ExecutionUnitState, WorkflowRunState } from "../domain/runtime-state.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
 import { Orchestrator, type RunStartOptions } from "./orchestrator.ts"
 import { RunController } from "./run-controller.ts"
@@ -89,7 +89,18 @@ export class Engine extends Context.Service<
         artifactStore.readArtifactPayload(artifactRef),
       )
 
-      const deleteArtifact = Effect.fn("Engine.deleteArtifact")((artifactRef: ArtifactRef) => artifactStore.deleteArtifact(artifactRef))
+      const deleteArtifact = Effect.fn("Engine.deleteArtifact")((artifactRef: ArtifactRef) =>
+        artifactStore.readArtifact(artifactRef).pipe(
+          Effect.flatMap((metadata) =>
+            artifactStore.deleteArtifact(artifactRef).pipe(
+              Effect.andThen(markArtifactUnavailable(metadata.runId, artifactRef)),
+            ),
+          ),
+          Effect.catchTag("StoreUnavailable", (error) =>
+            error.message.includes("Artifact metadata not found") ? Effect.void : Effect.fail(error),
+          ),
+        ),
+      )
 
       const readLogs = Effect.fn("Engine.readLogs")((runId: RunId) =>
         inspectRun(runId).pipe(Effect.map((run) => run.logs)),
@@ -97,12 +108,23 @@ export class Engine extends Context.Service<
 
       const readLogPayload = Effect.fn("Engine.readLogPayload")((logRef: LogRef) => artifactStore.readLogPayload(logRef))
 
-      const deleteLog = Effect.fn("Engine.deleteLog")((logRef: LogRef) => artifactStore.deleteLog(logRef))
+      const deleteLog = Effect.fn("Engine.deleteLog")((logRef: LogRef) =>
+        artifactStore.readLog(logRef).pipe(
+          Effect.flatMap((metadata) =>
+            artifactStore.deleteLog(logRef).pipe(
+              Effect.andThen(markLogUnavailable(metadata.runId, logRef)),
+            ),
+          ),
+          Effect.catchTag("StoreUnavailable", (error) =>
+            error.message.includes("Log metadata not found") ? Effect.void : Effect.fail(error),
+          ),
+        ),
+      )
 
       const gcRunArtifacts = Effect.fn("Engine.gcRunArtifacts")((runId: RunId) =>
         Option.match(artifactGc, {
           onNone: () => Effect.succeed({ deletedCount: 0, bytesFreed: 0 }),
-          onSome: (service) => service.runForRun(runId),
+          onSome: (service) => service.runForRun(runId).pipe(Effect.tap(() => markRunPayloadsUnavailable(runId))),
         }),
       )
 
@@ -129,6 +151,89 @@ export class Engine extends Context.Service<
         gcRunArtifacts,
         version,
       }
+
+      function markArtifactUnavailable(runId: RunId, artifactRef: ArtifactRef) {
+        return stateStore.getRun(runId).pipe(
+          Effect.flatMap((run) =>
+            stateStore.updateRun(
+              withRunPayloadUpdates(run, {
+                artifacts: run.artifacts.map((artifact) =>
+                  artifact.artifactRef === artifactRef ? new ArtifactMetadata({ ...artifact, status: "missing" }) : artifact,
+                ),
+              }),
+            ),
+          ),
+          Effect.catchTag("RunNotFound", () => Effect.void),
+          Effect.asVoid,
+        )
+      }
+
+      function markLogUnavailable(runId: RunId, logRef: LogRef) {
+        return stateStore.getRun(runId).pipe(
+          Effect.flatMap((run) =>
+            stateStore.updateRun(
+              withRunPayloadUpdates(run, {
+                logs: run.logs.map((log) => (log.logRef === logRef ? new LogMetadata({ ...log, status: "missing" }) : log)),
+              }),
+            ),
+          ),
+          Effect.catchTag("RunNotFound", () => Effect.void),
+          Effect.asVoid,
+        )
+      }
+
+      function markRunPayloadsUnavailable(runId: RunId) {
+        return stateStore.getRun(runId).pipe(
+          Effect.flatMap((run) =>
+            stateStore.updateRun(
+              withRunPayloadUpdates(run, {
+                artifacts: run.artifacts.map((artifact) => new ArtifactMetadata({ ...artifact, status: "missing" })),
+                logs: run.logs.map((log) => new LogMetadata({ ...log, status: "missing" })),
+              }),
+            ),
+          ),
+          Effect.catchTag("RunNotFound", () => Effect.void),
+          Effect.asVoid,
+        )
+      }
     }),
   )
+}
+
+const withRunPayloadUpdates = (
+  run: WorkflowRunState,
+  updates: { readonly artifacts?: ReadonlyArray<ArtifactMetadata>; readonly logs?: ReadonlyArray<LogMetadata> },
+) => {
+  const artifacts = updates.artifacts ?? run.artifacts
+  const logs = updates.logs ?? run.logs
+
+  return new WorkflowRunState({
+    ...run,
+    units: run.units.map((unit) =>
+      new ExecutionUnitState({
+        ...unit,
+        artifacts: mapArtifacts(unit.artifacts, artifacts),
+        logs: mapLogs(unit.logs, logs),
+        attempts: unit.attempts.map((attempt) =>
+          new ExecutionAttemptState({
+            ...attempt,
+            artifacts: mapArtifacts(attempt.artifacts, artifacts),
+            logs: mapLogs(attempt.logs, logs),
+          }),
+        ),
+      }),
+    ),
+    artifacts,
+    logs,
+  })
+}
+
+const mapArtifacts = (current: ReadonlyArray<ArtifactMetadata>, next: ReadonlyArray<ArtifactMetadata>) => {
+  const byRef = new Map(next.map((artifact) => [artifact.artifactRef, artifact] as const))
+  return current.map((artifact) => byRef.get(artifact.artifactRef) ?? artifact)
+}
+
+const mapLogs = (current: ReadonlyArray<LogMetadata>, next: ReadonlyArray<LogMetadata>) => {
+  const byRef = new Map(next.map((log) => [log.logRef, log] as const))
+  return current.map((log) => byRef.get(log.logRef) ?? log)
 }

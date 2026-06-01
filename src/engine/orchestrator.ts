@@ -215,6 +215,20 @@ export class Orchestrator extends Context.Service<
         yield* advanceRun(runId).pipe(Effect.catchTag("RunNotFound", () => Effect.succeed(nextRun)), Effect.asVoid)
       })
 
+      const scheduleRecoveredRetries = Effect.fn("Orchestrator.scheduleRecoveredRetries")(function* (run: WorkflowRunState) {
+        const scheduledUnits = run.units.filter((unit) => unit.nextRetryAt !== undefined)
+
+        for (const unit of scheduledUnits) {
+          const delayMillis = Math.max(unit.nextRetryAt!.getTime() - Date.now(), 0)
+          yield* Effect.sleep(Duration.millis(delayMillis)).pipe(
+            Effect.andThen(activateScheduledRetry(run.runId, unit.unitId, unit.nextRetryAt!)),
+            Effect.catch(() => Effect.succeed(undefined)),
+            Effect.forkDetach({ startImmediately: true }),
+            Effect.asVoid,
+          )
+        }
+      })
+
       const createRun = Effect.fn("Orchestrator.createRun")(function* (
         plan: ExecutionPlan,
         options?: RunStartOptions,
@@ -861,6 +875,7 @@ export class Orchestrator extends Context.Service<
             }),
           )
           yield* publishRunUpdate(nextRun, "RunResumed")
+          yield* scheduleRecoveredRetries(nextRun)
           recovered.push(nextRun)
         }
 
