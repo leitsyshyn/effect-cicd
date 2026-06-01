@@ -156,9 +156,12 @@ export class RunController extends Context.Service<
 
         const nextRun = yield* orchestrator.createRun(
           run.execution.plan,
-          run.execution.options.workspacePath === undefined
+          run.execution.options.workspacePath === undefined && run.execution.options.inputValues === undefined
             ? undefined
-            : { workspacePath: run.execution.options.workspacePath },
+            : {
+                ...(run.execution.options.workspacePath !== undefined ? { workspacePath: run.execution.options.workspacePath } : {}),
+                ...(run.execution.options.inputValues !== undefined ? { inputValues: run.execution.options.inputValues } : {}),
+              },
           run.runId,
         )
         yield* scheduleQueuedRuns()

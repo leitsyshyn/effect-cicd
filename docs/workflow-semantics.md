@@ -120,10 +120,12 @@ export default workflow({
 
 - Runs are canceled through the engine, not by interface-specific store access.
 - `runs cancel <runId>` and `POST /api/runs/:runId/cancel` request cancellation.
-- Policy used in this phase:
-  - Not-yet-started units become `canceled`.
-  - The running unit receives a best-effort executor interruption.
-  - If the local execution cannot be terminated cleanly, the engine still finalizes the run as `canceled` once control returns.
+- Per-unit cancellation policy mode (`best-effort` or `fail-fast`) is enforced at runtime:
+  - `best-effort` (default):
+    - Not-yet-started units become `canceled`.
+    - The running unit receives a best-effort executor interruption and the run is finalized once control returns.
+  - `fail-fast`:
+    - All non-terminal units transition immediately to `canceled` without intermediate `canceling` state.
 - Final run status is `canceled`.
 
 ## Current Limits

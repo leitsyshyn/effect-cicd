@@ -35,7 +35,7 @@ import {
   UnitTimedOut,
   type WorkflowEvent,
 } from "../domain/events.ts"
-import { ExecutionPlan, PlanRetryPolicy, PlanTimeoutPolicy, PlanUnit } from "../domain/execution-plan.ts"
+import { ExecutionPlan, PlanCancellationPolicy, PlanRetryPolicy, PlanTimeoutPolicy, PlanUnit } from "../domain/execution-plan.ts"
 import { AttemptId, EventId, ProjectId, RunId, UnitId } from "../domain/ids.ts"
 import { ProducedReport, ReportSummary } from "../domain/reports.ts"
 import { isSecretRef } from "../domain/secrets.ts"
@@ -795,6 +795,16 @@ export class Orchestrator extends Context.Service<
         const run = yield* stateStore.getRun(runId)
         if (isTerminalRun(run)) {
           return run
+        }
+
+        const hasFailFast = run.execution.plan.units.some((unit) =>
+          unit.policies.some(
+            (policy) => policy instanceof PlanCancellationPolicy && policy.mode === "fail-fast",
+          ),
+        )
+
+        if (hasFailFast) {
+          return yield* finalizeCancellationState(run, reason)
         }
 
         const updatedAt = yield* nowDate

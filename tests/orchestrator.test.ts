@@ -3,7 +3,7 @@ import { Effect, Fiber, Layer } from "effect"
 import { TestClock } from "effect/testing"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../src/domain/artifacts.ts"
-import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanRetryPolicy, PlanTimeoutPolicy, PlanUnit } from "../src/domain/execution-plan.ts"
+import { ContainerCommandDescriptor, ExecutionPlan, PlanCancellationPolicy, PlanDependency, PlanRetryPolicy, PlanTimeoutPolicy, PlanUnit } from "../src/domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, ProjectId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { ProducedReport } from "../src/domain/reports.ts"
 import { RunCreated } from "../src/domain/events.ts"
@@ -20,6 +20,8 @@ import {
   WorkflowInputSourceDeclaration,
   WorkflowOutputDeclaration,
 } from "../src/domain/workflow-definition.ts"
+import { RunController } from "../src/engine/run-controller.ts"
+import { SchedulerConfig } from "../src/runtime/config.ts"
 import { DispatchRequest, Executor, ExecutorResult, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
 import { ExecutorFailureSummary } from "../src/engine/executor.ts"
 import { Orchestrator } from "../src/engine/orchestrator.ts"
@@ -651,6 +653,95 @@ describe("Orchestrator", () => {
         ),
       )
     },
+  )
+})
+
+describe("RunController", () => {
+  it.effect("retryRun preserves inputValues from the original run", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+      const runController = yield* RunController
+
+      const testPlan = plan(
+        "workflow:retry-inputs",
+        [planUnit("unit:build")],
+        [],
+        {},
+        [named("version")],
+      )
+
+      const original = yield* orchestrator.startRun(testPlan, { inputValues: { version: "1.0.0" } })
+      expect(original.status).toBe("succeeded")
+      expect(original.execution.options.inputValues).toEqual({ version: "1.0.0" })
+
+      const retried = yield* runController.retryRun(original.runId)
+      expect(retried.execution.options.inputValues).toEqual({ version: "1.0.0" })
+    }).pipe(
+      Effect.provide(
+        RunController.layer.pipe(
+          Layer.provideMerge(runtimeLayer()),
+          Layer.provideMerge(Layer.succeed(SchedulerConfig, { maxConcurrentRuns: 10, maxConcurrentRunsPerProject: 5 })),
+        ),
+      ),
+    ),
+  )
+})
+
+describe("CancellationPolicy", () => {
+  it.effect("best-effort cancellation sets status to canceling not canceled", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+
+      const run = yield* orchestrator.createRun(
+        plan("workflow:cancel-best-effort", [planUnit("unit:build")]),
+      )
+      expect(run.status).toBe("queued")
+
+      const canceled = yield* orchestrator.cancelRun(run.runId)
+
+      expect(canceled.status).toBe("canceling")
+      expect(canceled.units[0]?.status).toBe("pending")
+    }).pipe(Effect.provide(runtimeLayer())),
+  )
+
+  it.effect("fail-fast cancellation immediately sets status to canceled", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+
+      const run = yield* orchestrator.createRun(
+        plan("workflow:cancel-fail-fast", [planUnit("unit:build", [], {}, { policies: [new PlanCancellationPolicy({ mode: "fail-fast" })] })]),
+      )
+      expect(run.status).toBe("queued")
+
+      const canceled = yield* orchestrator.cancelRun(run.runId)
+
+      expect(canceled.status).toBe("canceled")
+      expect(canceled.units[0]?.status).toBe("canceled")
+    }).pipe(Effect.provide(runtimeLayer())),
+  )
+
+  it.effect("fail-fast cancellation transitions all pending units to canceled", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+
+      const run = yield* orchestrator.createRun(
+        plan(
+          "workflow:cancel-fail-fast-all",
+          [
+            planUnit("unit:build", [], {}, { policies: [new PlanCancellationPolicy({ mode: "fail-fast" })] }),
+            planUnit("unit:test", ["unit:build"]),
+          ],
+          [planDependency("unit:build", "unit:test")],
+        ),
+      )
+      expect(run.status).toBe("queued")
+
+      const canceled = yield* orchestrator.cancelRun(run.runId)
+
+      expect(canceled.status).toBe("canceled")
+      expect(canceled.units[0]?.status).toBe("canceled")
+      expect(canceled.units[1]?.status).toBe("canceled")
+    }).pipe(Effect.provide(runtimeLayer())),
   )
 })
 

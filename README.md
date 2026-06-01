@@ -217,6 +217,9 @@ Current semantics in brief:
 - Reports are collected from declared files and persisted as first-class report summaries plus artifact payloads.
 - Per-unit timeouts end the unit in `timed_out`; the run reaches `timed_out` after remaining schedulable units finish or skip.
 - Run cancellation is engine-owned, marks pending units `canceled`, and performs best-effort interruption of the running unit.
+- Cancellation policy mode (`best-effort` or `fail-fast`) is enforced at runtime:
+  - `best-effort` enters a `canceling` state before finalizing canceled.
+  - `fail-fast` transitions directly to `canceled` without intermediate state.
 - Output/report collection currently requires a mounted workspace.
 
 ## Secrets
