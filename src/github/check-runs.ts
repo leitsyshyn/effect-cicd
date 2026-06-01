@@ -179,6 +179,13 @@ export const toGitHubCheckLifecycle = (run: WorkflowRunState): GitHubCheckLifecy
         title: "Workflow failed",
         summary: renderRunSummary(run, failedUnit),
       }
+    case "timed_out":
+      return {
+        status: "completed",
+        conclusion: "timed_out",
+        title: "Workflow timed out",
+        summary: renderRunSummary(run, failedUnit),
+      }
     case "canceled":
       return {
         status: "completed",

@@ -51,9 +51,9 @@ export const engineServiceClientLayer = Layer.effect(
             new RunSubmissionRequest({
               plan: executionPlan,
               options:
-                options?.workspacePath === undefined
+                options === undefined
                   ? undefined
-                  : new RunExecutionOptions({ workspacePath: options.workspacePath }),
+                  : new RunExecutionOptions({ workspacePath: options.workspacePath, inputValues: options.inputValues }),
             }),
           ),
         ),

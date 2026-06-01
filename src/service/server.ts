@@ -204,9 +204,12 @@ const submitRun = (engine: EngineService, request: Request) =>
     const submission = yield* parseRequestBody(request, RunSubmissionRequest)
     return yield* engine.submitRun(
       submission.plan,
-      submission.options?.workspacePath === undefined
+      submission.options === undefined
         ? undefined
-        : { workspacePath: submission.options.workspacePath },
+        : {
+            ...(submission.options.workspacePath === undefined ? {} : { workspacePath: submission.options.workspacePath }),
+            ...(submission.options.inputValues === undefined ? {} : { inputValues: submission.options.inputValues }),
+          },
     )
   })
 
@@ -394,6 +397,7 @@ const statusForError = (error: DomainError) => {
     case "WorkflowDefinitionInvalid":
     case "PlanningFailed":
     case "RunControlRejected":
+    case "WorkflowInputsInvalid":
       return 400
     case "StoreUnavailable":
     case "EngineUnavailable":

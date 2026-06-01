@@ -2,7 +2,15 @@ import { Schema } from "effect"
 
 import { PlanId, UnitId, WorkflowId } from "./ids.ts"
 import { SecretRef } from "./secrets.ts"
-import { ArtifactDeclaration, NamedDeclaration, SourceMetadata } from "./workflow-definition.ts"
+import {
+  ArtifactDeclaration,
+  NamedDeclaration,
+  OutputDeclaration,
+  ReportDeclaration,
+  SourceMetadata,
+  UnitInputDeclaration,
+  WorkflowOutputDeclaration,
+} from "./workflow-definition.ts"
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
 const PositiveNumber = Schema.Number.check(Schema.isGreaterThan(0))
@@ -58,6 +66,9 @@ export class PlanUnit extends Schema.Class<PlanUnit>("PlanUnit")({
   name: Schema.String,
   dependencies: Schema.Array(UnitId),
   payloadDescriptor: PayloadDescriptor,
+  inputs: Schema.optional(Schema.Array(UnitInputDeclaration)),
+  outputs: Schema.optional(Schema.Array(OutputDeclaration)),
+  reports: Schema.optional(Schema.Array(ReportDeclaration)),
   logExpectations: Schema.Array(NamedDeclaration),
   artifactExpectations: Schema.Array(ArtifactDeclaration),
   policies: Schema.Array(PlanPolicy),
@@ -71,6 +82,8 @@ export class ExecutionPlan extends Schema.Class<ExecutionPlan>("ExecutionPlan")(
   workflowId: WorkflowId,
   workflowName: Schema.String,
   metadata: Schema.Record(Schema.String, Schema.Unknown),
+  inputs: Schema.optional(Schema.Array(NamedDeclaration)),
+  outputs: Schema.optional(Schema.Array(WorkflowOutputDeclaration)),
   units: Schema.Array(PlanUnit),
   dependencies: Schema.Array(PlanDependency),
   diagnostics: Schema.Array(PlanningDiagnostic),

@@ -1,13 +1,24 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Layer } from "effect"
+import { Effect, Fiber, Layer } from "effect"
+import { TestClock } from "effect/testing"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../src/domain/artifacts.ts"
-import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanUnit } from "../src/domain/execution-plan.ts"
+import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanTimeoutPolicy, PlanUnit } from "../src/domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
+import { ProducedReport } from "../src/domain/reports.ts"
 import { RunCreated } from "../src/domain/events.ts"
 import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState, ExecutionUnitState, ExecutionAttemptState } from "../src/domain/runtime-state.ts"
-import { ArtifactDeclaration, NamedDeclaration } from "../src/domain/workflow-definition.ts"
-import { DispatchRequest, Executor, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
+import {
+  ArtifactDeclaration,
+  NamedDeclaration,
+  OutputDeclaration,
+  ReportDeclaration,
+  UnitInputDeclaration,
+  UnitOutputSourceDeclaration,
+  WorkflowInputSourceDeclaration,
+  WorkflowOutputDeclaration,
+} from "../src/domain/workflow-definition.ts"
+import { DispatchRequest, Executor, ExecutorResult, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
 import { Orchestrator } from "../src/engine/orchestrator.ts"
 import { RunUpdates } from "../src/engine/run-updates.ts"
 import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
@@ -332,6 +343,113 @@ describe("Orchestrator", () => {
       expect(events.map((event) => event._tag)).toContain("RunSucceeded")
     }).pipe(Effect.provide(runtimeLayer())),
   )
+
+  it.effect("workflow inputs, upstream outputs, workflow outputs, and reports are persisted without mutating the plan", () => {
+    const requests = new Array<DispatchRequest>()
+
+    return Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+
+      const run = yield* orchestrator.startRun(
+        plan(
+          "workflow:dataflow",
+          [
+            planUnit("unit:build", [], {}, {
+              inputs: [workflowInputRef("release", "release")],
+              outputs: [output("digest", "outputs/digest.json")],
+              reports: [report("summary", "reports/summary.txt")],
+            }),
+            planUnit("unit:deploy", ["unit:build"], {}, {
+              inputs: [workflowInputRef("release", "release"), unitOutputRef("digest", "unit:build", "digest")],
+            }),
+          ],
+          [planDependency("unit:build", "unit:deploy")],
+          {},
+          [named("release")],
+          [workflowOutput("release", "release"), workflowUnitOutput("digest", "unit:build", "digest")],
+        ),
+        { inputValues: { release: "1.2.3" } },
+      )
+
+      expect(requests[0]?.inputs.map((input) => ({ name: input.name, value: input.value }))).toEqual([
+        { name: "release", value: "1.2.3" },
+      ])
+      expect(requests[1]?.inputs.map((input) => ({ name: input.name, value: input.value }))).toEqual([
+        { name: "release", value: "1.2.3" },
+        { name: "digest", value: { sha: "abc123" } },
+      ])
+      expect(run.units.find((unit) => unit.unitId === UnitId.make("unit:build"))?.outputs?.map((value) => value.name)).toEqual(["digest"])
+      expect(run.outputs?.map((value) => `${value.name}=${JSON.stringify(value.value)}`)).toEqual([
+        'release="1.2.3"',
+        'digest={"sha":"abc123"}',
+      ])
+      expect(run.reports?.map((value) => value.name)).toEqual(["summary"])
+      expect(run.units.map((unit) => unit.unitId)).toEqual([UnitId.make("unit:build"), UnitId.make("unit:deploy")])
+      expect(run.units).toHaveLength(2)
+    }).pipe(
+      Effect.provide(
+        runtimeLayer({
+          requests,
+          resultsByUnitId: {
+            "unit:build": {
+              outputs: { digest: { sha: "abc123" } },
+              reports: [reportPayload("workflow:dataflow", "unit:build", "summary")],
+            },
+          },
+        }),
+      ),
+    )
+  })
+
+  it.effect("timed out units produce timed_out state and timeline events", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+      const eventLog = yield* EventLog
+
+      const fiber = yield* orchestrator
+        .startRun(plan("workflow:timeout", [planUnit("unit:slow", [], {}, { policies: [new PlanTimeoutPolicy({ seconds: 1 })] })]))
+        .pipe(Effect.forkChild)
+
+      yield* TestClock.adjust("2 seconds")
+
+      const run = yield* Fiber.join(fiber)
+      const events = yield* eventLog.readRunEvents(run.runId)
+
+      expect(run.status).toBe("timed_out")
+      expect(run.units[0]?.status).toBe("timed_out")
+      expect(run.failure?.code).toBe("timeout")
+      expect(events.map((event) => event._tag)).toContain("AttemptTimedOut")
+      expect(events.map((event) => event._tag)).toContain("UnitTimedOut")
+      expect(events.map((event) => event._tag)).toContain("RunTimedOut")
+    }).pipe(
+      Effect.provide(
+        runtimeLayer({
+          resultsByUnitId: {
+            "unit:slow": {
+              execute: (request) =>
+                Effect.sleep("5 seconds").pipe(
+                  Effect.as(
+                    new ExecutorResult({
+                      runId: request.runId,
+                      unitId: request.unitId,
+                      attemptId: request.attemptId,
+                      attemptNumber: request.attemptNumber,
+                      outcome: "succeeded",
+                      exitCode: 0,
+                      outputs: {},
+                      reports: [],
+                      artifacts: [],
+                      logs: [],
+                      diagnostics: [],
+                    }),
+                  ),
+                ),
+            },
+          },
+        }),
+      ),
+    ),
+  )
 })
 
 const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
@@ -350,6 +468,8 @@ const plan = (
   units: ReadonlyArray<PlanUnit>,
   dependencies: ReadonlyArray<PlanDependency> = [],
   metadata: Record<string, unknown> = {},
+  inputs: ReadonlyArray<NamedDeclaration> = [],
+  outputs: ReadonlyArray<WorkflowOutputDeclaration> = [],
 ) =>
   new ExecutionPlan({
     planId: PlanId.make(`plan:${workflowId}`),
@@ -357,6 +477,8 @@ const plan = (
     workflowId: WorkflowId.make(workflowId),
     workflowName: workflowId.replace("workflow:", ""),
     metadata,
+    inputs,
+    outputs,
     units,
     dependencies,
     diagnostics: [],
@@ -366,6 +488,7 @@ const planUnit = (
   unitId: string,
   dependencies: ReadonlyArray<string> = [],
   env: Record<string, string | SecretRef> = {},
+  overrides: Partial<ConstructorParameters<typeof PlanUnit>[0]> = {},
 ) =>
   new PlanUnit({
     unitId: UnitId.make(unitId),
@@ -376,10 +499,14 @@ const planUnit = (
       command: ["bun", "test"],
       env,
     }),
+    inputs: [],
+    outputs: [],
+    reports: [],
     logExpectations: [named("stdout")],
     artifactExpectations: [artifact("dist")],
     policies: [],
     diagnostics: [],
+    ...overrides,
   })
 
 const planDependency = (from: string, to: string) =>
@@ -400,6 +527,51 @@ const artifact = (name: string) =>
     kind: "file",
     path: `artifacts/${name}.txt`,
     contentType: "text/plain",
+    metadata: {},
+  })
+
+const output = (name: string, path: string) =>
+  new OutputDeclaration({
+    name,
+    path,
+    format: "json",
+    metadata: {},
+  })
+
+const report = (name: string, path: string) =>
+  new ReportDeclaration({
+    name,
+    path,
+    format: "text",
+    contentType: "text/plain",
+    metadata: {},
+  })
+
+const workflowInputRef = (name: string, inputName: string) =>
+  new UnitInputDeclaration({
+    name,
+    from: new WorkflowInputSourceDeclaration({ inputName }),
+    metadata: {},
+  })
+
+const unitOutputRef = (name: string, unitId: string, outputName: string) =>
+  new UnitInputDeclaration({
+    name,
+    from: new UnitOutputSourceDeclaration({ unitId: UnitId.make(unitId), outputName }),
+    metadata: {},
+  })
+
+const workflowOutput = (name: string, inputName: string) =>
+  new WorkflowOutputDeclaration({
+    name,
+    from: new WorkflowInputSourceDeclaration({ inputName }),
+    metadata: {},
+  })
+
+const workflowUnitOutput = (name: string, unitId: string, outputName: string) =>
+  new WorkflowOutputDeclaration({
+    name,
+    from: new UnitOutputSourceDeclaration({ unitId: UnitId.make(unitId), outputName }),
     metadata: {},
   })
 
@@ -440,6 +612,33 @@ const successPayloads = (workflowId: string, unitId: string) => {
       }),
     ],
   } satisfies NonNullable<TestExecutorLayerOptions["resultsByUnitId"]>[string]
+}
+
+const reportPayload = (workflowId: string, unitId: string, name: string) => {
+  const runId = RunId.make(`run:plan:${workflowId}`)
+  const attemptId = AttemptId.make(`attempt:${runId}:${unitId}:1`)
+
+  return new ProducedReport({
+    name,
+    unitId: UnitId.make(unitId),
+    attemptId,
+    format: "text",
+    contentType: "text/plain",
+    artifact: new RegisteredArtifact({
+      metadata: new ArtifactMetadata({
+        artifactRef: ArtifactRef.make(`artifact:${workflowId}:${unitId}:report:${name}`),
+        runId,
+        unitId: UnitId.make(unitId),
+        attemptId,
+        name,
+        category: "report",
+        status: "available",
+        summary: `${name}.txt`,
+      }),
+      payloadBase64: Buffer.from(`${name}\n`).toString("base64"),
+      contentType: "text/plain",
+    }),
+  })
 }
 
 const interruptedSeedRun = (workflowId: string) => {

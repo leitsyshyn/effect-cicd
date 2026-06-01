@@ -42,21 +42,42 @@ describe("Executor", () => {
     ),
   )
 
-  it.effect("LocalContainerExecutor rejects unsupported dispatch inputs with ExecutorFailed", () =>
-    Effect.gen(function* () {
-      const executor = yield* Executor
-      const error = yield* executor
-        .execute(
-          request({
-            inputs: [new DispatchInput({ name: "workspace", value: "ignored" })],
-          }),
-        )
-        .pipe(Effect.flip)
+  it.effect("LocalContainerExecutor injects dispatch inputs into the container environment", () => {
+    const commands = new Array<{ readonly command: string; readonly args: ReadonlyArray<string> }>()
 
-      expect(error._tag).toBe("ExecutorFailed")
-      expect(error.message).toContain("does not yet support dispatch inputs")
-    }).pipe(Effect.provide(localExecutorLayer())),
-  )
+    return Effect.gen(function* () {
+      const executor = yield* Executor
+      const result = yield* executor.execute(
+        request({
+          inputs: [new DispatchInput({ name: "workspace", value: "ignored" })],
+          payloadDescriptor: new ContainerCommandDescriptor({
+            image: "alpine:latest",
+            command: ["sh", "-c", "echo input"],
+            env: {},
+          }),
+        }),
+      )
+
+      expect(result.outcome).toBe("succeeded")
+      expect(commands).toEqual([
+        {
+          command: "docker",
+          args: [
+            "run",
+            "--rm",
+            "--env",
+            "EFFECT_CICD_INPUTS_JSON",
+            "--env",
+            "EFFECT_CICD_INPUT_WORKSPACE",
+            "alpine:latest",
+            "sh",
+            "-c",
+            "echo input",
+          ],
+        },
+      ])
+    }).pipe(Effect.provide(localExecutorLayer({ commands })))
+  })
 
   it.effect("LocalContainerExecutor normalizes successful docker execution", () =>
     {

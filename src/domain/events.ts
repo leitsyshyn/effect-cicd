@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 
 import { ArtifactMetadata, LogMetadata } from "./artifacts.ts"
+import { ReportSummary } from "./reports.ts"
 import { FailureSummary } from "./runtime-state.ts"
 import { AttemptId, EventId, RunId, UnitId } from "./ids.ts"
 
@@ -59,6 +60,13 @@ export class AttemptFailed extends Schema.TaggedClass<AttemptFailed>()("AttemptF
   failure: FailureSummary,
 }) {}
 
+export class AttemptTimedOut extends Schema.TaggedClass<AttemptTimedOut>()("AttemptTimedOut", {
+  ...EventBase,
+  unitId: UnitId,
+  attemptId: AttemptId,
+  failure: FailureSummary,
+}) {}
+
 export class RetryScheduled extends Schema.TaggedClass<RetryScheduled>()("RetryScheduled", {
   ...EventBase,
   unitId: UnitId,
@@ -80,6 +88,12 @@ export class UnitSucceeded extends Schema.TaggedClass<UnitSucceeded>()("UnitSucc
 }) {}
 
 export class UnitFailed extends Schema.TaggedClass<UnitFailed>()("UnitFailed", {
+  ...EventBase,
+  unitId: UnitId,
+  failure: FailureSummary,
+}) {}
+
+export class UnitTimedOut extends Schema.TaggedClass<UnitTimedOut>()("UnitTimedOut", {
   ...EventBase,
   unitId: UnitId,
   failure: FailureSummary,
@@ -114,12 +128,24 @@ export class ArtifactRegistered extends Schema.TaggedClass<ArtifactRegistered>()
   },
 ) {}
 
+export class ReportRegistered extends Schema.TaggedClass<ReportRegistered>()("ReportRegistered", {
+  ...EventBase,
+  unitId: UnitId,
+  attemptId: AttemptId,
+  report: ReportSummary,
+}) {}
+
 export class RunSucceeded extends Schema.TaggedClass<RunSucceeded>()(
   "RunSucceeded",
   EventBase,
 ) {}
 
 export class RunFailed extends Schema.TaggedClass<RunFailed>()("RunFailed", {
+  ...EventBase,
+  failure: FailureSummary,
+}) {}
+
+export class RunTimedOut extends Schema.TaggedClass<RunTimedOut>()("RunTimedOut", {
   ...EventBase,
   failure: FailureSummary,
 }) {}
@@ -144,16 +170,20 @@ export const WorkflowEvent = Schema.Union([
   AttemptStarted,
   AttemptSucceeded,
   AttemptFailed,
+  AttemptTimedOut,
   RetryScheduled,
   AttemptCanceled,
   UnitSucceeded,
   UnitFailed,
+  UnitTimedOut,
   UnitSkipped,
   UnitCanceled,
   LogRegistered,
   ArtifactRegistered,
+  ReportRegistered,
   RunSucceeded,
   RunFailed,
+  RunTimedOut,
   RunCanceled,
   RunInterrupted,
 ])

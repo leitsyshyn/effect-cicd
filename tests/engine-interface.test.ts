@@ -12,7 +12,8 @@ import {
   DependencyDeclaration,
   UnitDeclaration,
 } from "../src/domain/workflow-definition.ts"
-import { Executor, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
+import { WorkflowRunState } from "../src/domain/runtime-state.ts"
+import { Executor, ExecutorResult, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
 import { Engine } from "../src/engine/interface.ts"
 import { Orchestrator } from "../src/engine/orchestrator.ts"
 import { Planner } from "../src/engine/planner.ts"
@@ -215,6 +216,60 @@ describe("Engine interface", () => {
       expect(JSON.stringify(events)).not.toContain("top-secret-token")
     }).pipe(Effect.provide(runtimeLayer())),
   )
+
+  it.live("canceling a running run ends it as canceled and records cancellation events", () => {
+    let interrupted = false
+
+    return Effect.gen(function* () {
+      const engine = yield* Engine
+      const submitted = yield* engine.submitRun(plan("workflow:cancel", [planUnit("unit:slow")]))
+
+      yield* Effect.sleep("50 millis")
+
+      const canceled = yield* engine.cancelRun(submitted.runId, "Canceled from test")
+      const inspected = yield* waitForTerminalRun(engine, submitted.runId)
+      const events = yield* engine.readRunEvents(submitted.runId)
+
+      expect(canceled.status).toBe("canceled")
+      expect(inspected.status).toBe("canceled")
+      expect(interrupted).toBe(true)
+      expect(events.map((event) => event._tag)).toContain("RunCancellationRequested")
+      expect(events.map((event) => event._tag)).toContain("AttemptCanceled")
+      expect(events.map((event) => event._tag)).toContain("RunCanceled")
+    }).pipe(
+      Effect.provide(
+        runtimeLayer({
+          resultsByUnitId: {
+            "unit:slow": {
+              execute: (request) =>
+                Effect.sleep("5 seconds").pipe(
+                  Effect.as(
+                    new ExecutorResult({
+                      runId: request.runId,
+                      unitId: request.unitId,
+                      attemptId: request.attemptId,
+                      attemptNumber: request.attemptNumber,
+                      outcome: "succeeded",
+                      exitCode: 0,
+                      outputs: {},
+                      reports: [],
+                      artifacts: [],
+                      logs: [],
+                      diagnostics: [],
+                    }),
+                  ),
+                  Effect.onInterrupt(() =>
+                    Effect.sync(() => {
+                      interrupted = true
+                    }),
+                  ),
+                ),
+            },
+          },
+        }),
+      ),
+    )
+  })
 })
 
 const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
@@ -338,6 +393,18 @@ const artifact = (name: string) =>
     contentType: "text/plain",
     metadata: {},
   })
+
+const waitForTerminalRun = (
+  engine: { readonly inspectRun: (runId: RunId) => Effect.Effect<WorkflowRunState, unknown> },
+  runId: RunId,
+): Effect.Effect<WorkflowRunState, unknown> =>
+  engine.inspectRun(runId).pipe(
+    Effect.flatMap((run) =>
+      run.status === "succeeded" || run.status === "failed" || run.status === "timed_out" || run.status === "canceled" || run.status === "interrupted"
+        ? Effect.succeed(run)
+        : Effect.sleep("25 millis").pipe(Effect.flatMap(() => waitForTerminalRun(engine, runId))),
+    ),
+  )
 
 const successPayloads = (workflowId: string, unitId: string) => {
   const runId = RunId.make(`run:plan:${workflowId}`)

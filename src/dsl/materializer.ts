@@ -10,20 +10,31 @@ import {
   ContainerCommandDeclaration,
   DependencyDeclaration,
   NamedDeclaration,
+  OutputDeclaration,
+  ReportDeclaration,
   RetryPolicyDeclaration,
   SourceMetadata,
   TimeoutPolicyDeclaration,
   UnitDeclaration,
+  UnitInputDeclaration,
+  UnitOutputSourceDeclaration,
+  WorkflowInputSourceDeclaration,
+  WorkflowOutputDeclaration,
 } from "../domain/workflow-definition.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
 import type {
   AuthoredArtifactDeclaration,
   AuthoredContainerCommand,
   AuthoredNamedDeclaration,
+  AuthoredOutputDeclaration,
   AuthoredPolicy,
+  AuthoredReportDeclaration,
   AuthoredSourceMetadata,
   AuthoredUnit,
+  AuthoredUnitInputDeclaration,
+  AuthoredValueSource,
   AuthoredWorkflow,
+  AuthoredWorkflowOutputDeclaration,
 } from "./authored-workflow.ts"
 
 export class DslMaterializer extends Context.Service<
@@ -64,10 +75,13 @@ const materialize = Effect.fn("dsl.materialize")(function* (authored: AuthoredWo
       return yield* fail(`Unit ${authoredUnit.unitId} name must be non-empty`)
     }
 
-    yield* validateCommand(authoredUnit)
-    yield* validateArtifacts(authoredUnit)
-    yield* validatePolicies(authoredUnit)
-  }
+      yield* validateCommand(authoredUnit)
+      yield* validateArtifacts(authoredUnit)
+      yield* validateInputs(authoredUnit)
+      yield* validateOutputs(authoredUnit)
+      yield* validateReports(authoredUnit)
+      yield* validatePolicies(authoredUnit)
+    }
 
   const dependencies = new Array<DependencyDeclaration>()
   const dependencyIds = new Set<string>()
@@ -106,7 +120,7 @@ const materialize = Effect.fn("dsl.materialize")(function* (authored: AuthoredWo
     units: authored.units.map(toUnitDeclaration),
     dependencies,
     inputs: toNamedDeclarations(authored.inputs),
-    outputs: toNamedDeclarations(authored.outputs),
+    outputs: toWorkflowOutputDeclarations(authored.outputs),
     artifacts: toArtifactDeclarations(authored.artifacts),
     reports: toNamedDeclarations(authored.reports),
     source: toSourceMetadata(authored.source),
@@ -156,14 +170,47 @@ const validateArtifacts = Effect.fn("dsl.validateArtifacts")(function* (authored
   }
 })
 
+const validateInputs = Effect.fn("dsl.validateInputs")(function* (authoredUnit: AuthoredUnit) {
+  for (const input of authoredUnit.inputs ?? []) {
+    if (input.name.trim().length === 0) {
+      return yield* fail(`Unit ${authoredUnit.unitId} input name must be non-empty`)
+    }
+  }
+})
+
+const validateOutputs = Effect.fn("dsl.validateOutputs")(function* (authoredUnit: AuthoredUnit) {
+  for (const output of authoredUnit.outputs ?? []) {
+    if (output.name.trim().length === 0) {
+      return yield* fail(`Unit ${authoredUnit.unitId} output name must be non-empty`)
+    }
+
+    if (output.path.trim().length === 0) {
+      return yield* fail(`Unit ${authoredUnit.unitId} output ${output.name} path must be non-empty`)
+    }
+  }
+})
+
+const validateReports = Effect.fn("dsl.validateReports")(function* (authoredUnit: AuthoredUnit) {
+  for (const report of authoredUnit.reports ?? []) {
+    if (report.name.trim().length === 0) {
+      return yield* fail(`Unit ${authoredUnit.unitId} report name must be non-empty`)
+    }
+
+    if (report.path.trim().length === 0) {
+      return yield* fail(`Unit ${authoredUnit.unitId} report ${report.name} path must be non-empty`)
+    }
+  }
+})
+
 const toUnitDeclaration = (authoredUnit: AuthoredUnit) =>
   new UnitDeclaration({
     unitId: UnitId.make(authoredUnit.unitId),
     name: authoredUnit.name,
     payloadDeclaration: toCommandDeclaration(authoredUnit.command),
     metadata: toMetadata(authoredUnit.metadata),
-    inputs: toNamedDeclarations(authoredUnit.inputs),
-    outputs: toNamedDeclarations(authoredUnit.outputs),
+    inputs: toUnitInputDeclarations(authoredUnit.inputs),
+    outputs: toOutputDeclarations(authoredUnit.outputs),
+    reports: toReportDeclarations(authoredUnit.reports),
     artifacts: toArtifactDeclarations(authoredUnit.artifacts),
     policies: toPolicyDeclarations(authoredUnit.policies),
     source: toSourceMetadata(authoredUnit.source),
@@ -182,6 +229,53 @@ const toNamedDeclarations = (declarations: ReadonlyArray<AuthoredNamedDeclaratio
     (declaration) =>
       new NamedDeclaration({
         name: declaration.name,
+        metadata: toMetadata(declaration.metadata),
+        source: toSourceMetadata(declaration.source),
+      }),
+  )
+
+const toUnitInputDeclarations = (declarations: ReadonlyArray<AuthoredUnitInputDeclaration> | undefined) =>
+  (declarations ?? []).map(
+    (declaration) =>
+      new UnitInputDeclaration({
+        name: declaration.name,
+        from: toValueSourceDeclaration(declaration.from),
+        metadata: toMetadata(declaration.metadata),
+        source: toSourceMetadata(declaration.source),
+      }),
+  )
+
+const toOutputDeclarations = (declarations: ReadonlyArray<AuthoredOutputDeclaration> | undefined) =>
+  (declarations ?? []).map(
+    (declaration) =>
+      new OutputDeclaration({
+        name: declaration.name,
+        path: declaration.path,
+        format: declaration.format ?? "json",
+        metadata: toMetadata(declaration.metadata),
+        source: toSourceMetadata(declaration.source),
+      }),
+  )
+
+const toReportDeclarations = (declarations: ReadonlyArray<AuthoredReportDeclaration> | undefined) =>
+  (declarations ?? []).map(
+    (declaration) =>
+      new ReportDeclaration({
+        name: declaration.name,
+        path: declaration.path,
+        format: declaration.format ?? "text",
+        contentType: declaration.contentType,
+        metadata: toMetadata(declaration.metadata),
+        source: toSourceMetadata(declaration.source),
+      }),
+  )
+
+const toWorkflowOutputDeclarations = (declarations: ReadonlyArray<AuthoredWorkflowOutputDeclaration> | undefined) =>
+  (declarations ?? []).map(
+    (declaration) =>
+      new WorkflowOutputDeclaration({
+        name: declaration.name,
+        from: toValueSourceDeclaration(declaration.from),
         metadata: toMetadata(declaration.metadata),
         source: toSourceMetadata(declaration.source),
       }),
@@ -209,8 +303,20 @@ const toPolicyDeclarations = (policies: ReadonlyArray<AuthoredPolicy> | undefine
         return new TimeoutPolicyDeclaration({ seconds: policy.seconds })
       case "CancellationPolicy":
         return new CancellationPolicyDeclaration({ mode: policy.mode })
-    }
+      }
   })
+
+const toValueSourceDeclaration = (source: AuthoredValueSource) => {
+  switch (source._tag) {
+    case "WorkflowInputSource":
+      return new WorkflowInputSourceDeclaration({ inputName: source.inputName })
+    case "UnitOutputSource":
+      return new UnitOutputSourceDeclaration({
+        unitId: UnitId.make(source.unitId),
+        outputName: source.outputName,
+      })
+  }
+}
 
 const toMetadata = (metadata: Readonly<Record<string, unknown>> | undefined) => ({ ...(metadata ?? {}) })
 

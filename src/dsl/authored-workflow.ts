@@ -15,6 +15,40 @@ export interface AuthoredNamedDeclaration {
   readonly source?: AuthoredSourceMetadata
 }
 
+export type AuthoredDataValueFormat = "json" | "text"
+
+export interface AuthoredWorkflowInputSource {
+  readonly _tag: "WorkflowInputSource"
+  readonly inputName: string
+}
+
+export interface AuthoredUnitOutputSource {
+  readonly _tag: "UnitOutputSource"
+  readonly unitId: string
+  readonly outputName: string
+}
+
+export type AuthoredValueSource = AuthoredWorkflowInputSource | AuthoredUnitOutputSource
+
+export interface AuthoredUnitInputDeclaration extends AuthoredNamedDeclaration {
+  readonly from: AuthoredValueSource
+}
+
+export interface AuthoredOutputDeclaration extends AuthoredNamedDeclaration {
+  readonly path: string
+  readonly format?: AuthoredDataValueFormat
+}
+
+export interface AuthoredWorkflowOutputDeclaration extends AuthoredNamedDeclaration {
+  readonly from: AuthoredValueSource
+}
+
+export interface AuthoredReportDeclaration extends AuthoredNamedDeclaration {
+  readonly path: string
+  readonly format?: AuthoredDataValueFormat
+  readonly contentType?: string
+}
+
 export interface AuthoredArtifactDeclaration extends AuthoredNamedDeclaration {
   readonly kind?: "file"
   readonly path: string
@@ -52,8 +86,9 @@ export interface AuthoredUnit {
   readonly command: AuthoredContainerCommand
   readonly dependsOn?: ReadonlyArray<string>
   readonly metadata?: AuthoredMetadata
-  readonly inputs?: ReadonlyArray<AuthoredNamedDeclaration>
-  readonly outputs?: ReadonlyArray<AuthoredNamedDeclaration>
+  readonly inputs?: ReadonlyArray<AuthoredUnitInputDeclaration>
+  readonly outputs?: ReadonlyArray<AuthoredOutputDeclaration>
+  readonly reports?: ReadonlyArray<AuthoredReportDeclaration>
   readonly artifacts?: ReadonlyArray<AuthoredArtifactDeclaration>
   readonly policies?: ReadonlyArray<AuthoredPolicy>
   readonly source?: AuthoredSourceMetadata
@@ -65,7 +100,7 @@ export interface AuthoredWorkflow {
   readonly metadata?: AuthoredMetadata
   readonly units: ReadonlyArray<AuthoredUnit>
   readonly inputs?: ReadonlyArray<AuthoredNamedDeclaration>
-  readonly outputs?: ReadonlyArray<AuthoredNamedDeclaration>
+  readonly outputs?: ReadonlyArray<AuthoredWorkflowOutputDeclaration>
   readonly artifacts?: ReadonlyArray<AuthoredArtifactDeclaration>
   readonly reports?: ReadonlyArray<AuthoredNamedDeclaration>
   readonly source?: AuthoredSourceMetadata

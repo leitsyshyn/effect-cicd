@@ -36,6 +36,11 @@ export class RunControlRejected extends Schema.TaggedErrorClass<RunControlReject
   message: Schema.String,
 }) {}
 
+export class WorkflowInputsInvalid extends Schema.TaggedErrorClass<WorkflowInputsInvalid>()("WorkflowInputsInvalid", {
+  workflowId: WorkflowId,
+  message: Schema.String,
+}) {}
+
 export class UnitNotFound extends Schema.TaggedErrorClass<UnitNotFound>()("UnitNotFound", {
   runId: RunId,
   unitId: UnitId,
@@ -123,6 +128,7 @@ export const DomainError = Schema.Union([
   PlanNotFound,
   RunNotFound,
   RunControlRejected,
+  WorkflowInputsInvalid,
   UnitNotFound,
   AttemptNotFound,
   StoreUnavailable,

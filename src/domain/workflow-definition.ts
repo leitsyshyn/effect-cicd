@@ -19,6 +19,58 @@ export class NamedDeclaration extends Schema.Class<NamedDeclaration>("NamedDecla
   source: Schema.optional(SourceMetadata),
 }) {}
 
+export const DataValueFormat = Schema.Literals(["json", "text"])
+export type DataValueFormat = typeof DataValueFormat.Type
+
+export class WorkflowInputSourceDeclaration extends Schema.TaggedClass<WorkflowInputSourceDeclaration>()(
+  "WorkflowInputSourceDeclaration",
+  {
+    inputName: Schema.String,
+  },
+) {}
+
+export class UnitOutputSourceDeclaration extends Schema.TaggedClass<UnitOutputSourceDeclaration>()(
+  "UnitOutputSourceDeclaration",
+  {
+    unitId: UnitId,
+    outputName: Schema.String,
+  },
+) {}
+
+export const ValueSourceDeclaration = Schema.Union([WorkflowInputSourceDeclaration, UnitOutputSourceDeclaration])
+export type ValueSourceDeclaration = typeof ValueSourceDeclaration.Type
+
+export class UnitInputDeclaration extends Schema.Class<UnitInputDeclaration>("UnitInputDeclaration")({
+  name: Schema.String,
+  from: ValueSourceDeclaration,
+  metadata: Schema.Record(Schema.String, Schema.Unknown),
+  source: Schema.optional(SourceMetadata),
+}) {}
+
+export class OutputDeclaration extends Schema.Class<OutputDeclaration>("OutputDeclaration")({
+  name: Schema.String,
+  path: Schema.String,
+  format: DataValueFormat,
+  metadata: Schema.Record(Schema.String, Schema.Unknown),
+  source: Schema.optional(SourceMetadata),
+}) {}
+
+export class WorkflowOutputDeclaration extends Schema.Class<WorkflowOutputDeclaration>("WorkflowOutputDeclaration")({
+  name: Schema.String,
+  from: ValueSourceDeclaration,
+  metadata: Schema.Record(Schema.String, Schema.Unknown),
+  source: Schema.optional(SourceMetadata),
+}) {}
+
+export class ReportDeclaration extends Schema.Class<ReportDeclaration>("ReportDeclaration")({
+  name: Schema.String,
+  path: Schema.String,
+  format: DataValueFormat,
+  contentType: Schema.optional(Schema.String),
+  metadata: Schema.Record(Schema.String, Schema.Unknown),
+  source: Schema.optional(SourceMetadata),
+}) {}
+
 export class ArtifactDeclaration extends Schema.Class<ArtifactDeclaration>("ArtifactDeclaration")({
   name: Schema.String,
   kind: Schema.Literals(["file"]),
@@ -81,8 +133,9 @@ export class UnitDeclaration extends Schema.Class<UnitDeclaration>("UnitDeclarat
   name: Schema.String,
   payloadDeclaration: PayloadDeclaration,
   metadata: Schema.Record(Schema.String, Schema.Unknown),
-  inputs: Schema.Array(NamedDeclaration),
-  outputs: Schema.Array(NamedDeclaration),
+  inputs: Schema.optional(Schema.Array(UnitInputDeclaration)),
+  outputs: Schema.optional(Schema.Array(OutputDeclaration)),
+  reports: Schema.optional(Schema.Array(ReportDeclaration)),
   artifacts: Schema.Array(ArtifactDeclaration),
   policies: Schema.Array(PolicyDeclaration),
   source: Schema.optional(SourceMetadata),
@@ -98,7 +151,7 @@ export class NormalizedWorkflowDefinition extends Schema.Class<NormalizedWorkflo
   units: Schema.Array(UnitDeclaration),
   dependencies: Schema.Array(DependencyDeclaration),
   inputs: Schema.Array(NamedDeclaration),
-  outputs: Schema.Array(NamedDeclaration),
+  outputs: Schema.optional(Schema.Array(WorkflowOutputDeclaration)),
   artifacts: Schema.Array(ArtifactDeclaration),
   reports: Schema.Array(NamedDeclaration),
   source: Schema.optional(SourceMetadata),

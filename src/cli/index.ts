@@ -67,6 +67,11 @@ const workspaceFlag = Flag.string("workspace").pipe(
   Flag.withDescription("Workspace directory mounted into execution containers"),
 )
 
+const inputsFlag = Flag.string("inputs").pipe(
+  Flag.optional,
+  Flag.withDescription("Workflow inputs as a JSON object"),
+)
+
 const installationIdFlag = Flag.string("installation-id").pipe(
   Flag.withAlias("i"),
   Flag.withDescription("GitHub App installation id for the bound repository"),
@@ -111,14 +116,18 @@ const planCommand = Command.make("plan", { workflowModule: workflowModuleArg, ex
 
 const runCommand = Command.make(
   "run",
-  { workflowModule: workflowModuleArg, exportName: exportNameFlag, workspace: workspaceFlag },
-  ({ workflowModule, exportName, workspace }) =>
+  { workflowModule: workflowModuleArg, exportName: exportNameFlag, workspace: workspaceFlag, inputs: inputsFlag },
+  ({ workflowModule, exportName, workspace, inputs }) =>
   Effect.gen(function* () {
     const engine = yield* Engine
     const resolvedWorkspace = yield* resolveWorkspacePath(workflowModule, workspace)
+    const inputValues = yield* parseInputValues(inputs)
     const definition = yield* loadAndMaterializeWorkflow(workflowModule, Option.getOrUndefined(exportName))
     const plan = yield* engine.plan(definition)
-    const submitted = yield* engine.submitRun(plan, { workspacePath: resolvedWorkspace })
+    const submitted = yield* engine.submitRun(plan, {
+      workspacePath: resolvedWorkspace,
+      ...(inputValues === undefined ? {} : { inputValues }),
+    })
     const run = yield* waitForTerminalRun(engine, submitted.runId)
     const events = yield* engine.readRunEvents(run.runId)
     const artifacts = yield* engine.readArtifacts(run.runId)
@@ -432,6 +441,9 @@ const renderRunSummary = (
   `run: ${run.runId}`,
   `status: ${run.status}`,
   `workspace: ${workspacePath}`,
+  `inputs: ${formatResolvedValues(run.inputs ?? [])}`,
+  `outputs: ${formatOutputValues(run.outputs ?? [])}`,
+  `reports: ${formatReports(run.reports ?? [])}`,
   "units:",
   ...run.units.map((unit) => `${unit.unitId} ${unit.status}`),
   "events:",
@@ -464,9 +476,16 @@ const renderRunState = (run: WorkflowRunState) => [
   `finishedAt: ${formatDate(run.finishedAt)}`,
   `progress: ${run.progress.completedUnits}/${run.progress.totalUnits} completed, ${run.progress.failedUnits} failed, ${run.progress.skippedUnits} skipped`,
   `failure: ${run.failure?.message ?? "-"}`,
+  `cancellation: ${run.cancellationReason ?? "-"}`,
+  `inputs: ${formatResolvedValues(run.inputs ?? [])}`,
+  `outputs: ${formatOutputValues(run.outputs ?? [])}`,
+  `reports: ${formatReports(run.reports ?? [])}`,
   ...renderTriggerMetadata(run),
   "units:",
-  ...run.units.map((unit) => `${unit.unitId} ${unit.status}`),
+  ...run.units.map(
+    (unit) =>
+      `${unit.unitId} ${unit.status} inputs=${formatResolvedValues(unit.resolvedInputs ?? [])} outputs=${formatOutputValues(unit.outputs ?? [])} reports=${formatReports(unit.reports ?? [])}${unit.cancellationReason === undefined ? "" : ` canceled=${unit.cancellationReason}`}`,
+  ),
 ]
 
 const renderBindingsList = (bindings: ReadonlyArray<GitHubBindingSummary>) => [
@@ -525,6 +544,15 @@ const renderPayloadRefs = <A>(items: ReadonlyArray<A>, render: (item: A) => stri
 
 const formatNames = (names: ReadonlyArray<string>) => (names.length === 0 ? "-" : names.join(", "))
 
+const formatResolvedValues = (values: ReadonlyArray<{ readonly name: string; readonly value: unknown }>) =>
+  values.length === 0 ? "-" : values.map((value) => `${value.name}=${JSON.stringify(value.value)}`).join(", ")
+
+const formatOutputValues = (values: ReadonlyArray<{ readonly name: string; readonly value: unknown }>) =>
+  values.length === 0 ? "-" : values.map((value) => `${value.name}=${JSON.stringify(value.value)}`).join(", ")
+
+const formatReports = (reports: ReadonlyArray<{ readonly name: string; readonly artifact: { readonly artifactRef: string } }>) =>
+  reports.length === 0 ? "-" : reports.map((report) => `${report.name} ${report.artifact.artifactRef}`).join(", ")
+
 const formatDate = (value: Date | undefined) => (value === undefined ? "-" : value.toISOString())
 
 const renderTriggerMetadata = (run: WorkflowRunState) => {
@@ -546,6 +574,26 @@ const renderTriggerMetadata = (run: WorkflowRunState) => {
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined
+
+const parseInputValues = (value: Option.Option<string>) =>
+  Option.match(value, {
+    onNone: () => Effect.succeed(undefined),
+    onSome: (text) =>
+      Effect.try({
+        try: () => {
+          const parsed = JSON.parse(text)
+          if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+            throw new Error("inputs must be a JSON object")
+          }
+
+          return parsed as Readonly<Record<string, unknown>>
+        },
+        catch: (error) =>
+          new CliInputInvalid({
+            message: error instanceof Error ? error.message : String(error),
+          }),
+      }),
+  })
 
 const mergeExecutorOptions = (options: TestExecutorLayerOptions): TestExecutorLayerOptions => {
   return {

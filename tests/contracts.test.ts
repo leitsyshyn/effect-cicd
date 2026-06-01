@@ -28,7 +28,10 @@ import {
   DependencyDeclaration,
   NamedDeclaration,
   NormalizedWorkflowDefinition,
+  OutputDeclaration,
+  UnitInputDeclaration,
   UnitDeclaration,
+  WorkflowOutputDeclaration,
 } from "../src/domain/workflow-definition.ts"
 import { DslMaterializer } from "../src/dsl/index.ts"
 import { Engine } from "../src/engine/interface.ts"
@@ -160,6 +163,9 @@ describe("contract skeleton", () => {
 })
 
 const emptyNamedDeclarations: ReadonlyArray<NamedDeclaration> = []
+const emptyUnitInputDeclarations: ReadonlyArray<UnitInputDeclaration> = []
+const emptyOutputDeclarations: ReadonlyArray<OutputDeclaration> = []
+const emptyWorkflowOutputDeclarations: ReadonlyArray<WorkflowOutputDeclaration> = []
 
 const minimalNamedDeclaration = (name: string) =>
   new NamedDeclaration({
@@ -193,15 +199,16 @@ const minimalWorkflow = () => {
           command: ["sh", "-c", "true"],
         }),
         metadata: {},
-        inputs: emptyNamedDeclarations,
-        outputs: emptyNamedDeclarations,
+        inputs: emptyUnitInputDeclarations,
+        outputs: emptyOutputDeclarations,
         artifacts: [minimalArtifactDeclaration("dist")],
+        reports: [],
         policies: [],
       }),
     ],
     dependencies: [] satisfies ReadonlyArray<DependencyDeclaration>,
     inputs: emptyNamedDeclarations,
-    outputs: emptyNamedDeclarations,
+    outputs: emptyWorkflowOutputDeclarations,
     artifacts: [minimalArtifactDeclaration("dist")],
     reports: emptyNamedDeclarations,
   })
@@ -216,6 +223,8 @@ const minimalPlan = () => {
     workflowId: WorkflowId.make("workflow:minimal"),
     workflowName: "minimal",
     metadata: {},
+    inputs: emptyNamedDeclarations,
+    outputs: emptyWorkflowOutputDeclarations,
     units: [
       new PlanUnit({
         unitId,
@@ -226,6 +235,9 @@ const minimalPlan = () => {
           command: ["sh", "-c", "true"],
           env: {},
         }),
+        inputs: emptyUnitInputDeclarations,
+        outputs: emptyOutputDeclarations,
+        reports: [],
         logExpectations: [minimalNamedDeclaration("stdout")],
         artifactExpectations: [minimalArtifactDeclaration("dist")],
         policies: [],

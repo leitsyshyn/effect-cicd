@@ -6,6 +6,7 @@ import {
   ExecutorFailed,
   RunNotFound,
   StoreUnavailable,
+  WorkflowInputsInvalid,
 } from "../domain/errors.ts"
 import {
   ArtifactRegistered,
@@ -13,7 +14,9 @@ import {
   AttemptFailed,
   AttemptStarted,
   AttemptSucceeded,
+  AttemptTimedOut,
   LogRegistered,
+  ReportRegistered,
   RetryScheduled,
   RunCanceled,
   RunCancellationRequested,
@@ -22,29 +25,34 @@ import {
   RunResumed,
   RunStarted,
   RunSucceeded,
+  RunTimedOut,
   UnitCanceled,
   UnitDispatched,
   UnitFailed,
   UnitReady,
   UnitSkipped,
   UnitSucceeded,
+  UnitTimedOut,
   type WorkflowEvent,
 } from "../domain/events.ts"
-import { ExecutionPlan, PlanRetryPolicy, PlanUnit } from "../domain/execution-plan.ts"
+import { ExecutionPlan, PlanRetryPolicy, PlanTimeoutPolicy, PlanUnit } from "../domain/execution-plan.ts"
 import { AttemptId, EventId, RunId, UnitId } from "../domain/ids.ts"
+import { ProducedReport, ReportSummary } from "../domain/reports.ts"
 import { isSecretRef } from "../domain/secrets.ts"
 import {
   ExecutionAttemptState,
   ExecutionUnitState,
   FailureSummary,
+  OutputValueSummary,
   ProgressSummary,
+  ResolvedInputValue,
   RunExecutionContext,
   RunExecutionOptions,
   WorkflowRunState,
 } from "../domain/runtime-state.ts"
 import { StorageTransactor } from "../runtime/storage.ts"
 import { SecretStore } from "../secrets/store.ts"
-import { DispatchRequest, DispatchWorkspace, Executor, ExecutorFailureSummary, ExecutorResult } from "./executor.ts"
+import { DispatchInput, DispatchRequest, DispatchWorkspace, Executor, ExecutorFailureSummary, ExecutorResult } from "./executor.ts"
 import { RunUpdate, RunUpdates } from "./run-updates.ts"
 import { ArtifactStore } from "./stores/artifact-store.ts"
 import { EventLog } from "./stores/event-log.ts"
@@ -52,6 +60,7 @@ import { StateStore } from "./stores/state-store.ts"
 
 export interface RunStartOptions {
   readonly workspacePath?: string
+  readonly inputValues?: Readonly<Record<string, unknown>>
 }
 
 export const containerWorkspaceMountPath = "/workspace"
@@ -59,12 +68,15 @@ export const containerWorkspaceMountPath = "/workspace"
 export class Orchestrator extends Context.Service<
   Orchestrator,
   {
-    readonly startRun: (plan: ExecutionPlan, options?: RunStartOptions) => Effect.Effect<WorkflowRunState, StoreUnavailable>
+    readonly startRun: (
+      plan: ExecutionPlan,
+      options?: RunStartOptions,
+    ) => Effect.Effect<WorkflowRunState, StoreUnavailable | WorkflowInputsInvalid>
     readonly createRun: (
       plan: ExecutionPlan,
       options?: RunStartOptions,
       retriedFromRunId?: RunId,
-    ) => Effect.Effect<WorkflowRunState, StoreUnavailable>
+    ) => Effect.Effect<WorkflowRunState, StoreUnavailable | WorkflowInputsInvalid>
     readonly inspectRun: (runId: RunId) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
     readonly advanceRun: (runId: RunId) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
     readonly cancelRun: (runId: RunId, reason?: string) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
@@ -161,10 +173,12 @@ export class Orchestrator extends Context.Service<
         retriedFromRunId?: RunId,
       ) {
         const createdAt = yield* nowDate
+        const runInputs = yield* resolveWorkflowInputs(plan, options)
         const run = createInitialRun(
           plan,
           RunId.make(`run:${plan.planId}:${crypto.randomUUID()}`),
           createdAt,
+          runInputs,
           options,
           retriedFromRunId,
         )
@@ -243,6 +257,9 @@ export class Orchestrator extends Context.Service<
           attemptNumber,
           status: "running",
           startedAt,
+          resolvedInputs: [],
+          outputs: [],
+          reports: [],
           artifacts: [],
           logs: [],
         })
@@ -289,7 +306,7 @@ export class Orchestrator extends Context.Service<
         const result =
           request instanceof DispatchRequest
             ? yield* Effect.onInterrupt(
-                executor.execute(request).pipe(
+                executeDispatch(executor, planUnit, request).pipe(
                   Effect.catchTag("ExecutorFailed", (error) => Effect.succeed(executorFailureResult(request, error))),
                 ),
                 () => finalizeCancellationState(run, `Cancellation requested while executing ${unitId}`).pipe(Effect.asVoid),
@@ -299,7 +316,10 @@ export class Orchestrator extends Context.Service<
         const attemptStartedAt = result.startedAt ?? runningAttempt.startedAt
         const finishedAt = result.finishedAt ?? (yield* nowDate)
         const logs = yield* registerLogs(run.runId, unitId, attemptId, result.logs, requestRedactionValues(request))
+        const reports = yield* registerReports(run.runId, unitId, attemptId, result.reports)
         const artifacts = yield* registerArtifacts(run.runId, unitId, attemptId, result.artifacts)
+        const resolvedInputs = request instanceof DispatchRequest ? toResolvedInputValues(planUnit, request) : []
+        const outputValues = toOutputValueSummaries(planUnit, result.outputs)
 
         if (result.outcome === "succeeded") {
           const succeededAttempt = new ExecutionAttemptState({
@@ -307,6 +327,9 @@ export class Orchestrator extends Context.Service<
             status: "succeeded",
             startedAt: attemptStartedAt,
             finishedAt,
+            resolvedInputs,
+            outputs: outputValues,
+            reports,
             logs,
             artifacts,
           })
@@ -315,13 +338,16 @@ export class Orchestrator extends Context.Service<
               ...runningUnit,
               status: "succeeded",
               finishedAt,
+              resolvedInputs,
+              outputs: outputValues,
+              reports,
               logs: [...runningUnit.logs, ...logs],
               artifacts: [...runningUnit.artifacts, ...artifacts],
             }),
             succeededAttempt,
           )
 
-          run = replaceUnit(appendRunPayloads(run, logs, artifacts, finishedAt), succeededUnit, finishedAt)
+          run = replaceUnit(appendRunPayloads(run, logs, artifacts, reports, finishedAt), succeededUnit, finishedAt)
 
           if (run.units.every((unit) => unit.status === "succeeded")) {
             run = finalizeRun(run, "succeeded", finishedAt)
@@ -343,6 +369,64 @@ export class Orchestrator extends Context.Service<
           return run
         }
 
+        if (result.outcome === "timed_out") {
+          const failure = toFailureSummary(result)
+          const timedOutAttempt = new ExecutionAttemptState({
+            ...runningAttempt,
+            status: "timed_out",
+            startedAt: attemptStartedAt,
+            finishedAt,
+            failure,
+            resolvedInputs,
+            outputs: outputValues,
+            reports,
+            logs,
+            artifacts,
+          })
+          const timedOutUnit = replaceAttempt(
+            new ExecutionUnitState({
+              ...runningUnit,
+              status: "timed_out",
+              finishedAt,
+              failure,
+              resolvedInputs,
+              outputs: outputValues,
+              reports,
+              logs: [...runningUnit.logs, ...logs],
+              artifacts: [...runningUnit.artifacts, ...artifacts],
+            }),
+            timedOutAttempt,
+          )
+
+          const skippedUnitIds = getBlockedDescendantUnitIds(plan, unitId)
+          run = replaceUnit(appendRunPayloads(run, logs, artifacts, reports, finishedAt), timedOutUnit, finishedAt)
+          run = applySkippedUnits(run, skippedUnitIds, finishedAt)
+          run = finalizeRun(run, "timed_out", finishedAt, failure)
+
+          yield* storageTransactor.run(
+            Effect.gen(function* () {
+              yield* persistRun(run)
+              yield* appendEvent(run.runId, (base) => new AttemptTimedOut({ ...base, unitId, attemptId, failure }))
+              yield* appendEvent(run.runId, (base) => new UnitTimedOut({ ...base, unitId, failure }))
+
+              for (const skippedUnitId of skippedUnitIds) {
+                const skippedUnit = run.units.find((unit) => unit.unitId === skippedUnitId)
+                if (skippedUnit?.status === "skipped") {
+                  yield* appendEvent(
+                    run.runId,
+                    (base) => new UnitSkipped({ ...base, unitId: skippedUnitId, reason: `Blocked by ${unitId}` }),
+                  )
+                }
+              }
+
+              yield* appendEvent(run.runId, (base) => new RunTimedOut({ ...base, failure }))
+            }),
+          )
+          yield* publishRunUpdate(run, "RunTimedOut")
+
+          return run
+        }
+
         const failure = toFailureSummary(result)
         const failedAttempt = new ExecutionAttemptState({
           ...runningAttempt,
@@ -350,24 +434,30 @@ export class Orchestrator extends Context.Service<
           startedAt: attemptStartedAt,
           finishedAt,
           failure,
+          resolvedInputs,
+          outputs: outputValues,
+          reports,
           logs,
           artifacts,
         })
         const attemptFailedUnit = replaceAttempt(
-          new ExecutionUnitState({
-            ...runningUnit,
-            latestAttemptId: attemptId,
-            finishedAt: undefined,
-            logs: [...runningUnit.logs, ...logs],
-            artifacts: [...runningUnit.artifacts, ...artifacts],
-          }),
-          failedAttempt,
+            new ExecutionUnitState({
+              ...runningUnit,
+              latestAttemptId: attemptId,
+              finishedAt: undefined,
+              resolvedInputs,
+              outputs: outputValues,
+              reports,
+              logs: [...runningUnit.logs, ...logs],
+              artifacts: [...runningUnit.artifacts, ...artifacts],
+            }),
+            failedAttempt,
         )
 
         const retryLimit = getRetryLimit(planUnit)
         if (attemptNumber < retryLimit) {
           run = replaceUnit(
-            appendRunPayloads(run, logs, artifacts, finishedAt),
+            appendRunPayloads(run, logs, artifacts, reports, finishedAt),
             new ExecutionUnitState({
               ...attemptFailedUnit,
               status: "pending",
@@ -407,7 +497,7 @@ export class Orchestrator extends Context.Service<
         })
 
         const skippedUnitIds = getBlockedDescendantUnitIds(plan, unitId)
-        run = replaceUnit(appendRunPayloads(run, logs, artifacts, finishedAt), failedUnit, finishedAt)
+        run = replaceUnit(appendRunPayloads(run, logs, artifacts, reports, finishedAt), failedUnit, finishedAt)
         run = applySkippedUnits(run, skippedUnitIds, finishedAt)
         run = finalizeRun(run, "failed", finishedAt, failure)
 
@@ -451,7 +541,7 @@ export class Orchestrator extends Context.Service<
         }
 
         const canceledAt = yield* nowDate
-        const nextRun = cancelRunState(run, canceledAt)
+        const nextRun = cancelRunState(run, canceledAt, reason)
         const canceledUnitIds = nextRun.units
           .filter((unit, index) => run.units[index]?.status !== unit.status && unit.status === "canceled")
           .map((unit) => unit.unitId)
@@ -522,6 +612,33 @@ export class Orchestrator extends Context.Service<
               runId,
               (base) => new ArtifactRegistered({ ...base, unitId, attemptId, artifact: persisted }),
             )
+          }
+
+          return registered
+        })
+
+      const registerReports = (
+        runId: RunId,
+        unitId: UnitId,
+        attemptId: AttemptId,
+        reports: ReadonlyArray<ProducedReport>,
+      ) =>
+        Effect.gen(function* () {
+          const registered = new Array<ReportSummary>()
+
+          for (const report of reports) {
+            const persistedArtifact = yield* artifactStore.registerArtifact(report.artifact)
+            const persistedReport = new ReportSummary({
+              name: report.name,
+              unitId,
+              attemptId,
+              format: report.format,
+              contentType: report.contentType,
+              artifact: persistedArtifact,
+            })
+            registered.push(persistedReport)
+            yield* appendEvent(runId, (base) => new ArtifactRegistered({ ...base, unitId, attemptId, artifact: persistedArtifact }))
+            yield* appendEvent(runId, (base) => new ReportRegistered({ ...base, unitId, attemptId, report: persistedReport }))
           }
 
           return registered
@@ -635,6 +752,7 @@ const createInitialRun = (
   plan: ExecutionPlan,
   runId: RunId,
   createdAt: Date,
+  inputs: ReadonlyArray<ResolvedInputValue>,
   options?: RunStartOptions,
   retriedFromRunId?: RunId,
 ) => {
@@ -646,6 +764,9 @@ const createInitialRun = (
         status: "pending",
         dependencies: unit.dependencies,
         attempts: [],
+        resolvedInputs: [],
+        outputs: [],
+        reports: [],
         artifacts: [],
         logs: [],
       }),
@@ -657,7 +778,7 @@ const createInitialRun = (
     planId: plan.planId,
     execution: new RunExecutionContext({
       plan,
-      options: new RunExecutionOptions({ workspacePath: options?.workspacePath }),
+      options: new RunExecutionOptions({ workspacePath: options?.workspacePath, inputValues: options?.inputValues }),
       submittedAt: createdAt,
       retriedFromRunId,
     }),
@@ -667,6 +788,9 @@ const createInitialRun = (
     createdAt,
     updatedAt: createdAt,
     startedAt: createdAt,
+    inputs: [...inputs],
+    outputs: resolveWorkflowOutputs(plan, inputs, units),
+    reports: [],
     artifacts: [],
     logs: [],
   })
@@ -682,10 +806,46 @@ const executorFailureResult = (request: DispatchRequest, error: ExecutorFailed) 
     exitCode: 1,
     failure: new ExecutorFailureSummary({ message: error.message }),
     outputs: {},
+    reports: [],
     artifacts: [],
     logs: [],
     diagnostics: [],
   })
+
+const executeDispatch = (executor: typeof Executor.Service, planUnit: PlanUnit, request: DispatchRequest) => {
+  const timeoutSeconds = getTimeoutSeconds(planUnit)
+
+  if (timeoutSeconds === undefined) {
+    return executor.execute(request)
+  }
+
+  return executor.execute(request).pipe(
+    Effect.timeout(`${timeoutSeconds} seconds`),
+    Effect.catchTag(
+      "TimeoutError",
+      () =>
+        Effect.succeed(
+          new ExecutorResult({
+            runId: request.runId,
+            unitId: request.unitId,
+            attemptId: request.attemptId,
+            attemptNumber: request.attemptNumber,
+            outcome: "timed_out",
+            exitCode: undefined,
+            failure: new ExecutorFailureSummary({
+              message: `Execution exceeded the ${timeoutSeconds} second timeout`,
+              code: "timeout",
+            }),
+            outputs: {},
+            reports: [],
+            artifacts: [],
+            logs: [],
+            diagnostics: [`timed out after ${timeoutSeconds} seconds`],
+          }),
+        ),
+    ),
+  )
+}
 
 const buildDispatchRequest = (
   secretStore: typeof SecretStore.Service,
@@ -708,6 +868,11 @@ const buildDispatchRequest = (
       }
     }
 
+    const resolvedInputs = resolveUnitInputs(run, planUnit)
+    if (typeof resolvedInputs === "string") {
+      return inputResolutionFailureResult(run, planUnit.unitId, attemptId, attemptNumber, resolvedInputs)
+    }
+
     return new DispatchRequest({
       runId: run.runId,
       unitId: planUnit.unitId,
@@ -723,7 +888,9 @@ const buildDispatchRequest = (
               hostPath: run.execution.options.workspacePath,
               mountPath: containerWorkspaceMountPath,
             }),
-      inputs: [],
+      inputs: resolvedInputs,
+      outputs: planUnit.outputs ?? [],
+      reports: planUnit.reports ?? [],
       artifacts: planUnit.artifactExpectations,
       logNames: planUnit.logExpectations.map((log) => log.name),
       policies: planUnit.policies,
@@ -753,6 +920,29 @@ const secretResolutionFailureResult = (
     exitCode: 1,
     failure: new ExecutorFailureSummary({ message }),
     outputs: {},
+    reports: [],
+    artifacts: [],
+    logs: [],
+    diagnostics: [],
+  })
+
+const inputResolutionFailureResult = (
+  run: WorkflowRunState,
+  unitId: UnitId,
+  attemptId: AttemptId,
+  attemptNumber: number,
+  message: string,
+) =>
+  new ExecutorResult({
+    runId: run.runId,
+    unitId,
+    attemptId,
+    attemptNumber,
+    outcome: "failed",
+    exitCode: 1,
+    failure: new ExecutorFailureSummary({ message }),
+    outputs: {},
+    reports: [],
     artifacts: [],
     logs: [],
     diagnostics: [],
@@ -796,23 +986,179 @@ const projectIdForRun = (run: WorkflowRunState) => {
   return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : run.workflowId.toString()
 }
 
+const resolveWorkflowInputs = (plan: ExecutionPlan, options?: RunStartOptions) =>
+  Effect.gen(function* () {
+    const providedValues = { ...(options?.inputValues ?? {}) }
+    const declaredNames = new Set((plan.inputs ?? []).map((input) => input.name))
+
+    for (const providedName of Object.keys(providedValues)) {
+      if (!declaredNames.has(providedName)) {
+        return yield* new WorkflowInputsInvalid({
+          workflowId: plan.workflowId,
+          message: `Unknown workflow input ${providedName}`,
+        })
+      }
+    }
+
+    const resolved = new Array<ResolvedInputValue>()
+
+    for (const input of plan.inputs ?? []) {
+      if (!(input.name in providedValues)) {
+        return yield* new WorkflowInputsInvalid({
+          workflowId: plan.workflowId,
+          message: `Missing workflow input ${input.name}`,
+        })
+      }
+
+      resolved.push(
+        new ResolvedInputValue({
+          name: input.name,
+          value: providedValues[input.name],
+          source: `workflow input ${input.name}`,
+        }),
+      )
+    }
+
+    return resolved
+  })
+
+const resolveUnitInputs = (run: WorkflowRunState, planUnit: PlanUnit): Array<DispatchInput> | string => {
+  const resolved = new Array<DispatchInput>()
+
+  for (const input of planUnit.inputs ?? []) {
+    if (input.from._tag === "WorkflowInputSourceDeclaration") {
+      const workflowSource = input.from as Extract<typeof input.from, { readonly _tag: "WorkflowInputSourceDeclaration" }>
+      const workflowInput = (run.inputs ?? []).find((candidate) => candidate.name === workflowSource.inputName)
+      if (workflowInput === undefined) {
+        return `Unit ${planUnit.unitId} input ${input.name} could not resolve workflow input ${workflowSource.inputName}`
+      }
+
+      resolved.push(new DispatchInput({ name: input.name, value: workflowInput.value }))
+      continue
+    }
+
+    const outputSource = input.from as Extract<typeof input.from, { readonly _tag: "UnitOutputSourceDeclaration" }>
+    const producer = run.units.find((candidate) => candidate.unitId === outputSource.unitId)
+    if (producer === undefined || producer.status !== "succeeded") {
+      return `Unit ${planUnit.unitId} input ${input.name} could not resolve output ${outputSource.outputName} from ${outputSource.unitId}`
+    }
+
+    const producedOutput = (producer.outputs ?? []).find((output) => output.name === outputSource.outputName)
+    if (producedOutput === undefined) {
+      return `Unit ${planUnit.unitId} input ${input.name} could not resolve output ${outputSource.outputName} from ${outputSource.unitId}`
+    }
+
+    resolved.push(new DispatchInput({ name: input.name, value: producedOutput.value }))
+  }
+
+  return resolved
+}
+
+const toResolvedInputValues = (planUnit: PlanUnit, request: DispatchRequest) =>
+  request.inputs.map((input) => {
+    const declaration = (planUnit.inputs ?? []).find((candidate) => candidate.name === input.name)
+    const source =
+      declaration?.from._tag === "WorkflowInputSourceDeclaration"
+        ? `workflow input ${declaration.from.inputName}`
+        : declaration?.from._tag === "UnitOutputSourceDeclaration"
+          ? `${declaration.from.unitId}.${declaration.from.outputName}`
+          : (request.correlation.unitId ?? request.unitId.toString())
+
+    return new ResolvedInputValue({
+      name: input.name,
+      value: input.value,
+      source,
+    })
+  })
+
+const getTimeoutSeconds = (planUnit: PlanUnit) =>
+  planUnit.policies.reduce<number | undefined>(
+    (seconds, policy) =>
+      policy instanceof PlanTimeoutPolicy
+        ? seconds === undefined
+          ? policy.seconds
+          : Math.min(seconds, policy.seconds)
+        : seconds,
+    undefined,
+  )
+
+const toOutputValueSummaries = (planUnit: PlanUnit, outputs: Readonly<Record<string, unknown>>) =>
+  (planUnit.outputs ?? [])
+    .filter((output) => output.name in outputs)
+    .map(
+      (output) =>
+        new OutputValueSummary({
+          name: output.name,
+          value: outputs[output.name],
+          format: output.format,
+          unitId: planUnit.unitId,
+          path: output.path,
+        }),
+    )
+
+const withResolvedWorkflowOutputs = (run: WorkflowRunState) =>
+  new WorkflowRunState({
+    ...run,
+    outputs: resolveWorkflowOutputs(run.execution.plan, run.inputs ?? [], run.units),
+  })
+
+const resolveWorkflowOutputs = (
+  plan: ExecutionPlan,
+  inputs: ReadonlyArray<ResolvedInputValue>,
+  units: ReadonlyArray<ExecutionUnitState>,
+) =>
+  (plan.outputs ?? []).flatMap((output) => {
+    if (output.from._tag === "WorkflowInputSourceDeclaration") {
+      const workflowSource = output.from as Extract<typeof output.from, { readonly _tag: "WorkflowInputSourceDeclaration" }>
+      const value = inputs.find((input) => input.name === workflowSource.inputName)
+      return value === undefined
+        ? []
+        : [
+            new OutputValueSummary({
+              name: output.name,
+              value: value.value,
+              format: inferValueFormat(value.value),
+            }),
+          ]
+    }
+
+    const outputSource = output.from as Extract<typeof output.from, { readonly _tag: "UnitOutputSourceDeclaration" }>
+    const unit = units.find((candidate) => candidate.unitId === outputSource.unitId)
+    const value = (unit?.outputs ?? []).find((candidate) => candidate.name === outputSource.outputName)
+    return value === undefined
+      ? []
+      : [
+          new OutputValueSummary({
+            name: output.name,
+            value: value.value,
+            format: value.format,
+            unitId: outputSource.unitId,
+            path: value.path,
+          }),
+        ]
+  })
+
+const inferValueFormat = (value: unknown) => (typeof value === "string" ? "text" : "json")
+
 const summarizeProgress = (units: ReadonlyArray<ExecutionUnitState>) =>
   new ProgressSummary({
     totalUnits: units.length,
     completedUnits: units.filter((unit) => unit.status === "succeeded").length,
-    failedUnits: units.filter((unit) => unit.status === "failed").length,
+    failedUnits: units.filter((unit) => unit.status === "failed" || unit.status === "timed_out").length,
     skippedUnits: units.filter((unit) => unit.status === "skipped").length,
   })
 
 const replaceUnit = (run: WorkflowRunState, nextUnit: ExecutionUnitState, updatedAt: Date) => {
   const units = run.units.map((unit) => (unit.unitId === nextUnit.unitId ? nextUnit : unit))
 
-  return new WorkflowRunState({
-    ...run,
-    units,
-    progress: summarizeProgress(units),
-    updatedAt,
-  })
+  return withResolvedWorkflowOutputs(
+    new WorkflowRunState({
+      ...run,
+      units,
+      progress: summarizeProgress(units),
+      updatedAt,
+    }),
+  )
 }
 
 const replaceAttempt = (unit: ExecutionUnitState, nextAttempt: ExecutionAttemptState) => {
@@ -836,29 +1182,35 @@ const appendRunPayloads = (
   run: WorkflowRunState,
   logs: ReadonlyArray<LogMetadata>,
   artifacts: ReadonlyArray<ArtifactMetadata>,
+  reports: ReadonlyArray<ReportSummary>,
   updatedAt: Date,
 ) =>
-  new WorkflowRunState({
-    ...run,
-    logs: [...run.logs, ...logs],
-    artifacts: [...run.artifacts, ...artifacts],
-    updatedAt,
-  })
+  withResolvedWorkflowOutputs(
+    new WorkflowRunState({
+      ...run,
+      logs: [...run.logs, ...logs],
+      artifacts: [...run.artifacts, ...artifacts],
+      reports: [...(run.reports ?? []), ...reports],
+      updatedAt,
+    }),
+  )
 
 const finalizeRun = (
   run: WorkflowRunState,
-  status: "succeeded" | "failed",
+  status: "succeeded" | "failed" | "timed_out",
   finishedAt: Date,
   failure?: FailureSummary,
 ) =>
-  new WorkflowRunState({
-    ...run,
-    status,
-    updatedAt: finishedAt,
-    finishedAt,
-    failure,
-    progress: summarizeProgress(run.units),
-  })
+  withResolvedWorkflowOutputs(
+    new WorkflowRunState({
+      ...run,
+      status,
+      updatedAt: finishedAt,
+      finishedAt,
+      failure,
+      progress: summarizeProgress(run.units),
+    }),
+  )
 
 const applySkippedUnits = (run: WorkflowRunState, skippedUnitIds: ReadonlyArray<UnitId>, finishedAt: Date) => {
   const skippedIds = new Set(skippedUnitIds)
@@ -874,12 +1226,14 @@ const applySkippedUnits = (run: WorkflowRunState, skippedUnitIds: ReadonlyArray<
     })
   })
 
-  return new WorkflowRunState({
-    ...run,
-    units,
-    progress: summarizeProgress(units),
-    updatedAt: finishedAt,
-  })
+  return withResolvedWorkflowOutputs(
+    new WorkflowRunState({
+      ...run,
+      units,
+      progress: summarizeProgress(units),
+      updatedAt: finishedAt,
+    }),
+  )
 }
 
 const recoverRun = (run: WorkflowRunState, recoveredAt: Date) => {
@@ -908,22 +1262,29 @@ const recoverRun = (run: WorkflowRunState, recoveredAt: Date) => {
       status: "pending",
       finishedAt: undefined,
       failure: undefined,
+      cancellationReason: undefined,
+      resolvedInputs: [],
+      outputs: [],
+      reports: [],
       attempts,
     })
   })
 
-  return new WorkflowRunState({
-    ...run,
-    status: "running",
-    units,
-    updatedAt: recoveredAt,
-    finishedAt: undefined,
-    failure: undefined,
-    progress: summarizeProgress(units),
-  })
+  return withResolvedWorkflowOutputs(
+    new WorkflowRunState({
+      ...run,
+      status: "running",
+      units,
+      updatedAt: recoveredAt,
+      finishedAt: undefined,
+      failure: undefined,
+      cancellationReason: undefined,
+      progress: summarizeProgress(units),
+    }),
+  )
 }
 
-const cancelRunState = (run: WorkflowRunState, canceledAt: Date) => {
+const cancelRunState = (run: WorkflowRunState, canceledAt: Date, reason: string) => {
   const units = run.units.map((unit) => {
     const attempts = unit.attempts.map((attempt) => {
       if (attempt.status !== "running") {
@@ -934,6 +1295,7 @@ const cancelRunState = (run: WorkflowRunState, canceledAt: Date) => {
         ...attempt,
         status: "canceled",
         finishedAt: canceledAt,
+        cancellationReason: reason,
       })
     })
 
@@ -949,19 +1311,23 @@ const cancelRunState = (run: WorkflowRunState, canceledAt: Date) => {
       status: "canceled",
       finishedAt: canceledAt,
       failure: undefined,
+      cancellationReason: reason,
       attempts,
     })
   })
 
-  return new WorkflowRunState({
-    ...run,
-    status: "canceled",
-    units,
-    updatedAt: canceledAt,
-    finishedAt: canceledAt,
-    failure: undefined,
-    progress: summarizeProgress(units),
-  })
+  return withResolvedWorkflowOutputs(
+    new WorkflowRunState({
+      ...run,
+      status: "canceled",
+      units,
+      updatedAt: canceledAt,
+      finishedAt: canceledAt,
+      failure: undefined,
+      cancellationReason: reason,
+      progress: summarizeProgress(units),
+    }),
+  )
 }
 
 const toFailureSummary = (result: ExecutorResult) =>
@@ -1039,6 +1405,6 @@ const getRetryLimit = (planUnit: PlanUnit) =>
 
 const compareUnitIds = (left: UnitId, right: UnitId) => (left < right ? -1 : left > right ? 1 : 0)
 
-const terminalRunStatuses = new Set(["succeeded", "failed", "canceled", "interrupted"])
+const terminalRunStatuses = new Set(["succeeded", "failed", "timed_out", "canceled", "interrupted"])
 
-const terminalUnitStatuses = new Set(["succeeded", "failed", "skipped", "canceled"])
+const terminalUnitStatuses = new Set(["succeeded", "failed", "timed_out", "skipped", "canceled"])

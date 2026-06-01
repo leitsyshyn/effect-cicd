@@ -23,6 +23,20 @@ export interface RunUnitAttemptDto {
   readonly startedAt?: string
   readonly finishedAt?: string
   readonly failureMessage?: string
+  readonly cancellationReason?: string
+}
+
+export interface ResolvedValueDto {
+  readonly name: string
+  readonly value: unknown
+  readonly source?: string
+}
+
+export interface ReportDto {
+  readonly name: string
+  readonly format: string
+  readonly artifactRef: string
+  readonly status: string
 }
 
 export interface RunUnitDto {
@@ -35,8 +49,12 @@ export interface RunUnitDto {
   readonly finishedAt?: string
   readonly durationMs?: number
   readonly failureMessage?: string
+  readonly cancellationReason?: string
   readonly latestAttemptId?: string
   readonly attempts: ReadonlyArray<RunUnitAttemptDto>
+  readonly inputs?: ReadonlyArray<ResolvedValueDto>
+  readonly outputs?: ReadonlyArray<ResolvedValueDto>
+  readonly reports?: ReadonlyArray<ReportDto>
   readonly artifactCount: number
   readonly logCount: number
 }
@@ -83,6 +101,9 @@ export interface RunDetailDto {
   readonly run: RunSummaryDto
   readonly stages: ReadonlyArray<RunStageDto>
   readonly dependencies: ReadonlyArray<RunDependencyDto>
+  readonly inputs?: ReadonlyArray<ResolvedValueDto>
+  readonly outputs?: ReadonlyArray<ResolvedValueDto>
+  readonly reports?: ReadonlyArray<ReportDto>
   readonly units: ReadonlyArray<RunUnitDto>
   readonly artifacts: ReadonlyArray<PayloadMetadataDto>
   readonly logs: ReadonlyArray<PayloadMetadataDto>

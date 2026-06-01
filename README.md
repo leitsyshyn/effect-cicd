@@ -122,6 +122,8 @@ Show one run:
 ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs show <runId>
 ```
 
+`runs show` now includes workflow inputs, resolved workflow outputs, persisted reports, timeout outcomes, and cancellation causes when present.
+
 Show workflow events:
 
 ```bash
@@ -163,6 +165,44 @@ Retry a terminal run as a new run:
 ```bash
 ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs retry <runId>
 ```
+
+## Workflow Semantics
+
+The runtime now honors declared workflow inputs, unit inputs, unit outputs, reports, per-unit timeouts, and run cancellation.
+
+Detailed semantics and DSL examples live in `docs/workflow-semantics.md`.
+
+Run a workflow with explicit workflow input values:
+
+```bash
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts run ./path/to/workflow.ts --workspace ./repo --inputs '{"release":"1.2.3"}'
+```
+
+Service/API submission with workflow inputs:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/runs \
+  -H 'content-type: application/json' \
+  -d '{
+    "plan": {"...":"planned execution omitted for brevity"},
+    "options": {
+      "workspacePath": "/absolute/workspace/path",
+      "inputValues": {
+        "release": "1.2.3"
+      }
+    }
+  }'
+```
+
+Current semantics in brief:
+
+- Declared workflow inputs are required when starting a run.
+- Unit inputs must reference a workflow input or an upstream unit output explicitly.
+- Unit outputs are collected from workspace-relative files and support `json` or `text` values.
+- Reports are collected from declared files and persisted as first-class report summaries plus artifact payloads.
+- Per-unit timeouts end the unit and run in `timed_out` and skip blocked downstream units.
+- Run cancellation is engine-owned, marks pending units `canceled`, and performs best-effort interruption of the running unit.
+- Output/report collection currently requires a mounted workspace.
 
 ## Secrets
 

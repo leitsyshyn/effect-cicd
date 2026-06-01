@@ -3,6 +3,8 @@ import { Schema } from "effect"
 import { ArtifactMetadata, LogMetadata } from "./artifacts.ts"
 import { ExecutionPlan } from "./execution-plan.ts"
 import { AttemptId, PlanId, RunId, UnitId, WorkflowId } from "./ids.ts"
+import { ReportSummary } from "./reports.ts"
+import { DataValueFormat } from "./workflow-definition.ts"
 
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
@@ -12,6 +14,7 @@ export const WorkflowRunStatus = Schema.Literals([
   "running",
   "succeeded",
   "failed",
+  "timed_out",
   "canceling",
   "canceled",
   "interrupted",
@@ -24,6 +27,7 @@ export const ExecutionUnitStatus = Schema.Literals([
   "running",
   "succeeded",
   "failed",
+  "timed_out",
   "skipped",
   "canceling",
   "canceled",
@@ -31,7 +35,7 @@ export const ExecutionUnitStatus = Schema.Literals([
 ])
 export type ExecutionUnitStatus = typeof ExecutionUnitStatus.Type
 
-export const AttemptStatus = Schema.Literals(["created", "running", "succeeded", "failed", "canceled", "interrupted"])
+export const AttemptStatus = Schema.Literals(["created", "running", "succeeded", "failed", "timed_out", "canceled", "interrupted"])
 export type AttemptStatus = typeof AttemptStatus.Type
 
 export class FailureSummary extends Schema.Class<FailureSummary>("FailureSummary")({
@@ -46,8 +50,23 @@ export class ProgressSummary extends Schema.Class<ProgressSummary>("ProgressSumm
   skippedUnits: NonNegativeInt,
 }) {}
 
+export class ResolvedInputValue extends Schema.Class<ResolvedInputValue>("ResolvedInputValue")({
+  name: Schema.String,
+  value: Schema.Unknown,
+  source: Schema.String,
+}) {}
+
+export class OutputValueSummary extends Schema.Class<OutputValueSummary>("OutputValueSummary")({
+  name: Schema.String,
+  value: Schema.Unknown,
+  format: DataValueFormat,
+  unitId: Schema.optional(UnitId),
+  path: Schema.optional(Schema.String),
+}) {}
+
 export class RunExecutionOptions extends Schema.Class<RunExecutionOptions>("RunExecutionOptions")({
   workspacePath: Schema.optional(Schema.String),
+  inputValues: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 }) {}
 
 export class RunExecutionContext extends Schema.Class<RunExecutionContext>("RunExecutionContext")({
@@ -66,6 +85,10 @@ export class ExecutionAttemptState extends Schema.Class<ExecutionAttemptState>("
   startedAt: Schema.optional(Schema.Date),
   finishedAt: Schema.optional(Schema.Date),
   failure: Schema.optional(FailureSummary),
+  cancellationReason: Schema.optional(Schema.String),
+  resolvedInputs: Schema.optional(Schema.Array(ResolvedInputValue)),
+  outputs: Schema.optional(Schema.Array(OutputValueSummary)),
+  reports: Schema.optional(Schema.Array(ReportSummary)),
   artifacts: Schema.Array(ArtifactMetadata),
   logs: Schema.Array(LogMetadata),
 }) {}
@@ -80,6 +103,10 @@ export class ExecutionUnitState extends Schema.Class<ExecutionUnitState>("Execut
   startedAt: Schema.optional(Schema.Date),
   finishedAt: Schema.optional(Schema.Date),
   failure: Schema.optional(FailureSummary),
+  cancellationReason: Schema.optional(Schema.String),
+  resolvedInputs: Schema.optional(Schema.Array(ResolvedInputValue)),
+  outputs: Schema.optional(Schema.Array(OutputValueSummary)),
+  reports: Schema.optional(Schema.Array(ReportSummary)),
   artifacts: Schema.Array(ArtifactMetadata),
   logs: Schema.Array(LogMetadata),
 }) {}
@@ -97,6 +124,10 @@ export class WorkflowRunState extends Schema.Class<WorkflowRunState>("WorkflowRu
   startedAt: Schema.optional(Schema.Date),
   finishedAt: Schema.optional(Schema.Date),
   failure: Schema.optional(FailureSummary),
+  cancellationReason: Schema.optional(Schema.String),
+  inputs: Schema.optional(Schema.Array(ResolvedInputValue)),
+  outputs: Schema.optional(Schema.Array(OutputValueSummary)),
+  reports: Schema.optional(Schema.Array(ReportSummary)),
   artifacts: Schema.Array(ArtifactMetadata),
   logs: Schema.Array(LogMetadata),
 }) {}

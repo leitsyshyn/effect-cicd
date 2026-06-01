@@ -6,11 +6,13 @@ import { join, posix } from "node:path"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
 import { ExecutorFailed } from "../domain/errors.ts"
-import { ArtifactDeclaration } from "../domain/workflow-definition.ts"
+import { ProducedReport } from "../domain/reports.ts"
+import { ArtifactDeclaration, OutputDeclaration, ReportDeclaration } from "../domain/workflow-definition.ts"
 import { PayloadDescriptor, PlanPolicy } from "../domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, LogRef, RunId, UnitId } from "../domain/ids.ts"
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
+const maxOutputBytes = 64 * 1024
 
 export class DispatchInput extends Schema.Class<DispatchInput>("DispatchInput")({
   name: Schema.String,
@@ -32,6 +34,8 @@ export class DispatchRequest extends Schema.Class<DispatchRequest>("DispatchRequ
   secretEnvNames: Schema.Array(Schema.String),
   workspace: Schema.optional(DispatchWorkspace),
   inputs: Schema.Array(DispatchInput),
+  outputs: Schema.optional(Schema.Array(OutputDeclaration)),
+  reports: Schema.optional(Schema.Array(ReportDeclaration)),
   artifacts: Schema.Array(ArtifactDeclaration),
   logNames: Schema.Array(Schema.String),
   policies: Schema.Array(PlanPolicy),
@@ -43,7 +47,7 @@ export class ExecutorFailureSummary extends Schema.Class<ExecutorFailureSummary>
   code: Schema.optional(Schema.String),
 }) {}
 
-export const ExecutorOutcome = Schema.Literals(["succeeded", "failed", "canceled", "interrupted"])
+export const ExecutorOutcome = Schema.Literals(["succeeded", "failed", "timed_out", "canceled", "interrupted"])
 export type ExecutorOutcome = typeof ExecutorOutcome.Type
 
 export class ExecutorResult extends Schema.Class<ExecutorResult>("ExecutorResult")({
@@ -55,6 +59,7 @@ export class ExecutorResult extends Schema.Class<ExecutorResult>("ExecutorResult
   exitCode: Schema.optional(Schema.Int),
   failure: Schema.optional(ExecutorFailureSummary),
   outputs: Schema.Record(Schema.String, Schema.Unknown),
+  reports: Schema.Array(ProducedReport),
   artifacts: Schema.Array(RegisteredArtifact),
   logs: Schema.Array(RegisteredLog),
   startedAt: Schema.optional(Schema.Date),
@@ -66,7 +71,9 @@ export interface TestExecutorResultConfig {
   readonly outcome?: ExecutorOutcome
   readonly exitCode?: number
   readonly failure?: ExecutorFailureSummary
+  readonly execute?: (request: DispatchRequest) => Effect.Effect<ExecutorResult, ExecutorFailed>
   readonly outputs?: Record<string, unknown>
+  readonly reports?: ReadonlyArray<ProducedReport>
   readonly artifacts?: ReadonlyArray<RegisteredArtifact>
   readonly logs?: ReadonlyArray<RegisteredLog>
   readonly startedAt?: Date
@@ -91,6 +98,10 @@ export class Executor extends Context.Service<
         options.requests?.push(request)
 
         const configured = options.resultsByUnitId?.[request.unitId.toString()]
+        if (configured?.execute !== undefined) {
+          return yield* configured.execute(request)
+        }
+
         const outcome = configured?.outcome ?? "succeeded"
 
         return new ExecutorResult({
@@ -106,6 +117,7 @@ export class Executor extends Context.Service<
               ? new ExecutorFailureSummary({ message: `Configured failure for ${request.unitId}` })
               : undefined),
           outputs: configured?.outputs ?? {},
+          reports: normalizeReports(request, configured?.reports ?? []),
           artifacts: normalizeArtifacts(request, configured?.artifacts ?? []),
           logs: normalizeLogs(request, configured?.logs ?? []),
           startedAt: configured?.startedAt,
@@ -125,12 +137,12 @@ export class LocalContainerExecutor {
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner
 
       const execute = Effect.fn("LocalContainerExecutor.execute")(function* (request: DispatchRequest) {
-        if (request.inputs.length > 0) {
+        if (request.workspace === undefined && ((request.outputs ?? []).length > 0 || (request.reports ?? []).length > 0)) {
           return yield* new ExecutorFailed({
             runId: request.runId,
             unitId: request.unitId,
             attemptId: request.attemptId,
-            message: "LocalContainerExecutor does not yet support dispatch inputs",
+            message: "LocalContainerExecutor requires a workspace to collect declared outputs or reports",
           })
         }
 
@@ -157,14 +169,14 @@ export class LocalContainerExecutor {
 
 const executeDockerRequest = Effect.fn("LocalContainerExecutor.executeDockerRequest")(function* (request: DispatchRequest) {
   const startedAt = yield* nowDate
-  const handle = yield* ChildProcess.make("docker", dockerArgs(request.env, request.payloadDescriptor, request.workspace), {
-    env: request.env,
+  const env = augmentEnvWithInputs(request.env, request.inputs)
+  const handle = yield* ChildProcess.make("docker", dockerArgs(env, request.payloadDescriptor, request.workspace), {
+    env,
     extendEnv: true,
   })
-  const [stdout, stderr, exitCode] = yield* Effect.all(
-    [readText(handle.stdout), readText(handle.stderr), handle.exitCode],
-    { concurrency: "unbounded" },
-  )
+  const [stdout, stderr, exitCode] = yield* Effect.all([readText(handle.stdout), readText(handle.stderr), handle.exitCode], {
+    concurrency: "unbounded",
+  }).pipe(Effect.onInterrupt(() => handle.kill()))
   const finishedAt = yield* nowDate
   const numericExitCode = Number(exitCode)
 
@@ -177,6 +189,8 @@ const executeDockerRequest = Effect.fn("LocalContainerExecutor.executeDockerRequ
     })
   }
 
+  const outputs = numericExitCode === 0 ? yield* collectOutputs(request) : {}
+  const reports = yield* collectReports(request, finishedAt)
   const artifacts = yield* collectArtifacts(request, finishedAt)
 
   return new ExecutorResult({
@@ -193,7 +207,8 @@ const executeDockerRequest = Effect.fn("LocalContainerExecutor.executeDockerRequ
             message: summarizeUnitFailure(numericExitCode, stdout, stderr),
             code: `exit:${numericExitCode}`,
           }),
-    outputs: {},
+    outputs,
+    reports,
     artifacts,
     logs: buildLogs(request, finishedAt, stdout, stderr),
     startedAt,
@@ -209,7 +224,7 @@ const dockerArgs = (
 ) => {
   const envArgs = Object.keys(env)
     .sort()
-    .flatMap((name) => ["--env", name])
+    .flatMap((name): Array<string> => ["--env", name])
   const volumeArgs = workspace === undefined ? [] : ["--volume", `${workspace.hostPath}:${workspace.mountPath}`]
   const workingDirectory = resolveContainerWorkingDirectory(payloadDescriptor, workspace)
 
@@ -331,6 +346,168 @@ const collectArtifacts = Effect.fn("LocalContainerExecutor.collectArtifacts")(fu
   return registered
 })
 
+const collectOutputs = Effect.fn("LocalContainerExecutor.collectOutputs")(function* (request: DispatchRequest) {
+  if (request.workspace === undefined || (request.outputs ?? []).length === 0) {
+    return {}
+  }
+
+  const collected: Record<string, unknown> = {}
+
+  for (const output of request.outputs ?? []) {
+    const file = Bun.file(join(request.workspace.hostPath, output.path))
+    const exists = yield* Effect.tryPromise({
+      try: () => file.exists(),
+      catch: (error) =>
+        new ExecutorFailed({
+          runId: request.runId,
+          unitId: request.unitId,
+          attemptId: request.attemptId,
+          message: `Failed to inspect output ${output.name}: ${toErrorMessage(error)}`,
+        }),
+    })
+
+    if (!exists) {
+      return yield* new ExecutorFailed({
+        runId: request.runId,
+        unitId: request.unitId,
+        attemptId: request.attemptId,
+        message: `Declared output ${output.name} was not produced at ${output.path}`,
+      })
+    }
+
+    const bytes = yield* Effect.tryPromise({
+      try: () => file.bytes(),
+      catch: (error) =>
+        new ExecutorFailed({
+          runId: request.runId,
+          unitId: request.unitId,
+          attemptId: request.attemptId,
+          message: `Failed to read output ${output.name}: ${toErrorMessage(error)}`,
+        }),
+    })
+
+    if (bytes.byteLength > maxOutputBytes) {
+      return yield* new ExecutorFailed({
+        runId: request.runId,
+        unitId: request.unitId,
+        attemptId: request.attemptId,
+        message: `Declared output ${output.name} exceeded the ${maxOutputBytes} byte limit`,
+      })
+    }
+
+    const text = Buffer.from(bytes).toString("utf-8")
+    collected[output.name] = yield* decodeOutputValue(request, output, text)
+  }
+
+  return collected
+})
+
+const decodeOutputValue = (request: DispatchRequest, output: OutputDeclaration, text: string) =>
+  output.format === "text"
+    ? Effect.succeed(text)
+    : Effect.try({
+        try: () => JSON.parse(text),
+        catch: (error) =>
+          new ExecutorFailed({
+            runId: request.runId,
+            unitId: request.unitId,
+            attemptId: request.attemptId,
+            message: `Declared output ${output.name} did not contain valid JSON: ${toErrorMessage(error)}`,
+          }),
+      })
+
+const collectReports = Effect.fn("LocalContainerExecutor.collectReports")(function* (
+  request: DispatchRequest,
+  createdAt: Date,
+) {
+  if (request.workspace === undefined) {
+    return []
+  }
+
+  const registered = new Array<ProducedReport>()
+
+  for (const report of request.reports ?? []) {
+    const hostPath = join(request.workspace.hostPath, report.path)
+    const file = Bun.file(hostPath)
+    const exists = yield* Effect.tryPromise({
+      try: () => file.exists(),
+      catch: (error) =>
+        new ExecutorFailed({
+          runId: request.runId,
+          unitId: request.unitId,
+          attemptId: request.attemptId,
+          message: `Failed to inspect report ${report.name}: ${toErrorMessage(error)}`,
+        }),
+    })
+
+    if (!exists) {
+      registered.push(
+        new ProducedReport({
+          name: report.name,
+          unitId: request.unitId,
+          attemptId: request.attemptId,
+          format: report.format,
+          contentType: report.contentType,
+          artifact: new RegisteredArtifact({
+            metadata: new ArtifactMetadata({
+              artifactRef: ArtifactRef.make(`artifact:${request.attemptId}:report:${report.name}`),
+              runId: request.runId,
+              unitId: request.unitId,
+              attemptId: request.attemptId,
+              name: report.name,
+              category: "report",
+              status: "missing",
+              createdAt,
+              summary: report.path,
+            }),
+            contentType: report.contentType,
+          }),
+        }),
+      )
+      continue
+    }
+
+    const bytes = yield* Effect.tryPromise({
+      try: () => file.bytes(),
+      catch: (error) =>
+        new ExecutorFailed({
+          runId: request.runId,
+          unitId: request.unitId,
+          attemptId: request.attemptId,
+          message: `Failed to read report ${report.name}: ${toErrorMessage(error)}`,
+        }),
+    })
+
+    registered.push(
+      new ProducedReport({
+        name: report.name,
+        unitId: request.unitId,
+        attemptId: request.attemptId,
+        format: report.format,
+        contentType: report.contentType,
+        artifact: new RegisteredArtifact({
+          metadata: new ArtifactMetadata({
+            artifactRef: ArtifactRef.make(`artifact:${request.attemptId}:report:${report.name}`),
+            runId: request.runId,
+            unitId: request.unitId,
+            attemptId: request.attemptId,
+            name: report.name,
+            category: "report",
+            status: "available",
+            sizeBytes: bytes.byteLength,
+            createdAt,
+            summary: report.path,
+          }),
+          payloadBase64: Buffer.from(bytes).toString("base64"),
+          contentType: report.contentType,
+        }),
+      }),
+    )
+  }
+
+  return registered
+})
+
 const normalizeArtifacts = (request: DispatchRequest, artifacts: ReadonlyArray<RegisteredArtifact>) =>
   artifacts.map(({ metadata, payloadBase64, contentType }) =>
     new RegisteredArtifact({
@@ -359,6 +536,52 @@ const normalizeLogs = (request: DispatchRequest, logs: ReadonlyArray<RegisteredL
       content,
     }),
   )
+
+const normalizeReports = (request: DispatchRequest, reports: ReadonlyArray<ProducedReport>) =>
+  reports.map(({ name, format, contentType, artifact }) =>
+    new ProducedReport({
+      name,
+      unitId: request.unitId,
+      attemptId: request.attemptId,
+      format,
+      contentType,
+      artifact: new RegisteredArtifact({
+        metadata: new ArtifactMetadata({
+          ...artifact.metadata,
+          artifactRef: ArtifactRef.make(`artifact:${request.attemptId}:report:${name}`),
+          runId: request.runId,
+          unitId: request.unitId,
+          attemptId: request.attemptId,
+        }),
+        payloadBase64: artifact.payloadBase64,
+        contentType: artifact.contentType,
+      }),
+    }),
+  )
+
+const augmentEnvWithInputs = (env: Readonly<Record<string, string>>, inputs: ReadonlyArray<DispatchInput>) => ({
+  ...env,
+  ...(inputs.length === 0
+    ? {}
+    : {
+        EFFECT_CICD_INPUTS_JSON: JSON.stringify(Object.fromEntries(inputs.map((input) => [input.name, input.value]))),
+        ...Object.fromEntries(
+          inputs.map((input) => [
+            `EFFECT_CICD_INPUT_${normalizeInputEnvName(input.name)}`,
+            serializeInputValue(input.value),
+          ]),
+        ),
+      }),
+})
+
+const normalizeInputEnvName = (name: string) => name.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase() || "VALUE"
+
+const serializeInputValue = (value: unknown) =>
+  typeof value === "string"
+    ? value
+    : typeof value === "number" || typeof value === "boolean"
+      ? String(value)
+      : JSON.stringify(value)
 
 const summarizeLog = (content: string) => {
   const normalized = content.trim()

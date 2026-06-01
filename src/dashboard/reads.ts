@@ -88,6 +88,7 @@ export const mapRunDetail = (
         ...(unit.finishedAt === undefined ? {} : { finishedAt: unit.finishedAt.toISOString() }),
         ...(computedDurationMs === undefined ? {} : { durationMs: computedDurationMs }),
         ...(unit.failure?.message === undefined ? {} : { failureMessage: unit.failure.message }),
+        ...(unit.cancellationReason === undefined ? {} : { cancellationReason: unit.cancellationReason }),
         ...(unit.latestAttemptId === undefined ? {} : { latestAttemptId: unit.latestAttemptId }),
         attempts: unit.attempts.map((attempt) => ({
           attemptId: attempt.attemptId,
@@ -96,6 +97,15 @@ export const mapRunDetail = (
           ...(attempt.startedAt === undefined ? {} : { startedAt: attempt.startedAt.toISOString() }),
           ...(attempt.finishedAt === undefined ? {} : { finishedAt: attempt.finishedAt.toISOString() }),
           ...(attempt.failure?.message === undefined ? {} : { failureMessage: attempt.failure.message }),
+          ...(attempt.cancellationReason === undefined ? {} : { cancellationReason: attempt.cancellationReason }),
+        })),
+        inputs: (unit.resolvedInputs ?? []).map((input) => ({ name: input.name, value: input.value, source: input.source })),
+        outputs: (unit.outputs ?? []).map((output) => ({ name: output.name, value: output.value })),
+        reports: (unit.reports ?? []).map((report) => ({
+          name: report.name,
+          format: report.format,
+          artifactRef: report.artifact.artifactRef,
+          status: report.artifact.status,
         })),
         artifactCount: unit.artifacts.length,
         logCount: unit.logs.length,
@@ -107,6 +117,14 @@ export const mapRunDetail = (
     run: mapRunSummary(run),
     stages: deriveStages(units),
     dependencies: run.units.flatMap((unit) => unit.dependencies.map((dependency) => ({ from: dependency, to: unit.unitId }))),
+    inputs: (run.inputs ?? []).map((input) => ({ name: input.name, value: input.value, source: input.source })),
+    outputs: (run.outputs ?? []).map((output) => ({ name: output.name, value: output.value })),
+    reports: (run.reports ?? []).map((report) => ({
+      name: report.name,
+      format: report.format,
+      artifactRef: report.artifact.artifactRef,
+      status: report.artifact.status,
+    })),
     units,
     artifacts: artifacts.map(mapPayloadMetadata),
     logs: logs.map(mapPayloadMetadata),
@@ -165,6 +183,8 @@ const describeEvent = (event: WorkflowEvent): string => {
       return "Run succeeded"
     case "RunFailed":
       return `Run failed: ${event.failure.message}`
+    case "RunTimedOut":
+      return `Run timed out: ${event.failure.message}`
     case "RunCanceled":
       return `Run canceled: ${event.reason}`
     case "RunInterrupted":
@@ -177,6 +197,8 @@ const describeEvent = (event: WorkflowEvent): string => {
       return `${event.unitId} succeeded`
     case "UnitFailed":
       return `${event.unitId} failed: ${event.failure.message}`
+    case "UnitTimedOut":
+      return `${event.unitId} timed out: ${event.failure.message}`
     case "UnitSkipped":
       return `${event.unitId} skipped: ${event.reason}`
     case "AttemptStarted":
@@ -185,6 +207,8 @@ const describeEvent = (event: WorkflowEvent): string => {
       return `${event.unitId} attempt succeeded`
     case "AttemptFailed":
       return `${event.unitId} attempt failed: ${event.failure.message}`
+    case "AttemptTimedOut":
+      return `${event.unitId} attempt timed out: ${event.failure.message}`
     case "RetryScheduled":
       return `${event.unitId} retry ${event.nextAttemptNumber} scheduled: ${event.reason}`
     case "AttemptCanceled":
@@ -193,6 +217,8 @@ const describeEvent = (event: WorkflowEvent): string => {
       return `Log registered: ${event.log.name}`
     case "ArtifactRegistered":
       return `Artifact registered: ${event.artifact.name}`
+    case "ReportRegistered":
+      return `Report registered: ${event.report.name}`
     case "UnitCanceled":
       return `${event.unitId} canceled: ${event.reason}`
   }

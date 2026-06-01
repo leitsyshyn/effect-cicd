@@ -3,11 +3,16 @@ import type {
   AuthoredArtifactDeclaration,
   AuthoredCancellationPolicy,
   AuthoredContainerCommand,
-  AuthoredNamedDeclaration,
+  AuthoredOutputDeclaration,
+  AuthoredReportDeclaration,
   AuthoredRetryPolicy,
   AuthoredTimeoutPolicy,
   AuthoredUnit,
+  AuthoredUnitInputDeclaration,
+  AuthoredUnitOutputSource,
   AuthoredWorkflow,
+  AuthoredWorkflowInputSource,
+  AuthoredWorkflowOutputDeclaration,
 } from "./authored-workflow.ts"
 
 export const workflow = (definition: AuthoredWorkflow): AuthoredWorkflow => definition
@@ -26,11 +31,22 @@ export const artifact = (definition: AuthoredArtifactDeclaration): AuthoredArtif
   ...definition,
 })
 
-export const input = (definition: AuthoredNamedDeclaration): AuthoredNamedDeclaration => definition
+export const workflowInput = (name: string): AuthoredWorkflowInputSource => ({
+  _tag: "WorkflowInputSource",
+  inputName: name,
+})
 
-export const output = (definition: AuthoredNamedDeclaration): AuthoredNamedDeclaration => definition
+export const unitOutput = (unitId: string, outputName: string): AuthoredUnitOutputSource => ({
+  _tag: "UnitOutputSource",
+  unitId,
+  outputName,
+})
 
-export const report = (definition: AuthoredNamedDeclaration): AuthoredNamedDeclaration => definition
+export const input = (definition: AuthoredUnitInputDeclaration): AuthoredUnitInputDeclaration => definition
+
+export const output = <A extends AuthoredOutputDeclaration | AuthoredWorkflowOutputDeclaration>(definition: A): A => definition
+
+export const report = (definition: AuthoredReportDeclaration): AuthoredReportDeclaration => definition
 
 export const retry = (definition: Omit<AuthoredRetryPolicy, "_tag">): AuthoredRetryPolicy => ({
   _tag: "RetryPolicy",

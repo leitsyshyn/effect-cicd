@@ -9,11 +9,18 @@ import {
   CancellationPolicyDeclaration,
   ContainerCommandDeclaration,
   DependencyDeclaration,
+  NamedDeclaration,
   NormalizedWorkflowDefinition,
+  OutputDeclaration,
+  ReportDeclaration,
   RetryPolicyDeclaration,
   SourceMetadata,
   TimeoutPolicyDeclaration,
+  UnitInputDeclaration,
+  UnitOutputSourceDeclaration,
   UnitDeclaration,
+  WorkflowInputSourceDeclaration,
+  WorkflowOutputDeclaration,
 } from "../src/domain/workflow-definition.ts"
 import { Planner } from "../src/engine/planner.ts"
 
@@ -216,6 +223,73 @@ describe("Planner", () => {
     }).pipe(Effect.provide(Planner.layer)),
   )
 
+  it.effect("preserves explicit input, output, and report declarations in the plan", () =>
+    Effect.gen(function* () {
+      const planner = yield* Planner
+      const plan = yield* planner.plan(
+        workflow({
+          inputs: [new NamedDeclaration({ name: "release", metadata: {} })],
+          outputs: [
+            new WorkflowOutputDeclaration({
+              name: "digest",
+              from: new UnitOutputSourceDeclaration({ unitId: UnitId.make("unit:build"), outputName: "digest" }),
+              metadata: {},
+            }),
+          ],
+          units: [
+            unit("unit:build", {
+              inputs: [
+                new UnitInputDeclaration({
+                  name: "release",
+                  from: new WorkflowInputSourceDeclaration({ inputName: "release" }),
+                  metadata: {},
+                }),
+              ],
+              outputs: [new OutputDeclaration({ name: "digest", path: "outputs/digest.json", format: "json", metadata: {} })],
+              reports: [report("summary")],
+            }),
+          ],
+        }),
+      )
+
+      expect(plan.inputs?.map((input) => input.name)).toEqual(["release"])
+      expect(plan.outputs?.map((output) => output.name)).toEqual(["digest"])
+      expect(plan.units[0]?.inputs?.map((input) => input.name)).toEqual(["release"])
+      expect(plan.units[0]?.outputs?.map((output) => output.name)).toEqual(["digest"])
+      expect(plan.units[0]?.reports?.map((entry) => entry.name)).toEqual(["summary"])
+    }).pipe(Effect.provide(Planner.layer)),
+  )
+
+  it.effect("input references do not create hidden dependency edges", () =>
+    Effect.gen(function* () {
+      const planner = yield* Planner
+      const error = yield* planner
+        .validate(
+          workflow({
+            units: [
+              unit("unit:build", {
+                outputs: [new OutputDeclaration({ name: "digest", path: "outputs/digest.json", format: "json", metadata: {} })],
+              }),
+              unit("unit:deploy", {
+                inputs: [
+                  new UnitInputDeclaration({
+                    name: "digest",
+                    from: new UnitOutputSourceDeclaration({ unitId: UnitId.make("unit:build"), outputName: "digest" }),
+                    metadata: {},
+                  }),
+                ],
+              }),
+            ],
+            dependencies: [],
+          }),
+        )
+        .pipe(Effect.flip)
+
+      expect(error._tag).toBe("WorkflowDefinitionInvalid")
+      expect(error.message).toContain("explicit dependency edge")
+    }).pipe(Effect.provide(Planner.layer)),
+  )
+
   it.effect("service can be used through Effect.provide(Planner.layer)", () =>
     Effect.gen(function* () {
       const plan = yield* Effect.gen(function* () {
@@ -275,4 +349,13 @@ const named = (name: string, source?: SourceMetadata) =>
     contentType: "text/plain",
     metadata: {},
     source,
+  })
+
+const report = (name: string) =>
+  new ReportDeclaration({
+    name,
+    path: `reports/${name}.txt`,
+    format: "text",
+    contentType: "text/plain",
+    metadata: {},
   })

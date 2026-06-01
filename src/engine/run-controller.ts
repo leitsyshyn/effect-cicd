@@ -1,7 +1,7 @@
 import { Effect, Fiber, Layer } from "effect"
 import * as Context from "effect/Context"
 
-import { RunControlRejected, RunNotFound, StoreUnavailable } from "../domain/errors.ts"
+import { RunControlRejected, RunNotFound, StoreUnavailable, WorkflowInputsInvalid } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { RunId } from "../domain/ids.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
@@ -10,12 +10,15 @@ import { Orchestrator, type RunStartOptions } from "./orchestrator.ts"
 export class RunController extends Context.Service<
   RunController,
   {
-    readonly submitRun: (plan: ExecutionPlan, options?: RunStartOptions) => Effect.Effect<WorkflowRunState, StoreUnavailable>
+    readonly submitRun: (
+      plan: ExecutionPlan,
+      options?: RunStartOptions,
+    ) => Effect.Effect<WorkflowRunState, StoreUnavailable | WorkflowInputsInvalid>
     readonly cancelRun: (runId: RunId, reason?: string) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
     readonly retryRun: (
       runId: RunId,
       reason?: string,
-    ) => Effect.Effect<WorkflowRunState, RunNotFound | RunControlRejected | StoreUnavailable>
+    ) => Effect.Effect<WorkflowRunState, RunNotFound | RunControlRejected | StoreUnavailable | WorkflowInputsInvalid>
     readonly recoverOnStartup: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, StoreUnavailable>
   }
 >()("@effect-cicd/engine/RunController") {

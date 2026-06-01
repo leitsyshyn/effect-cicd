@@ -219,6 +219,47 @@ describe("CLI", () => {
     }),
   )
 
+  it.effect("run parses workflow input JSON and forwards it through Engine.submitRun", () =>
+    Effect.gen(function* () {
+      let capturedInputs: Readonly<Record<string, unknown>> | undefined
+
+      const output = yield* runCli(
+        ["run", "./examples/demo-workflow.ts", "--inputs", '{"release":"1.2.3"}'],
+        Layer.mergeAll(
+          Layer.succeed(WorkflowModuleLoader, {
+            resolve: () => Effect.succeed("/repo/examples/demo-workflow.ts"),
+            load: () => Effect.succeed(sampleAuthoredWorkflow()),
+          }),
+          DslMaterializer.layer,
+          Layer.succeed(Engine, {
+            validate: () => Effect.die("unused"),
+            plan: () => Effect.succeed(samplePlan()),
+            startRun: () => Effect.die("unused"),
+            submitRun: (_plan, options) =>
+              Effect.sync(() => {
+                capturedInputs = options?.inputValues
+                return sampleRunState()
+              }),
+            cancelRun: () => Effect.die("unused"),
+            retryRun: () => Effect.die("unused"),
+            listRuns: () => Effect.die("unused"),
+            inspectRun: () => Effect.succeed(sampleRunState()),
+            streamRuns: () => Stream.empty,
+            streamRun: () => Stream.empty,
+            readRunEvents: () => Effect.succeed([]),
+            readArtifacts: () => Effect.succeed([]),
+            readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
+            readLogs: () => Effect.succeed([]),
+            readLogPayload: () => Effect.die("unused"),
+          }),
+        ),
+      )
+
+      expect(capturedInputs).toEqual({ release: "1.2.3" })
+      expect(output).toContain('inputs: -')
+    }),
+  )
+
   it.effect("runs artifact prints persisted artifact payloads through Engine", () =>
     Effect.gen(function* () {
       const output = yield* runCli(
@@ -247,6 +288,44 @@ describe("CLI", () => {
       )
 
       expect(output).toBe(['artifact: artifact:demo', '{"artifact":"ok"}', ''].join("\n"))
+    }),
+  )
+
+  it.effect("runs cancel delegates to Engine.cancelRun", () =>
+    Effect.gen(function* () {
+      let canceledRunId: string | undefined
+
+      const output = yield* runCli(
+        ["runs", "cancel", "run:demo"],
+        Layer.mergeAll(
+          WorkflowModuleLoader.layer,
+          DslMaterializer.layer,
+          Layer.succeed(Engine, {
+            validate: () => Effect.die("unused"),
+            plan: () => Effect.die("unused"),
+            startRun: () => Effect.die("unused"),
+            submitRun: () => Effect.die("unused"),
+            cancelRun: (runId) =>
+              Effect.sync(() => {
+                canceledRunId = runId
+                return new WorkflowRunState({ ...sampleRunState(), runId: RunId.make("run:demo"), status: "canceled" })
+              }),
+            retryRun: () => Effect.die("unused"),
+            listRuns: () => Effect.die("unused"),
+            inspectRun: () => Effect.die("unused"),
+            streamRuns: () => Stream.empty,
+            streamRun: () => Stream.empty,
+            readRunEvents: () => Effect.die("unused"),
+            readArtifacts: () => Effect.die("unused"),
+            readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
+            readLogs: () => Effect.die("unused"),
+            readLogPayload: () => Effect.die("unused"),
+          }),
+        ),
+      )
+
+      expect(canceledRunId).toBe("run:demo")
+      expect(output).toContain("status: canceled")
     }),
   )
 
