@@ -3,7 +3,7 @@ import { Effect, Fiber, Layer } from "effect"
 import { TestClock } from "effect/testing"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../src/domain/artifacts.ts"
-import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanTimeoutPolicy, PlanUnit } from "../src/domain/execution-plan.ts"
+import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanRetryPolicy, PlanTimeoutPolicy, PlanUnit } from "../src/domain/execution-plan.ts"
 import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, ProjectId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { ProducedReport } from "../src/domain/reports.ts"
 import { RunCreated } from "../src/domain/events.ts"
@@ -19,6 +19,7 @@ import {
   WorkflowOutputDeclaration,
 } from "../src/domain/workflow-definition.ts"
 import { DispatchRequest, Executor, ExecutorResult, type TestExecutorLayerOptions } from "../src/engine/executor.ts"
+import { ExecutorFailureSummary } from "../src/engine/executor.ts"
 import { Orchestrator } from "../src/engine/orchestrator.ts"
 import { RunUpdates } from "../src/engine/run-updates.ts"
 import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
@@ -450,6 +451,151 @@ describe("Orchestrator", () => {
       ),
     ),
   )
+
+  it.effect("unit retry policy schedules a retry and eventually succeeds", () =>
+    {
+      let attempts = 0
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator
+        const eventLog = yield* EventLog
+
+        const started = yield* orchestrator.startRun(
+          plan("workflow:retry-success", [planUnit("unit:build", [], {}, { policies: [retryPolicy(2)] })]),
+        )
+
+        expect(started.status).toBe("running")
+        expect(started.units[0]?.nextRetryAt).toBeInstanceOf(Date)
+
+        yield* TestClock.adjust("1 second")
+
+        const finalRun = yield* orchestrator.inspectRun(started.runId)
+        const events = yield* eventLog.readRunEvents(started.runId)
+
+        expect(attempts).toBe(2)
+        expect(finalRun.status).toBe("succeeded")
+        expect(finalRun.units[0]?.status).toBe("succeeded")
+        expect(finalRun.units[0]?.nextRetryAt).toBeUndefined()
+        expect(events.map((event) => event._tag)).toContain("RetryScheduled")
+      }).pipe(
+        Effect.provide(
+          runtimeLayer({
+            resultsByUnitId: {
+              "unit:build": {
+                execute: (request) =>
+                  Effect.sync(() => {
+                    attempts += 1
+
+                    return new ExecutorResult({
+                      runId: request.runId,
+                      unitId: request.unitId,
+                      attemptId: request.attemptId,
+                      attemptNumber: request.attemptNumber,
+                      outcome: attempts === 1 ? "failed" : "succeeded",
+                      exitCode: attempts === 1 ? 1 : 0,
+                      failure: attempts === 1 ? new ExecutorFailureSummary({ message: "transient failure" }) : undefined,
+                      outputs: {},
+                      reports: [],
+                      artifacts: [],
+                      logs: [],
+                      diagnostics: [],
+                    })
+                  }),
+              },
+            },
+          }),
+        ),
+      )
+    },
+  )
+
+  it.effect("retry backoff delay increases between attempts", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+      const eventLog = yield* EventLog
+
+      const started = yield* orchestrator.startRun(
+        plan("workflow:retry-backoff", [planUnit("unit:build", [], {}, { policies: [retryPolicy(3)] })]),
+      )
+
+      yield* TestClock.adjust("3 seconds")
+
+      const events = yield* eventLog.readRunEvents(started.runId)
+      const retries = events.filter((event) => event._tag === "RetryScheduled")
+
+      expect(retries).toHaveLength(2)
+      expect((retries[0] as any)?.delayMillis).toBe(1000)
+      expect((retries[1] as any)?.delayMillis).toBe(2000)
+    }).pipe(
+      Effect.provide(runtimeLayer({ resultsByUnitId: { "unit:build": { outcome: "failed" } } })),
+    ),
+  )
+
+  it.effect("retry jitter stays within the expected range", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+      const eventLog = yield* EventLog
+      const delays = new Array<number>()
+
+      for (let index = 0; index < 5; index += 1) {
+        const run = yield* orchestrator.startRun(
+          plan(`workflow:retry-jitter:${index}`, [planUnit("unit:build", [], {}, { policies: [retryPolicy(2, { jitter: "full" })] })]),
+        )
+        const events = yield* eventLog.readRunEvents(run.runId)
+        const retryEvent = events.find((event) => event._tag === "RetryScheduled") as any
+        delays.push(retryEvent.delayMillis)
+      }
+
+      expect(delays.every((delay) => delay >= 0 && delay <= 1000)).toBe(true)
+      expect(new Set(delays).size).toBeGreaterThan(1)
+    }).pipe(
+      Effect.provide(runtimeLayer({ resultsByUnitId: { "unit:build": { outcome: "failed" } } })),
+    ),
+  )
+
+  it.effect("retry backoff respects max delay caps", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+      const eventLog = yield* EventLog
+
+      const started = yield* orchestrator.startRun(
+        plan("workflow:retry-cap", [planUnit("unit:build", [], {}, { policies: [retryPolicy(4, { exponent: 3, maxDelayMillis: 5000 })] })]),
+      )
+
+      yield* TestClock.adjust("10 seconds")
+
+      const events = yield* eventLog.readRunEvents(started.runId)
+      const retries = events.filter((event) => event._tag === "RetryScheduled") as Array<any>
+
+      expect(retries.map((event) => event.delayMillis)).toEqual([1000, 3000, 5000])
+    }).pipe(
+      Effect.provide(runtimeLayer({ resultsByUnitId: { "unit:build": { outcome: "failed" } } })),
+    ),
+  )
+
+  it.effect("maxAttempts of one or no retry policy does not schedule retries", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+      const eventLog = yield* EventLog
+
+      const withPolicy = yield* orchestrator.startRun(
+        plan("workflow:no-retry-policy", [planUnit("unit:build", [], {}, { policies: [retryPolicy(1)] })]),
+      )
+      const withoutPolicy = yield* orchestrator.startRun(plan("workflow:no-retry-default", [planUnit("unit:test")]))
+
+      const withPolicyEvents = yield* eventLog.readRunEvents(withPolicy.runId)
+      const withoutPolicyEvents = yield* eventLog.readRunEvents(withoutPolicy.runId)
+
+      expect(withPolicy.status).toBe("failed")
+      expect(withoutPolicy.status).toBe("failed")
+      expect(withPolicyEvents.map((event) => event._tag)).not.toContain("RetryScheduled")
+      expect(withoutPolicyEvents.map((event) => event._tag)).not.toContain("RetryScheduled")
+    }).pipe(
+      Effect.provide(
+        runtimeLayer({ resultsByUnitId: { "unit:build": { outcome: "failed" }, "unit:test": { outcome: "failed" } } }),
+      ),
+    ),
+  )
 })
 
 const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
@@ -513,6 +659,16 @@ const planDependency = (from: string, to: string) =>
   new PlanDependency({
     from: UnitId.make(from),
     to: UnitId.make(to),
+  })
+
+const retryPolicy = (maxAttempts: number, overrides: Partial<ConstructorParameters<typeof PlanRetryPolicy>[0]> = {}) =>
+  new PlanRetryPolicy({
+    maxAttempts,
+    exponent: 2,
+    baseDelayMillis: 1000,
+    maxDelayMillis: 60_000,
+    jitter: "none",
+    ...overrides,
   })
 
 const named = (name: string) =>

@@ -82,6 +82,8 @@ export interface PayloadMetadataDto {
   readonly sizeBytes?: number
   readonly checksum?: string
   readonly createdAt?: string
+  readonly expiresAt?: string
+  readonly ageMillis?: number
   readonly summary?: string
 }
 

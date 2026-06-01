@@ -5,6 +5,8 @@ import { SecretRef } from "./secrets.ts"
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
 const PositiveNumber = Schema.Number.check(Schema.isGreaterThan(0))
+export const JitterMode = Schema.Literals(["none", "full", "half"])
+export type JitterMode = typeof JitterMode.Type
 
 export class SourceMetadata extends Schema.Class<SourceMetadata>("SourceMetadata")({
   file: Schema.optional(Schema.String),
@@ -104,6 +106,10 @@ export class RetryPolicyDeclaration extends Schema.TaggedClass<RetryPolicyDeclar
   "RetryPolicyDeclaration",
   {
     maxAttempts: PositiveInt,
+    exponent: PositiveNumber,
+    baseDelayMillis: PositiveInt,
+    maxDelayMillis: PositiveInt,
+    jitter: JitterMode,
   },
 ) {}
 

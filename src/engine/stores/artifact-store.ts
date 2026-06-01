@@ -6,6 +6,7 @@ import { isSqlError } from "effect/unstable/sql/SqlError"
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../../domain/artifacts.ts"
 import { StoreUnavailable } from "../../domain/errors.ts"
 import { ArtifactRef, LogRef } from "../../domain/ids.ts"
+import { ArtifactLifecycleConfig } from "../../runtime/config.ts"
 import { decodeArtifactMetadata, decodeLogMetadata, encodeArtifactMetadata, encodeLogMetadata } from "../../runtime/storage-codecs.ts"
 import { ObjectStorageClient } from "../../runtime/storage.ts"
 
@@ -18,6 +19,10 @@ export class ArtifactStore extends Context.Service<
     readonly readArtifactPayload: (ref: ArtifactRef) => Effect.Effect<string, StoreUnavailable>
     readonly readLog: (ref: LogRef) => Effect.Effect<LogMetadata, StoreUnavailable>
     readonly readLogPayload: (ref: LogRef) => Effect.Effect<string, StoreUnavailable>
+    readonly deleteArtifact: (ref: ArtifactRef) => Effect.Effect<void, StoreUnavailable>
+    readonly deleteLog: (ref: LogRef) => Effect.Effect<void, StoreUnavailable>
+    readonly gcRunArtifacts: (runId: string) => Effect.Effect<{ readonly deletedCount: number; readonly bytesFreed: number }, StoreUnavailable>
+    readonly runGc: (now?: Date) => Effect.Effect<{ readonly deletedCount: number; readonly bytesFreed: number }, StoreUnavailable>
   }
 >()("@effect-cicd/engine/stores/ArtifactStore") {
   static readonly memoryLayer = Layer.sync(ArtifactStore, () => {
@@ -98,7 +103,71 @@ export class ArtifactStore extends Context.Service<
         ),
       )
 
-    return { registerArtifact, registerLog, readArtifact, readArtifactPayload, readLog, readLogPayload }
+    const deleteArtifact = (ref: ArtifactRef) =>
+      Effect.sync(() => {
+        artifacts.delete(ref)
+        artifactPayloads.delete(ref)
+      })
+
+    const deleteLog = (ref: LogRef) =>
+      Effect.sync(() => {
+        logs.delete(ref)
+        logPayloads.delete(ref)
+      })
+
+    const gcRunArtifacts = (runId: string) =>
+      Effect.sync(() => {
+        let deletedCount = 0
+        let bytesFreed = 0
+
+        for (const [ref, metadata] of artifacts.entries()) {
+          if (metadata.runId === runId) {
+            deletedCount += 1
+            bytesFreed += metadata.sizeBytes ?? 0
+            artifacts.delete(ref)
+            artifactPayloads.delete(ref)
+          }
+        }
+
+        for (const [ref, metadata] of logs.entries()) {
+          if (metadata.runId === runId) {
+            deletedCount += 1
+            bytesFreed += metadata.sizeBytes ?? 0
+            logs.delete(ref)
+            logPayloads.delete(ref)
+          }
+        }
+
+        return { deletedCount, bytesFreed }
+      })
+
+    const runGc = (now = new Date()) =>
+      Effect.sync(() => {
+        let deletedCount = 0
+        let bytesFreed = 0
+
+        for (const [ref, metadata] of artifacts.entries()) {
+          if (metadata.expiresAt !== undefined && metadata.expiresAt.getTime() <= now.getTime()) {
+            deletedCount += 1
+            bytesFreed += metadata.sizeBytes ?? 0
+            artifacts.delete(ref)
+            artifactPayloads.delete(ref)
+          }
+        }
+
+        for (const [ref, metadata] of logs.entries()) {
+          if (metadata.expiresAt !== undefined && metadata.expiresAt.getTime() <= now.getTime()) {
+            deletedCount += 1
+            bytesFreed += metadata.sizeBytes ?? 0
+            logs.delete(ref)
+            logPayloads.delete(ref)
+          }
+        }
+
+        return { deletedCount, bytesFreed }
+      })
+
+    return { registerArtifact, registerLog, readArtifact, readArtifactPayload, readLog, readLogPayload, deleteArtifact, deleteLog, gcRunArtifacts, runGc }
   })
 
   static readonly s3Layer = Layer.effect(
@@ -106,8 +175,23 @@ export class ArtifactStore extends Context.Service<
     Effect.gen(function* () {
       const sql = yield* SqlClient
       const objectStorage = yield* ObjectStorageClient
+      const lifecycleConfig = yield* ArtifactLifecycleConfig
+
+      const withRetention = <A extends ArtifactMetadata | LogMetadata>(metadata: A): A => {
+        const createdAt = metadata.createdAt ?? new Date()
+        const retentionDays = metadata.retentionDays ?? lifecycleConfig.retentionDays
+        const expiresAt = metadata.expiresAt ?? new Date(createdAt.getTime() + retentionDays * 24 * 60 * 60 * 1000)
+
+        return new (metadata.constructor as new (args: A) => A)({
+          ...metadata,
+          createdAt,
+          retentionDays,
+          expiresAt,
+        })
+      }
 
       const registerArtifact = Effect.fn("ArtifactStore.registerArtifact")(function* ({ metadata, payloadBase64, contentType }: RegisteredArtifact) {
+        const persistedMetadata = withRetention(metadata)
         const objectKey = objectStorage.qualifyKey(`artifacts/${metadata.artifactRef}`)
 
         if (payloadBase64 !== undefined) {
@@ -115,7 +199,7 @@ export class ArtifactStore extends Context.Service<
           yield* objectStorage.writeObject(objectKey, payload, contentType === undefined ? undefined : { contentType })
         }
 
-        const metadataJson = JSON.stringify(encodeArtifactMetadata(metadata))
+        const metadataJson = JSON.stringify(encodeArtifactMetadata(persistedMetadata))
 
         yield* catchSql("register artifact metadata", sql`
           INSERT INTO artifact_metadata (
@@ -128,17 +212,21 @@ export class ArtifactStore extends Context.Service<
             status,
             bucket,
             object_key,
+            expires_at,
+            retention_days,
             metadata_json
           ) VALUES (
-            ${metadata.artifactRef},
-            ${metadata.runId},
-            ${metadata.unitId ?? null},
-            ${metadata.attemptId ?? null},
-            ${metadata.name},
-            ${metadata.category},
-            ${metadata.status},
+            ${persistedMetadata.artifactRef},
+            ${persistedMetadata.runId},
+            ${persistedMetadata.unitId ?? null},
+            ${persistedMetadata.attemptId ?? null},
+            ${persistedMetadata.name},
+            ${persistedMetadata.category},
+            ${persistedMetadata.status},
             ${objectStorage.bucket},
             ${objectKey},
+            ${persistedMetadata.expiresAt ?? null},
+            ${persistedMetadata.retentionDays ?? null},
             ${metadataJson}::jsonb
           )
           ON CONFLICT (artifact_ref) DO UPDATE SET
@@ -150,17 +238,20 @@ export class ArtifactStore extends Context.Service<
             status = EXCLUDED.status,
             bucket = EXCLUDED.bucket,
             object_key = EXCLUDED.object_key,
+            expires_at = EXCLUDED.expires_at,
+            retention_days = EXCLUDED.retention_days,
             metadata_json = EXCLUDED.metadata_json
         `)
 
-        return metadata
+        return persistedMetadata
       })
 
       const registerLog = Effect.fn("ArtifactStore.registerLog")(function* ({ metadata, content }: RegisteredLog) {
+        const persistedMetadata = withRetention(metadata)
         const objectKey = objectStorage.qualifyKey(`logs/${metadata.logRef}.log`)
         yield* objectStorage.writeObject(objectKey, content, { contentType: "text/plain; charset=utf-8" })
 
-        const metadataJson = JSON.stringify(encodeLogMetadata(metadata))
+        const metadataJson = JSON.stringify(encodeLogMetadata(persistedMetadata))
 
         yield* catchSql("register log metadata", sql`
           INSERT INTO log_metadata (
@@ -172,16 +263,20 @@ export class ArtifactStore extends Context.Service<
             status,
             bucket,
             object_key,
+            expires_at,
+            retention_days,
             metadata_json
           ) VALUES (
-            ${metadata.logRef},
-            ${metadata.runId},
-            ${metadata.unitId ?? null},
-            ${metadata.attemptId ?? null},
-            ${metadata.name},
-            ${metadata.status},
+            ${persistedMetadata.logRef},
+            ${persistedMetadata.runId},
+            ${persistedMetadata.unitId ?? null},
+            ${persistedMetadata.attemptId ?? null},
+            ${persistedMetadata.name},
+            ${persistedMetadata.status},
             ${objectStorage.bucket},
             ${objectKey},
+            ${persistedMetadata.expiresAt ?? null},
+            ${persistedMetadata.retentionDays ?? null},
             ${metadataJson}::jsonb
           )
           ON CONFLICT (log_ref) DO UPDATE SET
@@ -192,10 +287,12 @@ export class ArtifactStore extends Context.Service<
             status = EXCLUDED.status,
             bucket = EXCLUDED.bucket,
             object_key = EXCLUDED.object_key,
+            expires_at = EXCLUDED.expires_at,
+            retention_days = EXCLUDED.retention_days,
             metadata_json = EXCLUDED.metadata_json
         `)
 
-        return metadata
+        return persistedMetadata
       })
 
       const readArtifact = Effect.fn("ArtifactStore.readArtifact")(function* (ref: ArtifactRef) {
@@ -272,7 +369,105 @@ export class ArtifactStore extends Context.Service<
         return yield* objectStorage.readText(row.object_key)
       })
 
-      return { registerArtifact, registerLog, readArtifact, readArtifactPayload, readLog, readLogPayload }
+      const deleteArtifact = Effect.fn("ArtifactStore.deleteArtifact")(function* (ref: ArtifactRef) {
+        const rows = yield* catchSql("read artifact metadata", sql<{ readonly object_key: string }>`
+          SELECT object_key
+          FROM artifact_metadata
+          WHERE artifact_ref = ${ref}
+        `)
+
+        const row = rows[0]
+        if (row !== undefined) {
+          yield* objectStorage.deleteObject(row.object_key)
+        }
+
+        yield* catchSql("delete artifact metadata", sql`DELETE FROM artifact_metadata WHERE artifact_ref = ${ref}`)
+      })
+
+      const deleteLog = Effect.fn("ArtifactStore.deleteLog")(function* (ref: LogRef) {
+        const rows = yield* catchSql("read log metadata", sql<{ readonly object_key: string }>`
+          SELECT object_key
+          FROM log_metadata
+          WHERE log_ref = ${ref}
+        `)
+
+        const row = rows[0]
+        if (row !== undefined) {
+          yield* objectStorage.deleteObject(row.object_key)
+        }
+
+        yield* catchSql("delete log metadata", sql`DELETE FROM log_metadata WHERE log_ref = ${ref}`)
+      })
+
+      const gcRunArtifacts = Effect.fn("ArtifactStore.gcRunArtifacts")(function* (runId: string) {
+        const artifactRows = yield* catchSql("read run artifacts", sql<{ readonly artifact_ref: string; readonly object_key: string; readonly metadata_json: unknown }>`
+          SELECT artifact_ref, object_key, metadata_json FROM artifact_metadata WHERE run_id = ${runId}
+        `)
+        const logRows = yield* catchSql("read run logs", sql<{ readonly log_ref: string; readonly object_key: string; readonly metadata_json: unknown }>`
+          SELECT log_ref, object_key, metadata_json FROM log_metadata WHERE run_id = ${runId}
+        `)
+
+        let deletedCount = 0
+        let bytesFreed = 0
+
+        for (const row of artifactRows) {
+          const metadata = decodeArtifactMetadata(row.metadata_json)
+          yield* objectStorage.deleteObject(row.object_key)
+          bytesFreed += metadata.sizeBytes ?? 0
+          deletedCount += 1
+        }
+        for (const row of logRows) {
+          const metadata = decodeLogMetadata(row.metadata_json)
+          yield* objectStorage.deleteObject(row.object_key)
+          bytesFreed += metadata.sizeBytes ?? 0
+          deletedCount += 1
+        }
+
+        yield* catchSql("delete run artifact metadata", sql`DELETE FROM artifact_metadata WHERE run_id = ${runId}`)
+        yield* catchSql("delete run log metadata", sql`DELETE FROM log_metadata WHERE run_id = ${runId}`)
+
+        return { deletedCount, bytesFreed }
+      })
+
+      const runGc = Effect.fn("ArtifactStore.runGc")(function* (now = new Date()) {
+        const artifactRows = yield* catchSql("read expired artifacts", sql<{ readonly artifact_ref: string; readonly object_key: string; readonly metadata_json: unknown }>`
+          SELECT artifact_ref, object_key, metadata_json
+          FROM artifact_metadata
+          WHERE expires_at IS NOT NULL AND expires_at < ${now}
+        `)
+        const logRows = yield* catchSql("read expired logs", sql<{ readonly log_ref: string; readonly object_key: string; readonly metadata_json: unknown }>`
+          SELECT log_ref, object_key, metadata_json
+          FROM log_metadata
+          WHERE expires_at IS NOT NULL AND expires_at < ${now}
+        `)
+
+        let deletedCount = 0
+        let bytesFreed = 0
+
+        for (const row of artifactRows) {
+          const metadata = decodeArtifactMetadata(row.metadata_json)
+          yield* objectStorage.deleteObject(row.object_key)
+          bytesFreed += metadata.sizeBytes ?? 0
+          deletedCount += 1
+        }
+        for (const row of logRows) {
+          const metadata = decodeLogMetadata(row.metadata_json)
+          yield* objectStorage.deleteObject(row.object_key)
+          bytesFreed += metadata.sizeBytes ?? 0
+          deletedCount += 1
+        }
+
+        if (artifactRows.length > 0) {
+          yield* catchSql("delete expired artifact metadata", sql`DELETE FROM artifact_metadata WHERE expires_at IS NOT NULL AND expires_at < ${now}`)
+        }
+        if (logRows.length > 0) {
+          yield* catchSql("delete expired log metadata", sql`DELETE FROM log_metadata WHERE expires_at IS NOT NULL AND expires_at < ${now}`)
+        }
+
+        return { deletedCount, bytesFreed }
+      })
+
+      return { registerArtifact, registerLog, readArtifact, readArtifactPayload, readLog, readLogPayload, deleteArtifact, deleteLog, gcRunArtifacts, runGc }
     }),
   )
 }

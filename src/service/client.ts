@@ -117,6 +117,10 @@ export const engineServiceClientLayer = Layer.effect(
       requestText(http, HttpClientRequest.get(`/api/artifacts/${encodeURIComponent(artifactRef)}`)),
     )
 
+    const deleteArtifact = Effect.fn("EngineServiceClient.deleteArtifact")((artifactRef: ArtifactRef) =>
+      requestJsonNoContent(http, HttpClientRequest.delete(`/api/artifacts/${encodeURIComponent(artifactRef)}`)),
+    )
+
     const readLogs = Effect.fn("EngineServiceClient.readLogs")((runId: RunId) =>
       requestJson(http, HttpClientRequest.get(`/api/runs/${encodeURIComponent(runId)}/logs`), Schema.Array(LogMetadata)),
     )
@@ -124,6 +128,20 @@ export const engineServiceClientLayer = Layer.effect(
     const readLogPayload = Effect.fn("EngineServiceClient.readLogPayload")((logRef: LogRef) =>
       requestText(http, HttpClientRequest.get(`/api/logs/${encodeURIComponent(logRef)}`)),
     )
+
+    const deleteLog = Effect.fn("EngineServiceClient.deleteLog")((logRef: LogRef) =>
+      requestJsonNoContent(http, HttpClientRequest.delete(`/api/logs/${encodeURIComponent(logRef)}`)),
+    )
+
+    const gcRunArtifacts = Effect.fn("EngineServiceClient.gcRunArtifacts")((runId: RunId) =>
+      requestJson(
+        http,
+        HttpClientRequest.post(`/api/runs/${encodeURIComponent(runId)}/gc`),
+        Schema.Struct({ deletedCount: Schema.Number, bytesFreed: Schema.Number }),
+      ),
+    )
+
+    const version = Effect.fn("EngineServiceClient.version")(() => requestText(http, HttpClientRequest.get("/version")))
 
     const streamRuns = () => requestStream(http, HttpClientRequest.get("/api/runs/stream"))
 
@@ -143,8 +161,12 @@ export const engineServiceClientLayer = Layer.effect(
       readRunEvents,
       readArtifacts,
       readArtifactPayload,
+      deleteArtifact,
       readLogs,
       readLogPayload,
+      deleteLog,
+      gcRunArtifacts,
+      version,
     }
   }),
 )

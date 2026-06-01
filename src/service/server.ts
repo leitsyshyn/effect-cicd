@@ -1,5 +1,6 @@
-import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
+import { Effect, Layer, Option, Schema, Stream } from "effect"
 import { Sse } from "effect/unstable/encoding"
+import { SqlClient } from "effect/unstable/sql/SqlClient"
 
 import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { DomainError } from "../domain/errors.ts"
@@ -24,9 +25,13 @@ import { GitHubRunLinkStore } from "../github/run-link-store.ts"
 import { GitHubSourceSnapshots } from "../github/source-snapshots.ts"
 import { GitHubTriggerDeliveryStore } from "../github/trigger-delivery-store.ts"
 import { EngineServiceConfig, GitHubAppConfig, GitHubTriggerConfig, StorageRuntimeConfig } from "../runtime/config.ts"
+import { logInfo } from "../runtime/logger.ts"
+import { Metrics } from "../runtime/metrics.ts"
 import { makeServiceEngineLayer } from "../runtime/layers.ts"
-import { sqlClientLayer } from "../runtime/storage.ts"
+import { ObjectStorageClient, sqlClientLayer } from "../runtime/storage.ts"
+import { appVersion } from "../runtime/version.ts"
 import { SecretStore } from "../secrets/store.ts"
+import { ArtifactGc } from "../engine/stores/artifact-gc.ts"
 import { RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse } from "./contracts.ts"
 import { decodeJson, encodeJson } from "./schema-json.ts"
 
@@ -99,6 +104,10 @@ export const startServiceServer = Effect.gen(function* () {
   const gitHubChecks = yield* Effect.serviceOption(GitHubCheckRuns)
   const gitHubIntegration = yield* GitHubIntegration
   const secretStore = yield* SecretStore
+  const sql = yield* Effect.serviceOption(SqlClient)
+  const objectStorage = yield* Effect.serviceOption(ObjectStorageClient)
+  const metrics = yield* Effect.serviceOption(Metrics)
+  const artifactGc = yield* Effect.serviceOption(ArtifactGc)
 
   if (runtimeConfig.runRecoveryOnStartup) {
     yield* runController.recoverOnStartup()
@@ -109,11 +118,31 @@ export const startServiceServer = Effect.gen(function* () {
     onSome: (service) => service.watchRunUpdates.pipe(Effect.forkDetach({ startImmediately: true }), Effect.asVoid),
   })
 
+  yield* Option.match(artifactGc, {
+    onNone: () => Effect.succeed(undefined),
+    onSome: (service) => service.start(),
+  })
+
   const server = Bun.serve({
     port: serviceConfig.port,
     routes: {
       "/healthz": {
         GET: () => new Response("ok", { headers: { "content-type": "text/plain; charset=utf-8" } }),
+      },
+      "/readyz": {
+        GET: () =>
+          runJsonEffect(readiness(sql, objectStorage), {
+            schema: Schema.Struct({ status: Schema.String, checks: Schema.Record(Schema.String, Schema.String) }),
+          }),
+      },
+      "/metrics": {
+        GET: () =>
+          new Response(Option.match(metrics, { onNone: () => "", onSome: (service) => service.renderPrometheus() }), {
+            headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
+          }),
+      },
+      "/version": {
+        GET: () => new Response(appVersion, { headers: { "content-type": "text/plain; charset=utf-8" } }),
       },
       "/api/workflows/validate": {
         POST: (request) => runJsonEffect(validateWorkflow(engine, request), { noContent: true }),
@@ -167,6 +196,7 @@ export const startServiceServer = Effect.gen(function* () {
       },
       "/api/logs/:logRef": {
         GET: (request) => runTextEffect(engine.readLogPayload(LogRef.make(request.params.logRef))),
+        DELETE: (request) => runJsonEffect(engine.deleteLog(LogRef.make(request.params.logRef)), { noContent: true }),
       },
       "/api/runs/:runId/artifacts": {
         GET: (request) =>
@@ -174,6 +204,13 @@ export const startServiceServer = Effect.gen(function* () {
       },
       "/api/artifacts/:artifactRef": {
         GET: (request) => runTextEffect(engine.readArtifactPayload(ArtifactRef.make(request.params.artifactRef))),
+        DELETE: (request) => runJsonEffect(engine.deleteArtifact(ArtifactRef.make(request.params.artifactRef)), { noContent: true }),
+      },
+      "/api/runs/:runId/gc": {
+        POST: (request) =>
+          runJsonEffect(engine.gcRunArtifacts(RunId.make(request.params.runId)), {
+            schema: Schema.Struct({ deletedCount: Schema.Number, bytesFreed: Schema.Number }),
+          }),
       },
       "/api/runs/:runId/cancel": {
         POST: (request) => runJsonEffect(cancelRun(engine, request, RunId.make(request.params.runId)), { schema: WorkflowRunState }),
@@ -187,7 +224,24 @@ export const startServiceServer = Effect.gen(function* () {
     },
   })
 
-  yield* Console.log(`engine service listening on ${server.url}`)
+  const shutdown = async (signal: string) => {
+    await Effect.runPromise(logInfo("shutdown requested", { module: "service", signal }))
+    const timedOut = setTimeout(() => process.exit(1), 30_000)
+    try {
+      server.stop(true)
+      await Effect.runPromise(logInfo("server stopped", { module: "service" }))
+      clearTimeout(timedOut)
+      process.exit(0)
+    } catch {
+      clearTimeout(timedOut)
+      process.exit(1)
+    }
+  }
+
+  process.once("SIGTERM", () => void shutdown("SIGTERM"))
+  process.once("SIGINT", () => void shutdown("SIGINT"))
+
+  yield* logInfo("engine service listening", { module: "service", version: appVersion, url: String(server.url) })
   return server
 })
 
@@ -195,6 +249,35 @@ export const serviceProgram = Effect.gen(function* () {
   yield* startServiceServer
   return yield* Effect.never
 })
+
+const readiness = (sql: Option.Option<any>, objectStorage: Option.Option<any>) =>
+  Effect.gen(function* () {
+    const checks: Record<string, string> = {}
+
+    yield* Option.match(sql, {
+      onNone: () => Effect.sync(() => {
+        checks.postgres = "unavailable"
+      }),
+      onSome: (client) => client`SELECT 1`.pipe(Effect.tap(() => Effect.sync(() => {
+        checks.postgres = "ok"
+      }))),
+    })
+    yield* Option.match(objectStorage, {
+      onNone: () => Effect.sync(() => {
+        checks.s3 = "unavailable"
+      }),
+      onSome: (client) => client.checkHealth().pipe(Effect.tap(() => Effect.sync(() => {
+        checks.s3 = "ok"
+      }))),
+    })
+
+    return { status: "ok", checks }
+  }).pipe(
+    Effect.catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      return Effect.fail(new RequestBodyInvalid({ message }))
+    }),
+  )
 
 const validateWorkflow = (engine: EngineService, request: Request) =>
   Effect.gen(function* () {

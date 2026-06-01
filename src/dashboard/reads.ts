@@ -45,6 +45,8 @@ export const mapPayloadMetadata = (payload: ArtifactMetadata | LogMetadata): Pay
   ...(payload.sizeBytes === undefined ? {} : { sizeBytes: payload.sizeBytes }),
   ...(payload.checksum === undefined ? {} : { checksum: payload.checksum }),
   ...(payload.createdAt === undefined ? {} : { createdAt: payload.createdAt.toISOString() }),
+  ...(payload.expiresAt === undefined ? {} : { expiresAt: payload.expiresAt.toISOString() }),
+  ...(payload.createdAt === undefined ? {} : { ageMillis: Date.now() - payload.createdAt.getTime() }),
   ...(payload.summary === undefined ? {} : { summary: payload.summary }),
 })
 
@@ -219,6 +221,8 @@ const describeEvent = (event: WorkflowEvent): string => {
       return `Artifact registered: ${event.artifact.name}`
     case "ReportRegistered":
       return `Report registered: ${event.report.name}`
+    case "ArtifactGcCompleted":
+      return `Artifact GC deleted ${event.deletedCount} payloads`
     case "UnitCanceled":
       return `${event.unitId} canceled: ${event.reason}`
   }

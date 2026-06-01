@@ -18,6 +18,8 @@ export class ArtifactMetadata extends Schema.Class<ArtifactMetadata>("ArtifactMe
   sizeBytes: Schema.optional(NonNegativeInt),
   checksum: Schema.optional(Schema.String),
   createdAt: Schema.optional(Schema.Date),
+  expiresAt: Schema.optional(Schema.Date),
+  retentionDays: Schema.optional(NonNegativeInt),
   summary: Schema.optional(Schema.String),
 }) {}
 
@@ -31,6 +33,8 @@ export class LogMetadata extends Schema.Class<LogMetadata>("LogMetadata")({
   sizeBytes: Schema.optional(NonNegativeInt),
   checksum: Schema.optional(Schema.String),
   createdAt: Schema.optional(Schema.Date),
+  expiresAt: Schema.optional(Schema.Date),
+  retentionDays: Schema.optional(NonNegativeInt),
   summary: Schema.optional(Schema.String),
 }) {}
 

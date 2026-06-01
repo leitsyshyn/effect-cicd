@@ -134,9 +134,9 @@ describe("Planner", () => {
   it.effect("retry policy with maxAttempts greater than 1 validates successfully", () =>
     Effect.gen(function* () {
       const planner = yield* Planner
-      const definition = workflow({
-        units: [unit("unit:build", { policies: [new RetryPolicyDeclaration({ maxAttempts: 2 })] })],
-      })
+        const definition = workflow({
+          units: [unit("unit:build", { policies: [new RetryPolicyDeclaration({ maxAttempts: 2, exponent: 2, baseDelayMillis: 1000, maxDelayMillis: 60000, jitter: "none" })] })],
+        })
 
       yield* planner.validate(definition)
       const plan = yield* planner.plan(definition)
@@ -159,7 +159,7 @@ describe("Planner", () => {
               }),
               artifacts: [named("coverage")],
               policies: [
-                new RetryPolicyDeclaration({ maxAttempts: 1 }),
+                new RetryPolicyDeclaration({ maxAttempts: 1, exponent: 2, baseDelayMillis: 1000, maxDelayMillis: 60000, jitter: "none" }),
                 new TimeoutPolicyDeclaration({ seconds: 60 }),
                 new CancellationPolicyDeclaration({ mode: "fail-fast" }),
               ],

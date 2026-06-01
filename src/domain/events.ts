@@ -73,6 +73,8 @@ export class RetryScheduled extends Schema.TaggedClass<RetryScheduled>()("RetryS
   attemptId: AttemptId,
   nextAttemptNumber: PositiveInt,
   reason: Schema.String,
+  delayMillis: NonNegativeInt,
+  scheduledAt: Schema.Date,
 }) {}
 
 export class AttemptCanceled extends Schema.TaggedClass<AttemptCanceled>()("AttemptCanceled", {
@@ -135,6 +137,12 @@ export class ReportRegistered extends Schema.TaggedClass<ReportRegistered>()("Re
   report: ReportSummary,
 }) {}
 
+export class ArtifactGcCompleted extends Schema.TaggedClass<ArtifactGcCompleted>()("ArtifactGcCompleted", {
+  ...EventBase,
+  deletedCount: NonNegativeInt,
+  bytesFreed: NonNegativeInt,
+}) {}
+
 export class RunSucceeded extends Schema.TaggedClass<RunSucceeded>()(
   "RunSucceeded",
   EventBase,
@@ -181,6 +189,7 @@ export const WorkflowEvent = Schema.Union([
   LogRegistered,
   ArtifactRegistered,
   ReportRegistered,
+  ArtifactGcCompleted,
   RunSucceeded,
   RunFailed,
   RunTimedOut,

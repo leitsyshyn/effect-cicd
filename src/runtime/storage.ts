@@ -1,10 +1,11 @@
 import { PgClient, PgMigrator } from "@effect/sql-pg"
-import { Effect, Layer, Redacted } from "effect"
+import { Duration, Effect, Layer, Option, Redacted, Schedule } from "effect"
 import * as Context from "effect/Context"
 import { SqlClient } from "effect/unstable/sql/SqlClient"
 import { isSqlError } from "effect/unstable/sql/SqlError"
 
 import { StoreUnavailable } from "../domain/errors.ts"
+import { Metrics } from "./metrics.ts"
 import { ObjectStorageConfig, PostgresConfig } from "./config.ts"
 
 export class StorageTransactor extends Context.Service<
@@ -55,12 +56,15 @@ export class ObjectStorageClient extends Context.Service<
       },
     ) => Effect.Effect<void, StoreUnavailable>
     readonly readText: (key: string) => Effect.Effect<string, StoreUnavailable>
+    readonly deleteObject: (key: string) => Effect.Effect<void, StoreUnavailable>
+    readonly checkHealth: () => Effect.Effect<void, StoreUnavailable>
   }
 >()("@effect-cicd/runtime/ObjectStorageClient") {
   static readonly layer = Layer.effect(
     ObjectStorageClient,
     Effect.gen(function* () {
       const config = yield* ObjectStorageConfig
+      const metrics = yield* Effect.serviceOption(Metrics)
       const client = new Bun.S3Client({
         accessKeyId: config.accessKeyId,
         secretAccessKey: Redacted.value(config.secretAccessKey),
@@ -71,33 +75,75 @@ export class ObjectStorageClient extends Context.Service<
       })
 
       const qualifyKey = (key: string) => (config.prefix === undefined ? key : `${config.prefix}/${key}`)
+      const retrySchedule = Schedule.exponential(Duration.millis(50)).pipe(Schedule.jittered, Schedule.both(Schedule.recurs(config.operationRetries - 1)))
+      const incrementS3Metric = (operation: string, status: "success" | "failure") =>
+        Effect.sync(() =>
+          Option.match(metrics, {
+            onNone: () => undefined,
+            onSome: (service) => service.incrementCounter("s3_operations_total", { operation, status }),
+          }),
+        )
+
+      const withS3Retry = <A>(operation: string, effect: Effect.Effect<A, StoreUnavailable>) =>
+        effect.pipe(
+          Effect.tap(() => incrementS3Metric(operation, "success")),
+          Effect.tapError(() => incrementS3Metric(operation, "failure")),
+          Effect.retry(retrySchedule),
+        )
 
       return {
         bucket: config.bucket,
         qualifyKey,
         writeObject: (key, payload, options) =>
+          withS3Retry(
+            "write",
+            Effect.tryPromise({
+              try: async () => {
+                await client.write(key, payload, {
+                  ...(options?.contentType === undefined ? {} : { type: options.contentType }),
+                  ...(options?.contentDisposition === undefined ? {} : { contentDisposition: options.contentDisposition }),
+                })
+              },
+              catch: (error) =>
+                new StoreUnavailable({
+                  store: "ArtifactStore",
+                  message: `Failed to write object ${key}: ${toErrorMessage(error)}`,
+                }),
+            }),
+          ),
+        readText: (key) =>
+          withS3Retry(
+            "read",
+            Effect.tryPromise({
+              try: () => client.file(key).text(),
+              catch: (error) =>
+                new StoreUnavailable({
+                  store: "ArtifactStore",
+                  message: `Failed to read object ${key}: ${toErrorMessage(error)}`,
+                }),
+            }),
+          ),
+        deleteObject: (key) =>
+          withS3Retry(
+            "delete",
+            Effect.tryPromise({
+              try: () => client.delete(key),
+              catch: (error) =>
+                new StoreUnavailable({
+                  store: "ArtifactStore",
+                  message: `Failed to delete object ${key}: ${toErrorMessage(error)}`,
+                }),
+            }),
+          ),
+        checkHealth: () =>
           Effect.tryPromise({
             try: async () => {
-              await client.write(key, payload, {
-                ...(options?.contentType === undefined ? {} : { type: options.contentType }),
-                ...(options?.contentDisposition === undefined
-                  ? {}
-                  : { contentDisposition: options.contentDisposition }),
-              })
+              await client.exists(qualifyKey("healthz"))
             },
             catch: (error) =>
               new StoreUnavailable({
                 store: "ArtifactStore",
-                message: `Failed to write object ${key}: ${toErrorMessage(error)}`,
-              }),
-          }),
-        readText: (key) =>
-          Effect.tryPromise({
-            try: () => client.file(key).text(),
-            catch: (error) =>
-              new StoreUnavailable({
-                store: "ArtifactStore",
-                message: `Failed to read object ${key}: ${toErrorMessage(error)}`,
+                message: `Failed to reach object storage: ${toErrorMessage(error)}`,
               }),
           }),
       }
@@ -109,7 +155,7 @@ export const sqlClientLayer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* PostgresConfig
 
-    return PgClient.layer({
+    const layer = PgClient.layer({
       ...(config.url === undefined ? {} : { url: config.url }),
       ...(config.host === undefined ? {} : { host: config.host }),
       ...(config.port === undefined ? {} : { port: config.port }),
@@ -122,6 +168,13 @@ export const sqlClientLayer = Layer.unwrap(
       ...(config.maxConnections === undefined ? {} : { maxConnections: config.maxConnections }),
       ...(config.minConnections === undefined ? {} : { minConnections: config.minConnections }),
     })
+
+    return Layer.unwrap(
+      Effect.retry(
+        Effect.succeed(layer),
+        Schedule.exponential(config.connectRetryDelay).pipe(Schedule.both(Schedule.recurs(config.connectRetries - 1))),
+      ),
+    )
   }),
 ).pipe(Layer.provide(PostgresConfig.layer))
 
@@ -337,6 +390,17 @@ export const storageMigrationLayer = PgMigrator.layer({
         ON github_trigger_deliveries (project_id, created_at DESC, idempotency_key ASC)`
       yield* sql`CREATE INDEX IF NOT EXISTS github_trigger_deliveries_delivery_id_idx
         ON github_trigger_deliveries (delivery_id, binding_id, created_at DESC, idempotency_key ASC)`
+    }),
+    "0006_artifact_lifecycle": Effect.gen(function* () {
+      const sql = yield* SqlClient
+
+      yield* sql`ALTER TABLE artifact_metadata ADD COLUMN IF NOT EXISTS expires_at timestamptz`
+      yield* sql`ALTER TABLE artifact_metadata ADD COLUMN IF NOT EXISTS retention_days integer`
+      yield* sql`CREATE INDEX IF NOT EXISTS artifact_metadata_expires_at_idx ON artifact_metadata (expires_at, run_id)`
+
+      yield* sql`ALTER TABLE log_metadata ADD COLUMN IF NOT EXISTS expires_at timestamptz`
+      yield* sql`ALTER TABLE log_metadata ADD COLUMN IF NOT EXISTS retention_days integer`
+      yield* sql`CREATE INDEX IF NOT EXISTS log_metadata_expires_at_idx ON log_metadata (expires_at, run_id)`
     }),
   }),
 })

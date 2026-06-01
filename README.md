@@ -1,5 +1,7 @@
 # effect-cicd
 
+Production deployment and operations guidance: `docs/self-hosting.md`
+
 Install dependencies:
 
 ```bash

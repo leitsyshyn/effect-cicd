@@ -7,9 +7,13 @@ import { Planner } from "../engine/planner.ts"
 import { RunController } from "../engine/run-controller.ts"
 import { RunUpdates } from "../engine/run-updates.ts"
 import { ArtifactStore } from "../engine/stores/artifact-store.ts"
+import { ArtifactGc } from "../engine/stores/artifact-gc.ts"
 import { EventLog } from "../engine/stores/event-log.ts"
 import { StateStore } from "../engine/stores/state-store.ts"
 import { SecretEncryptionConfig, SecretStore } from "../secrets/store.ts"
+import { ArtifactLifecycleConfig } from "./config.ts"
+import { structuredLoggerLayer } from "./logger.ts"
+import { Metrics } from "./metrics.ts"
 import { ObjectStorageClient, StorageTransactor, sqlClientLayer, storageMigrationLayer } from "./storage.ts"
 import { SchedulerConfig } from "./config.ts"
 
@@ -18,6 +22,8 @@ export const makeDurableStorageLayer = () => {
   const objectStorageLayer = ObjectStorageClient.layer
 
   return Layer.mergeAll(
+    Metrics.layer,
+    ArtifactLifecycleConfig.layer,
     storageMigrationLayer.pipe(Layer.provideMerge(sqlLayer)),
     StorageTransactor.postgresLayer.pipe(Layer.provideMerge(sqlLayer)),
     StateStore.postgresLayer.pipe(Layer.provideMerge(sqlLayer)),
@@ -29,6 +35,7 @@ export const makeDurableStorageLayer = () => {
     ArtifactStore.s3Layer.pipe(
       Layer.provideMerge(sqlLayer),
       Layer.provideMerge(objectStorageLayer),
+      Layer.provideMerge(ArtifactLifecycleConfig.layer),
     ),
   )
 }
@@ -48,11 +55,15 @@ export const makeServiceEngineLayer = () => {
   )
 
   return Layer.mergeAll(
+    structuredLoggerLayer,
     storageLayer,
     updatesLayer,
     SchedulerConfig.layer,
     orchestratorLayer,
     runControllerLayer,
+    ArtifactGc.layer.pipe(
+      Layer.provideMerge(storageLayer),
+    ),
     Engine.layer.pipe(
       Layer.provideMerge(Planner.layer),
       Layer.provideMerge(orchestratorLayer),
@@ -88,6 +99,8 @@ export const makeInMemoryEngineLayer = (options: TestExecutorLayerOptions = {}) 
   )
 
   return Layer.mergeAll(
+    Metrics.layer,
+    ArtifactLifecycleConfig.layer,
     transactorLayer,
     stateLayer,
     eventLayer,
@@ -98,6 +111,11 @@ export const makeInMemoryEngineLayer = (options: TestExecutorLayerOptions = {}) 
     schedulerLayer,
     orchestratorLayer,
     runControllerLayer,
+    ArtifactGc.layer.pipe(
+      Layer.provideMerge(artifactLayer),
+      Layer.provideMerge(eventLayer),
+      Layer.provideMerge(ArtifactLifecycleConfig.layer),
+    ),
     Engine.layer.pipe(
       Layer.provideMerge(Planner.layer),
       Layer.provideMerge(orchestratorLayer),
@@ -138,6 +156,8 @@ export const makeInMemoryServiceEngineLayer = (options: TestExecutorLayerOptions
   )
 
   return Layer.mergeAll(
+    Metrics.layer,
+    ArtifactLifecycleConfig.layer,
     transactorLayer,
     stateLayer,
     eventLayer,
@@ -148,6 +168,11 @@ export const makeInMemoryServiceEngineLayer = (options: TestExecutorLayerOptions
     schedulerLayer,
     orchestratorLayer,
     runControllerLayer,
+    ArtifactGc.layer.pipe(
+      Layer.provideMerge(artifactLayer),
+      Layer.provideMerge(eventLayer),
+      Layer.provideMerge(ArtifactLifecycleConfig.layer),
+    ),
     Engine.layer.pipe(
       Layer.provideMerge(Planner.layer),
       Layer.provideMerge(orchestratorLayer),

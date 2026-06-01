@@ -65,6 +65,10 @@ describe("service boundary", () => {
             readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.succeed(""),
             readLogs: () => Effect.succeed([]),
             readLogPayload: (_logRef: LogRef) => Effect.succeed(""),
+            deleteArtifact: () => Effect.succeed(undefined),
+            deleteLog: () => Effect.succeed(undefined),
+            gcRunArtifacts: () => Effect.succeed({ deletedCount: 0, bytesFreed: 0 }),
+            version: () => Effect.succeed("0.0.0"),
           }),
           Layer.succeed(RunController, {
             submitRun: () => Effect.succeed(sampleRunState()),

@@ -1,5 +1,4 @@
-import { Config, Effect, Layer, Redacted } from "effect"
-import type * as Duration from "effect/Duration"
+import { Config, Duration, Effect, Layer, Redacted } from "effect"
 import * as Context from "effect/Context"
 import { resolve as resolvePath } from "node:path"
 
@@ -17,6 +16,8 @@ export class PostgresConfig extends Context.Service<
     readonly connectionTTL: Duration.Duration | undefined
     readonly maxConnections: number | undefined
     readonly minConnections: number | undefined
+    readonly connectRetries: number
+    readonly connectRetryDelay: Duration.Duration
   }
 >()("@effect-cicd/runtime/PostgresConfig") {
   static readonly layer = Layer.effect(
@@ -37,6 +38,11 @@ export class PostgresConfig extends Context.Service<
       const connectionTTL = yield* Config.option(Config.duration("POSTGRES_CONNECTION_TTL"))
       const maxConnections = yield* Config.option(Config.int("POSTGRES_MAX_CONNECTIONS"))
       const minConnections = yield* Config.option(Config.int("POSTGRES_MIN_CONNECTIONS"))
+      const connectRetries = yield* Config.int("POSTGRES_CONNECT_RETRIES").pipe(Config.orElse(() => Config.succeed(3)))
+      const connectRetryDelay = yield* Config.int("POSTGRES_CONNECT_RETRY_DELAY_MS").pipe(
+        Config.map((millis) => Duration.millis(millis)),
+        Config.orElse(() => Config.succeed(Duration.millis(1_000))),
+      )
 
       return {
         url: optionValue(url),
@@ -50,6 +56,8 @@ export class PostgresConfig extends Context.Service<
         connectionTTL: optionValue(connectionTTL),
         maxConnections: optionValue(maxConnections),
         minConnections: optionValue(minConnections),
+        connectRetries,
+        connectRetryDelay,
       }
     }),
   )
@@ -65,6 +73,7 @@ export class ObjectStorageConfig extends Context.Service<
     readonly secretAccessKey: Redacted.Redacted
     readonly pathStyle: boolean
     readonly prefix: string | undefined
+    readonly operationRetries: number
   }
 >()("@effect-cicd/runtime/ObjectStorageConfig") {
   static readonly layer = Layer.effect(
@@ -83,6 +92,7 @@ export class ObjectStorageConfig extends Context.Service<
         Config.orElse(() => Config.succeed(false)),
       )
       const prefix = yield* Config.option(Config.string("S3_PREFIX"))
+      const operationRetries = yield* Config.int("S3_OPERATION_RETRIES").pipe(Config.orElse(() => Config.succeed(3)))
 
       return {
         endpoint: optionValue(endpoint),
@@ -92,7 +102,43 @@ export class ObjectStorageConfig extends Context.Service<
         secretAccessKey,
         pathStyle,
         prefix: normalizePrefix(optionValue(prefix)),
+        operationRetries,
       }
+    }),
+  )
+}
+
+export class ArtifactLifecycleConfig extends Context.Service<
+  ArtifactLifecycleConfig,
+  {
+    readonly retentionDays: number
+    readonly maxSizeMb: number
+    readonly gcIntervalMinutes: number
+  }
+>()("@effect-cicd/runtime/ArtifactLifecycleConfig") {
+  static readonly layer = Layer.effect(
+    ArtifactLifecycleConfig,
+    Effect.gen(function* () {
+      const retentionDays = yield* Config.int("ARTIFACT_RETENTION_DAYS").pipe(Config.orElse(() => Config.succeed(90)))
+      const maxSizeMb = yield* Config.int("ARTIFACT_MAX_SIZE_MB").pipe(Config.orElse(() => Config.succeed(1_024)))
+      const gcIntervalMinutes = yield* Config.int("ARTIFACT_GC_INTERVAL_MINUTES").pipe(Config.orElse(() => Config.succeed(60)))
+
+      return { retentionDays, maxSizeMb, gcIntervalMinutes }
+    }),
+  )
+}
+
+export class LoggingConfig extends Context.Service<
+  LoggingConfig,
+  {
+    readonly level: "debug" | "info" | "warn" | "error"
+  }
+>()("@effect-cicd/runtime/LoggingConfig") {
+  static readonly layer = Layer.effect(
+    LoggingConfig,
+    Effect.gen(function* () {
+      const level = yield* Config.string("LOG_LEVEL").pipe(Config.orElse(() => Config.succeed("info")))
+      return { level: normalizeLogLevel(level) }
     }),
   )
 }
@@ -242,4 +288,16 @@ const normalizePrefix = (prefix: string | undefined) => {
 
   const trimmed = prefix.trim().replace(/^\/+|\/+$/g, "")
   return trimmed.length === 0 ? undefined : trimmed
+}
+
+const normalizeLogLevel = (level: string): "debug" | "info" | "warn" | "error" => {
+  switch (level.trim().toLowerCase()) {
+    case "debug":
+    case "info":
+    case "warn":
+    case "error":
+      return level.trim().toLowerCase() as "debug" | "info" | "warn" | "error"
+    default:
+      return "info"
+  }
 }

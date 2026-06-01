@@ -4,6 +4,7 @@ import { PlanId, UnitId, WorkflowId } from "./ids.ts"
 import { SecretRef } from "./secrets.ts"
 import {
   ArtifactDeclaration,
+  JitterMode,
   NamedDeclaration,
   OutputDeclaration,
   ReportDeclaration,
@@ -37,6 +38,10 @@ export type PayloadDescriptor = typeof PayloadDescriptor.Type
 
 export class PlanRetryPolicy extends Schema.TaggedClass<PlanRetryPolicy>()("PlanRetryPolicy", {
   maxAttempts: PositiveInt,
+  exponent: PositiveNumber,
+  baseDelayMillis: PositiveInt,
+  maxDelayMillis: PositiveInt,
+  jitter: JitterMode,
 }) {}
 
 export class PlanTimeoutPolicy extends Schema.TaggedClass<PlanTimeoutPolicy>()(

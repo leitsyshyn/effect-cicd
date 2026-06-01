@@ -1,4 +1,4 @@
-import { Clock, Effect, Layer, Option } from "effect"
+import { Clock, Duration, Effect, Layer, Option, Random, Schedule } from "effect"
 import * as Context from "effect/Context"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
@@ -51,6 +51,8 @@ import {
   WorkflowRunState,
 } from "../domain/runtime-state.ts"
 import { StorageTransactor } from "../runtime/storage.ts"
+import { logInfo } from "../runtime/logger.ts"
+import { Metrics } from "../runtime/metrics.ts"
 import { SecretStore } from "../secrets/store.ts"
 import { DispatchInput, DispatchRequest, DispatchWorkspace, Executor, ExecutorFailureSummary, ExecutorResult } from "./executor.ts"
 import { RunUpdate, RunUpdates } from "./run-updates.ts"
@@ -98,6 +100,14 @@ export class Orchestrator extends Context.Service<
       const secretStore = yield* SecretStore
       const storageTransactor = yield* StorageTransactor
       const runUpdates = yield* Effect.serviceOption(RunUpdates)
+      const metrics = yield* Effect.serviceOption(Metrics)
+
+      const metric = {
+        incrementCounter: (name: string, labels?: Readonly<Record<string, string>>, value?: number) =>
+          Option.match(metrics, { onNone: () => undefined, onSome: (service) => service.incrementCounter(name, labels, value) }),
+        setGauge: (name: string, labels: Readonly<Record<string, string>> | undefined, value: number) =>
+          Option.match(metrics, { onNone: () => undefined, onSome: (service) => service.setGauge(name, labels, value) }),
+      }
 
       const eventSequences = new Map<RunId, number>()
 
@@ -167,6 +177,43 @@ export class Orchestrator extends Context.Service<
           ),
         )
 
+      const activateScheduledRetry: (
+        runId: RunId,
+        unitId: UnitId,
+        scheduledAt: Date,
+      ) => Effect.Effect<void, StoreUnavailable, never> = Effect.fn("Orchestrator.activateScheduledRetry")(function* (
+        runId: RunId,
+        unitId: UnitId,
+        scheduledAt: Date,
+      ) {
+        const currentRun = yield* stateStore.getRun(runId).pipe(Effect.catchTag("RunNotFound", () => Effect.succeed(undefined)))
+        if (currentRun === undefined || isTerminalRun(currentRun) || currentRun.status === "canceling") {
+          return
+        }
+
+        const currentUnit = currentRun.units.find((candidate) => candidate.unitId === unitId)
+        if (currentUnit === undefined || currentUnit.nextRetryAt?.getTime() !== scheduledAt.getTime()) {
+          return
+        }
+
+        const updatedAt = yield* nowDate
+        const nextRun = replaceUnit(
+          currentRun,
+          new ExecutionUnitState({
+            ...currentUnit,
+            status: "pending",
+            finishedAt: undefined,
+            failure: undefined,
+            nextRetryAt: undefined,
+          }),
+          updatedAt,
+        )
+        
+        yield* persistRun(nextRun)
+        yield* publishRunUpdate(nextRun, "RetryReady")
+        yield* advanceRun(runId).pipe(Effect.catchTag("RunNotFound", () => Effect.succeed(nextRun)), Effect.asVoid)
+      })
+
       const createRun = Effect.fn("Orchestrator.createRun")(function* (
         plan: ExecutionPlan,
         options?: RunStartOptions,
@@ -196,7 +243,7 @@ export class Orchestrator extends Context.Service<
         return run
       })
 
-      const advanceWithRun = Effect.fn("Orchestrator.advanceWithRun")(function* (initialRun: WorkflowRunState) {
+      const advanceWithRun: (initialRun: WorkflowRunState) => Effect.Effect<WorkflowRunState, StoreUnavailable, never> = Effect.fn("Orchestrator.advanceWithRun")(function* (initialRun: WorkflowRunState) {
         let run = initialRun
         const plan = run.execution.plan
 
@@ -221,7 +268,11 @@ export class Orchestrator extends Context.Service<
         return run
       })
 
-      const executeReadyUnit = Effect.fn("Orchestrator.executeReadyUnit")(function* (
+      const executeReadyUnit: (
+        plan: ExecutionPlan,
+        initialRun: WorkflowRunState,
+        unitId: UnitId,
+      ) => Effect.Effect<WorkflowRunState, StoreUnavailable, never> = Effect.fn("Orchestrator.executeReadyUnit")(function* (
         plan: ExecutionPlan,
         initialRun: WorkflowRunState,
         unitId: UnitId,
@@ -453,15 +504,18 @@ export class Orchestrator extends Context.Service<
             failedAttempt,
         )
 
-        const retryLimit = getRetryLimit(planUnit)
-        if (attemptNumber < retryLimit) {
+        const retryPolicy = getRetryPolicy(planUnit)
+        if (retryPolicy !== undefined && attemptNumber < retryPolicy.maxAttempts) {
+          const delayMillis = yield* computeRetryDelayMillis(retryPolicy, attemptNumber)
+          const scheduledAt = new Date(finishedAt.getTime() + delayMillis)
           run = replaceUnit(
             appendRunPayloads(run, logs, artifacts, reports, finishedAt),
             new ExecutionUnitState({
               ...attemptFailedUnit,
-              status: "pending",
-              finishedAt: undefined,
-              failure: undefined,
+              status: "failed",
+              finishedAt,
+              failure,
+              nextRetryAt: scheduledAt,
             }),
             finishedAt,
           )
@@ -479,11 +533,20 @@ export class Orchestrator extends Context.Service<
                     attemptId,
                     nextAttemptNumber: attemptNumber + 1,
                     reason: failure.message,
+                    delayMillis,
+                    scheduledAt,
                   }),
               )
             }),
           )
           yield* publishRunUpdate(run, "RetryScheduled")
+          yield* Effect.sleep(Duration.millis(delayMillis)).pipe(
+            Effect.andThen(activateScheduledRetry(run.runId, unitId, scheduledAt)),
+            Effect.tap(() => logInfo("scheduled retry fired", { module: "orchestrator", runId: run.runId, unitId })),
+            Effect.catch(() => Effect.succeed(undefined)),
+            Effect.forkDetach({ startImmediately: true }),
+            Effect.asVoid,
+          )
 
           return run
         }
@@ -499,6 +562,11 @@ export class Orchestrator extends Context.Service<
         run = replaceUnit(appendRunPayloads(run, logs, artifacts, reports, finishedAt), failedUnit, finishedAt)
         run = applySkippedUnits(run, skippedUnitIds, finishedAt)
         run = finalizeRun(run, "failed", finishedAt, failure)
+        yield* Effect.sync(() => {
+          metric.incrementCounter("units_total", { status: "failed" })
+          metric.incrementCounter("runs_total", { status: "failed" })
+          metric.setGauge("runs_active", undefined, 0)
+        })
 
         yield* storageTransactor.run(
           Effect.gen(function* () {
@@ -571,6 +639,10 @@ export class Orchestrator extends Context.Service<
             yield* appendEvent(nextRun.runId, (base) => new RunCanceled({ ...base, reason }))
           }),
         )
+        yield* Effect.sync(() => {
+          metric.incrementCounter("runs_total", { status: "canceled" })
+          metric.setGauge("runs_active", undefined, 0)
+        })
         yield* publishRunUpdate(nextRun, "RunCanceled")
 
         return nextRun
@@ -645,12 +717,13 @@ export class Orchestrator extends Context.Service<
 
       const startRun = Effect.fn("Orchestrator.startRun")(function* (plan: ExecutionPlan, options?: RunStartOptions) {
         const run = yield* createRun(plan, options)
+        yield* Effect.sync(() => metric.setGauge("runs_active", undefined, 1))
         return yield* activateRun(run).pipe(Effect.flatMap(advanceWithRun))
       })
 
       const inspectRun = Effect.fn("Orchestrator.inspectRun")((runId: RunId) => stateStore.getRun(runId))
 
-      const advanceRun = Effect.fn("Orchestrator.advanceRun")(function* (runId: RunId) {
+      const advanceRun: (runId: RunId) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable, never> = Effect.fn("Orchestrator.advanceRun")(function* (runId: RunId) {
         const currentRun = yield* stateStore.getRun(runId)
         const run = currentRun.status === "queued" ? yield* activateRun(currentRun) : currentRun
         if (isTerminalRun(run)) {
@@ -1430,11 +1503,48 @@ const getBlockedDescendantUnitIds = (plan: ExecutionPlan, failedUnitId: UnitId) 
 const getNextAttemptNumber = (unit: ExecutionUnitState) =>
   unit.attempts.reduce((maxAttemptNumber, attempt) => Math.max(maxAttemptNumber, attempt.attemptNumber), 0) + 1
 
-const getRetryLimit = (planUnit: PlanUnit) =>
-  planUnit.policies.reduce(
-    (maxAttempts, policy) => (policy instanceof PlanRetryPolicy ? Math.max(maxAttempts, policy.maxAttempts) : maxAttempts),
-    1,
+const getRetryPolicy = (planUnit: PlanUnit) =>
+  planUnit.policies.reduce<PlanRetryPolicy | undefined>(
+    (selected, policy) =>
+      policy instanceof PlanRetryPolicy && (selected === undefined || policy.maxAttempts > selected.maxAttempts) ? policy : selected,
+    undefined,
   )
+
+const createRetrySchedule = (policy: PlanRetryPolicy) => {
+  const base = Schedule.exponential(Duration.millis(policy.baseDelayMillis), policy.exponent)
+  const withJitter =
+    policy.jitter === "none"
+      ? base
+      : policy.jitter === "full"
+        ? Schedule.jittered(base)
+      : Schedule.modifyDelay(base, (_, delay) =>
+          Random.next.pipe(
+            Effect.map((random) => {
+              const millis = Duration.toMillis(delay)
+              const factor = 0.5 + random * 0.5
+              return Duration.millis(millis * factor)
+            }),
+          ),
+        )
+
+  return Schedule.modifyDelay(withJitter, (_, delay) =>
+    Effect.succeed(Duration.millis(Math.min(Duration.toMillis(delay), policy.maxDelayMillis))),
+  )
+}
+
+const computeRetryDelayMillis = (policy: PlanRetryPolicy, attemptNumber: number) => {
+  void createRetrySchedule(policy)
+  const baseDelay = Math.min(policy.baseDelayMillis * Math.pow(policy.exponent, attemptNumber - 1), policy.maxDelayMillis)
+
+  return policy.jitter === "none"
+    ? Effect.succeed(baseDelay)
+    : Random.next.pipe(
+        Effect.map((random) => {
+          const factor = policy.jitter === "full" ? random : 0.5 + random * 0.5
+          return Math.round(Math.min(baseDelay * factor, policy.maxDelayMillis))
+        }),
+      )
+}
 
 const compareUnitIds = (left: UnitId, right: UnitId) => (left < right ? -1 : left > right ? 1 : 0)
 

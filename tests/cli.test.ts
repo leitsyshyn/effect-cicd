@@ -108,6 +108,10 @@ describe("CLI", () => {
             readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
             readLogs: () => Effect.die("unused"),
             readLogPayload: () => Effect.die("unused"),
+            deleteArtifact: () => Effect.die("unused"),
+            deleteLog: () => Effect.die("unused"),
+            gcRunArtifacts: () => Effect.die("unused"),
+            version: () => Effect.succeed("0.0.0"),
           }),
         ),
       )
@@ -161,6 +165,10 @@ describe("CLI", () => {
             readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
             readLogs: () => Effect.die("unused"),
             readLogPayload: () => Effect.die("unused"),
+            deleteArtifact: () => Effect.die("unused"),
+            deleteLog: () => Effect.die("unused"),
+            gcRunArtifacts: () => Effect.die("unused"),
+            version: () => Effect.succeed("0.0.0"),
           }),
         ),
       )
@@ -210,6 +218,10 @@ describe("CLI", () => {
             readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
             readLogs: () => Effect.succeed([]),
             readLogPayload: () => Effect.die("unused"),
+            deleteArtifact: () => Effect.die("unused"),
+            deleteLog: () => Effect.die("unused"),
+            gcRunArtifacts: () => Effect.die("unused"),
+            version: () => Effect.succeed("0.0.0"),
           }),
         ),
       )
@@ -251,6 +263,10 @@ describe("CLI", () => {
             readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
             readLogs: () => Effect.succeed([]),
             readLogPayload: () => Effect.die("unused"),
+            deleteArtifact: () => Effect.die("unused"),
+            deleteLog: () => Effect.die("unused"),
+            gcRunArtifacts: () => Effect.die("unused"),
+            version: () => Effect.succeed("0.0.0"),
           }),
         ),
       )
@@ -289,6 +305,10 @@ describe("CLI", () => {
             readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
             readLogs: () => Effect.die("unused"),
             readLogPayload: () => Effect.die("unused"),
+            deleteArtifact: () => Effect.die("unused"),
+            deleteLog: () => Effect.die("unused"),
+            gcRunArtifacts: () => Effect.die("unused"),
+            version: () => Effect.succeed("0.0.0"),
           }),
         ),
       )
@@ -321,6 +341,10 @@ describe("CLI", () => {
             readArtifactPayload: () => Effect.succeed('{"artifact":"ok"}\n'),
             readLogs: () => Effect.die("unused"),
             readLogPayload: () => Effect.die("unused"),
+            deleteArtifact: () => Effect.die("unused"),
+            deleteLog: () => Effect.die("unused"),
+            gcRunArtifacts: () => Effect.die("unused"),
+            version: () => Effect.succeed("0.0.0"),
           }),
         ),
       )
@@ -358,12 +382,98 @@ describe("CLI", () => {
             readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
             readLogs: () => Effect.die("unused"),
             readLogPayload: () => Effect.die("unused"),
+            deleteArtifact: () => Effect.die("unused"),
+            deleteLog: () => Effect.die("unused"),
+            gcRunArtifacts: () => Effect.die("unused"),
+            version: () => Effect.succeed("0.0.0"),
           }),
         ),
       )
 
       expect(canceledRunId).toBe("run:demo")
       expect(output).toContain("status: canceled")
+    }),
+  )
+
+  it.effect("artifacts delete delegates to Engine.deleteArtifact", () =>
+    Effect.gen(function* () {
+      let deletedArtifactRef: string | undefined
+
+      const output = yield* runCli(
+        ["artifacts", "delete", "artifact:demo"],
+        Layer.mergeAll(
+          WorkflowModuleLoader.layer,
+          DslMaterializer.layer,
+          Layer.succeed(Engine, {
+            validate: () => Effect.die("unused"),
+            plan: () => Effect.die("unused"),
+            startRun: () => Effect.die("unused"),
+            submitRun: () => Effect.die("unused"),
+            cancelRun: () => Effect.die("unused"),
+            retryRun: () => Effect.die("unused"),
+            listRuns: () => Effect.die("unused"),
+            inspectRun: () => Effect.die("unused"),
+            streamRuns: () => Stream.empty,
+            streamRun: () => Stream.empty,
+            readRunEvents: () => Effect.die("unused"),
+            readArtifacts: () => Effect.die("unused"),
+            readArtifactPayload: () => Effect.die("unused"),
+            deleteArtifact: (artifactRef) =>
+              Effect.sync(() => {
+                deletedArtifactRef = artifactRef
+              }),
+            readLogs: () => Effect.die("unused"),
+            readLogPayload: () => Effect.die("unused"),
+            deleteLog: () => Effect.die("unused"),
+            gcRunArtifacts: () => Effect.die("unused"),
+            version: () => Effect.succeed("0.0.0"),
+          }),
+        ),
+      )
+
+      expect(deletedArtifactRef).toBe("artifact:demo")
+      expect(output).toContain("status: deleted")
+    }),
+  )
+
+  it.effect("logs delete delegates to Engine.deleteLog", () =>
+    Effect.gen(function* () {
+      let deletedLogRef: string | undefined
+
+      const output = yield* runCli(
+        ["logs", "delete", "log:demo"],
+        Layer.mergeAll(
+          WorkflowModuleLoader.layer,
+          DslMaterializer.layer,
+          Layer.succeed(Engine, {
+            validate: () => Effect.die("unused"),
+            plan: () => Effect.die("unused"),
+            startRun: () => Effect.die("unused"),
+            submitRun: () => Effect.die("unused"),
+            cancelRun: () => Effect.die("unused"),
+            retryRun: () => Effect.die("unused"),
+            listRuns: () => Effect.die("unused"),
+            inspectRun: () => Effect.die("unused"),
+            streamRuns: () => Stream.empty,
+            streamRun: () => Stream.empty,
+            readRunEvents: () => Effect.die("unused"),
+            readArtifacts: () => Effect.die("unused"),
+            readArtifactPayload: () => Effect.die("unused"),
+            deleteArtifact: () => Effect.die("unused"),
+            readLogs: () => Effect.die("unused"),
+            readLogPayload: () => Effect.die("unused"),
+            deleteLog: (logRef) =>
+              Effect.sync(() => {
+                deletedLogRef = logRef
+              }),
+            gcRunArtifacts: () => Effect.die("unused"),
+            version: () => Effect.succeed("0.0.0"),
+          }),
+        ),
+      )
+
+      expect(deletedLogRef).toBe("log:demo")
+      expect(output).toContain("status: deleted")
     }),
   )
 

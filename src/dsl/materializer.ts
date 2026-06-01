@@ -298,7 +298,13 @@ const toPolicyDeclarations = (policies: ReadonlyArray<AuthoredPolicy> | undefine
   (policies ?? []).map((policy) => {
     switch (policy._tag) {
       case "RetryPolicy":
-        return new RetryPolicyDeclaration({ maxAttempts: policy.maxAttempts })
+        return new RetryPolicyDeclaration({
+          maxAttempts: policy.maxAttempts,
+          exponent: policy.exponent ?? 2,
+          baseDelayMillis: policy.baseDelayMillis ?? 1000,
+          maxDelayMillis: policy.maxDelayMillis ?? 60_000,
+          jitter: policy.jitter ?? "none",
+        })
       case "TimeoutPolicy":
         return new TimeoutPolicyDeclaration({ seconds: policy.seconds })
       case "CancellationPolicy":

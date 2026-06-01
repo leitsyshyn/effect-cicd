@@ -6,6 +6,13 @@ import { GitHubBinding, GitHubRunLink, GitHubTriggerDelivery } from "../domain/g
 import { deriveGitHubProjectId } from "../domain/project.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
 
+const retryPolicyDefaults = {
+  exponent: 2,
+  baseDelayMillis: 1_000,
+  maxDelayMillis: 60_000,
+  jitter: "none",
+} as const
+
 const WorkflowRunStateJson = Schema.toCodecJson(WorkflowRunState)
 const WorkflowEventJson = Schema.toCodecJson(WorkflowEvent)
 const ArtifactMetadataJson = Schema.toCodecJson(ArtifactMetadata)
@@ -23,9 +30,10 @@ export const encodeGitHubRunLink = Schema.encodeSync(GitHubRunLinkJson)
 export const encodeGitHubTriggerDelivery = Schema.encodeSync(GitHubTriggerDeliveryJson)
 
 export const decodeWorkflowRunState = (value: unknown) =>
-  Schema.decodeUnknownSync(WorkflowRunStateJson)(upgradeLegacyWorkflowRunStateJson(normalizeJson(value)))
+  Schema.decodeUnknownSync(WorkflowRunStateJson)(upgradeRetryPoliciesDeep(upgradeLegacyWorkflowRunStateJson(normalizeJson(value))))
 
-export const decodeWorkflowEvent = (value: unknown) => Schema.decodeUnknownSync(WorkflowEventJson)(normalizeJson(value))
+export const decodeWorkflowEvent = (value: unknown) =>
+  Schema.decodeUnknownSync(WorkflowEventJson)(upgradeRetryPoliciesDeep(normalizeJson(value)))
 
 export const decodeArtifactMetadata = (value: unknown) =>
   Schema.decodeUnknownSync(ArtifactMetadataJson)(normalizeJson(value))
@@ -110,6 +118,12 @@ const upgradeLegacyWorkflowRunStateJson = (value: unknown): unknown => {
     ...record,
     projectId,
     status: record.status === "created" || record.status === undefined ? "queued" : record.status,
+    units: Array.isArray((record as { readonly units?: ReadonlyArray<Record<string, unknown>> }).units)
+      ? (record as { readonly units: ReadonlyArray<Record<string, unknown>> }).units.map((unit) => ({
+          ...unit,
+          nextRetryAt: unit.nextRetryAt,
+        }))
+      : undefined,
     execution: {
       plan: {
         planId: record.planId,
@@ -125,6 +139,45 @@ const upgradeLegacyWorkflowRunStateJson = (value: unknown): unknown => {
       submittedAt: record.createdAt ?? new Date(0).toISOString(),
     },
   }
+}
+
+const upgradeLegacyRetryPolicy = (value: unknown): unknown => {
+  if (typeof value !== "object" || value === null || !("_tag" in value)) {
+    return value
+  }
+
+  const record = value as Record<string, unknown>
+  if (record._tag !== "RetryPolicyDeclaration" && record._tag !== "PlanRetryPolicy") {
+    return value
+  }
+
+  return {
+    ...record,
+    exponent: typeof record.exponent === "number" ? record.exponent : retryPolicyDefaults.exponent,
+    baseDelayMillis: typeof record.baseDelayMillis === "number" ? record.baseDelayMillis : retryPolicyDefaults.baseDelayMillis,
+    maxDelayMillis: typeof record.maxDelayMillis === "number" ? record.maxDelayMillis : retryPolicyDefaults.maxDelayMillis,
+    jitter: typeof record.jitter === "string" ? record.jitter : retryPolicyDefaults.jitter,
+  }
+}
+
+const upgradeRetryPoliciesDeep = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(upgradeRetryPoliciesDeep)
+  }
+
+  if (typeof value !== "object" || value === null) {
+    return value
+  }
+
+  const record = value as Record<string, unknown>
+  const upgraded = upgradeLegacyRetryPolicy(record) as Record<string, unknown>
+  const next = { ...upgraded }
+
+  for (const [key, nested] of Object.entries(next)) {
+    next[key] = upgradeRetryPoliciesDeep(nested)
+  }
+
+  return next
 }
 
 const upgradeLegacyGitHubBindingJson = (value: unknown): unknown => {

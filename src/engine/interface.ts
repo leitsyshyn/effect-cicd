@@ -5,6 +5,7 @@ import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { DomainError } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
+import { appVersion } from "../runtime/version.ts"
 import { WorkflowEvent } from "../domain/events.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
@@ -12,6 +13,7 @@ import { Orchestrator, type RunStartOptions } from "./orchestrator.ts"
 import { RunController } from "./run-controller.ts"
 import { RunUpdate, RunUpdates } from "./run-updates.ts"
 import { ArtifactStore } from "./stores/artifact-store.ts"
+import { ArtifactGc } from "./stores/artifact-gc.ts"
 import { Planner } from "./planner.ts"
 import { EventLog } from "./stores/event-log.ts"
 import { StateStore } from "./stores/state-store.ts"
@@ -32,8 +34,12 @@ export class Engine extends Context.Service<
     readonly readRunEvents: (runId: RunId) => Effect.Effect<ReadonlyArray<WorkflowEvent>, DomainError>
     readonly readArtifacts: (runId: RunId) => Effect.Effect<ReadonlyArray<ArtifactMetadata>, DomainError>
     readonly readArtifactPayload: (artifactRef: ArtifactRef) => Effect.Effect<string, DomainError>
+    readonly deleteArtifact: (artifactRef: ArtifactRef) => Effect.Effect<void, DomainError>
     readonly readLogs: (runId: RunId) => Effect.Effect<ReadonlyArray<LogMetadata>, DomainError>
     readonly readLogPayload: (logRef: LogRef) => Effect.Effect<string, DomainError>
+    readonly deleteLog: (logRef: LogRef) => Effect.Effect<void, DomainError>
+    readonly gcRunArtifacts: (runId: RunId) => Effect.Effect<{ readonly deletedCount: number; readonly bytesFreed: number }, DomainError>
+    readonly version: () => Effect.Effect<string, DomainError>
   }
 >()("@effect-cicd/engine/Engine") {
   static readonly layer = Layer.effect(
@@ -46,6 +52,7 @@ export class Engine extends Context.Service<
       const stateStore = yield* StateStore
       const eventLog = yield* EventLog
       const artifactStore = yield* ArtifactStore
+      const artifactGc = yield* Effect.serviceOption(ArtifactGc)
 
       const validate = Effect.fn("Engine.validate")((definition: NormalizedWorkflowDefinition) => planner.validate(definition))
 
@@ -82,11 +89,24 @@ export class Engine extends Context.Service<
         artifactStore.readArtifactPayload(artifactRef),
       )
 
+      const deleteArtifact = Effect.fn("Engine.deleteArtifact")((artifactRef: ArtifactRef) => artifactStore.deleteArtifact(artifactRef))
+
       const readLogs = Effect.fn("Engine.readLogs")((runId: RunId) =>
         inspectRun(runId).pipe(Effect.map((run) => run.logs)),
       )
 
       const readLogPayload = Effect.fn("Engine.readLogPayload")((logRef: LogRef) => artifactStore.readLogPayload(logRef))
+
+      const deleteLog = Effect.fn("Engine.deleteLog")((logRef: LogRef) => artifactStore.deleteLog(logRef))
+
+      const gcRunArtifacts = Effect.fn("Engine.gcRunArtifacts")((runId: RunId) =>
+        Option.match(artifactGc, {
+          onNone: () => Effect.succeed({ deletedCount: 0, bytesFreed: 0 }),
+          onSome: (service) => service.runForRun(runId),
+        }),
+      )
+
+      const version = Effect.fn("Engine.version")(() => Effect.succeed(appVersion))
 
       return {
         validate,
@@ -102,8 +122,12 @@ export class Engine extends Context.Service<
         readRunEvents,
         readArtifacts,
         readArtifactPayload,
+        deleteArtifact,
         readLogs,
         readLogPayload,
+        deleteLog,
+        gcRunArtifacts,
+        version,
       }
     }),
   )

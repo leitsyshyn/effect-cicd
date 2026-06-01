@@ -99,6 +99,7 @@ export class ExecutionUnitState extends Schema.Class<ExecutionUnitState>("Execut
   status: ExecutionUnitStatus,
   dependencies: Schema.Array(UnitId),
   latestAttemptId: Schema.optional(AttemptId),
+  nextRetryAt: Schema.optional(Schema.Date),
   attempts: Schema.Array(ExecutionAttemptState),
   startedAt: Schema.optional(Schema.Date),
   finishedAt: Schema.optional(Schema.Date),

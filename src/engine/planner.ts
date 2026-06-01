@@ -335,7 +335,13 @@ const convertPayloadDeclaration = (payloadDeclaration: PayloadDeclaration) => {
 const convertPolicyDeclaration = (policyDeclaration: PolicyDeclaration) => {
   switch (policyDeclaration._tag) {
     case "RetryPolicyDeclaration":
-      return new PlanRetryPolicy({ maxAttempts: policyDeclaration.maxAttempts })
+      return new PlanRetryPolicy({
+        maxAttempts: policyDeclaration.maxAttempts,
+        exponent: policyDeclaration.exponent,
+        baseDelayMillis: policyDeclaration.baseDelayMillis,
+        maxDelayMillis: policyDeclaration.maxDelayMillis,
+        jitter: policyDeclaration.jitter,
+      })
     case "TimeoutPolicyDeclaration":
       return new PlanTimeoutPolicy({ seconds: policyDeclaration.seconds })
     case "CancellationPolicyDeclaration":

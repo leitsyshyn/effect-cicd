@@ -66,6 +66,10 @@ export interface AuthoredContainerCommand {
 export interface AuthoredRetryPolicy {
   readonly _tag: "RetryPolicy"
   readonly maxAttempts: number
+  readonly exponent?: number
+  readonly baseDelayMillis?: number
+  readonly maxDelayMillis?: number
+  readonly jitter?: "none" | "full" | "half"
 }
 
 export interface AuthoredTimeoutPolicy {

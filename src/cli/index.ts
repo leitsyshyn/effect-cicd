@@ -17,9 +17,10 @@ import { makeDurableStorageLayer, makeInMemoryEngineLayer } from "../runtime/lay
 import { FetchHttpClient } from "effect/unstable/http"
 
 import { EngineServiceConfig } from "../runtime/config.ts"
+import { appVersion } from "../runtime/version.ts"
 import { engineServiceClientLayer, gitHubIntegrationClientLayer, SecretsClient } from "../service/client.ts"
 
-export const cliVersion = "0.0.0"
+export const cliVersion = appVersion
 
 class CliInputInvalid extends Schema.TaggedErrorClass<CliInputInvalid>()("CliInputInvalid", {
   message: Schema.String,
@@ -264,6 +265,42 @@ const runsArtifactCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Read persisted artifact payload content"))
 
+const artifactsDeleteCommand = Command.make(
+  "delete",
+  {
+    artifactRef: Argument.string("artifactRef"),
+  },
+  ({ artifactRef }) =>
+    Effect.gen(function* () {
+      const engine = yield* Engine
+      yield* engine.deleteArtifact(ArtifactRef.make(artifactRef))
+      yield* printLines([`artifact: ${artifactRef}`, "status: deleted"])
+    }),
+).pipe(Command.withDescription("Delete a persisted artifact payload"))
+
+const artifactsCommand = Command.make("artifacts").pipe(
+  Command.withDescription("Manage persisted artifacts"),
+  Command.withSubcommands([artifactsDeleteCommand]),
+)
+
+const logsDeleteCommand = Command.make(
+  "delete",
+  {
+    logRef: Argument.string("logRef"),
+  },
+  ({ logRef }) =>
+    Effect.gen(function* () {
+      const engine = yield* Engine
+      yield* engine.deleteLog(LogRef.make(logRef))
+      yield* printLines([`log: ${logRef}`, "status: deleted"])
+    }),
+).pipe(Command.withDescription("Delete a persisted log payload"))
+
+const logsCommand = Command.make("logs").pipe(
+  Command.withDescription("Manage persisted logs"),
+  Command.withSubcommands([logsDeleteCommand]),
+)
+
 const runsCommand = Command.make("runs").pipe(
   Command.withDescription("Inspect persisted workflow runs"),
   Command.withSubcommands([
@@ -390,7 +427,7 @@ const secretsCommand = Command.make("secrets").pipe(
 
 export const cli = Command.make("effect-cicd").pipe(
   Command.withDescription("Minimal Engine-backed CLI MVP"),
-  Command.withSubcommands([validateCommand, planCommand, runCommand, runsCommand, bindingsCommand, projectsCommand, secretsCommand]),
+  Command.withSubcommands([validateCommand, planCommand, runCommand, runsCommand, artifactsCommand, logsCommand, bindingsCommand, projectsCommand, secretsCommand]),
 )
 
 export const cliProgram = Command.run(cli, { version: cliVersion })
@@ -567,14 +604,14 @@ const renderArtifacts = (runId: string, artifacts: ReadonlyArray<ArtifactMetadat
   "artifacts:",
   ...renderPayloadRefs(
     artifacts,
-    (artifact) => `${artifact.name} ${artifact.artifactRef} status=${artifact.status} summary=${artifact.summary ?? "-"}`,
+    (artifact) => `${artifact.name} ${artifact.artifactRef} status=${artifact.status} expiresAt=${formatDate(artifact.expiresAt)} summary=${artifact.summary ?? "-"}`,
   ),
 ]
 
 const renderLogs = (runId: string, logs: ReadonlyArray<LogMetadata>) => [
   `run: ${runId}`,
   "logs:",
-  ...renderPayloadRefs(logs, (log) => `${log.name} ${log.logRef} status=${log.status}`),
+  ...renderPayloadRefs(logs, (log) => `${log.name} ${log.logRef} status=${log.status} expiresAt=${formatDate(log.expiresAt)}`),
 ]
 
 const renderPayloadRefs = <A>(items: ReadonlyArray<A>, render: (item: A) => string) =>
