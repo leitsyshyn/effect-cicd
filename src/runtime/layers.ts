@@ -9,6 +9,7 @@ import { RunUpdates } from "../engine/run-updates.ts"
 import { ArtifactStore } from "../engine/stores/artifact-store.ts"
 import { EventLog } from "../engine/stores/event-log.ts"
 import { StateStore } from "../engine/stores/state-store.ts"
+import { SecretEncryptionConfig, SecretStore } from "../secrets/store.ts"
 import { ObjectStorageClient, StorageTransactor, sqlClientLayer, storageMigrationLayer } from "./storage.ts"
 
 export const makeDurableStorageLayer = () => {
@@ -20,6 +21,10 @@ export const makeDurableStorageLayer = () => {
     StorageTransactor.postgresLayer.pipe(Layer.provideMerge(sqlLayer)),
     StateStore.postgresLayer.pipe(Layer.provideMerge(sqlLayer)),
     EventLog.postgresLayer.pipe(Layer.provideMerge(sqlLayer)),
+    SecretStore.postgresLayer.pipe(
+      Layer.provideMerge(sqlLayer),
+      Layer.provideMerge(SecretEncryptionConfig.layer),
+    ),
     ArtifactStore.s3Layer.pipe(
       Layer.provideMerge(sqlLayer),
       Layer.provideMerge(objectStorageLayer),
@@ -58,12 +63,14 @@ export const makeInMemoryEngineLayer = (options: TestExecutorLayerOptions = {}) 
   const stateLayer = StateStore.memoryLayer
   const eventLayer = EventLog.memoryLayer
   const artifactLayer = ArtifactStore.memoryLayer
+  const secretLayer = SecretStore.memoryLayer
   const executorLayer = Executor.testLayer(options)
   const orchestratorLayer = Orchestrator.layer.pipe(
     Layer.provideMerge(transactorLayer),
     Layer.provideMerge(stateLayer),
     Layer.provideMerge(eventLayer),
     Layer.provideMerge(artifactLayer),
+    Layer.provideMerge(secretLayer),
     Layer.provideMerge(executorLayer),
     Layer.provideMerge(updatesLayer),
   )
@@ -74,6 +81,7 @@ export const makeInMemoryEngineLayer = (options: TestExecutorLayerOptions = {}) 
     stateLayer,
     eventLayer,
     artifactLayer,
+    secretLayer,
     executorLayer,
     updatesLayer,
     orchestratorLayer,
@@ -86,6 +94,7 @@ export const makeInMemoryEngineLayer = (options: TestExecutorLayerOptions = {}) 
       Layer.provideMerge(stateLayer),
       Layer.provideMerge(eventLayer),
       Layer.provideMerge(artifactLayer),
+      Layer.provideMerge(secretLayer),
       Layer.provideMerge(updatesLayer),
     ),
   )
@@ -97,12 +106,14 @@ export const makeInMemoryServiceEngineLayer = (options: TestExecutorLayerOptions
   const stateLayer = StateStore.memoryLayer
   const eventLayer = EventLog.memoryLayer
   const artifactLayer = ArtifactStore.memoryLayer
+  const secretLayer = SecretStore.memoryLayer
   const executorLayer = Executor.testLayer(options)
   const orchestratorLayer = Orchestrator.layer.pipe(
     Layer.provideMerge(transactorLayer),
     Layer.provideMerge(stateLayer),
     Layer.provideMerge(eventLayer),
     Layer.provideMerge(artifactLayer),
+    Layer.provideMerge(secretLayer),
     Layer.provideMerge(executorLayer),
     Layer.provideMerge(updatesLayer),
   )
@@ -113,6 +124,7 @@ export const makeInMemoryServiceEngineLayer = (options: TestExecutorLayerOptions
     stateLayer,
     eventLayer,
     artifactLayer,
+    secretLayer,
     executorLayer,
     updatesLayer,
     orchestratorLayer,
@@ -125,6 +137,7 @@ export const makeInMemoryServiceEngineLayer = (options: TestExecutorLayerOptions
       Layer.provideMerge(stateLayer),
       Layer.provideMerge(eventLayer),
       Layer.provideMerge(artifactLayer),
+      Layer.provideMerge(secretLayer),
       Layer.provideMerge(updatesLayer),
     ),
   )

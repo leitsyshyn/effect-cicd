@@ -8,6 +8,7 @@ import { WorkflowEvent } from "../domain/events.ts"
 import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubTriggerResponse } from "../domain/github.ts"
 import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
 import { WorkflowRunState, type WorkflowRunStatus } from "../domain/runtime-state.ts"
+import { SecretSummary } from "../domain/secrets.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
 import { Engine } from "../engine/interface.ts"
 import { RunController } from "../engine/run-controller.ts"
@@ -23,7 +24,8 @@ import { GitHubSourceSnapshots } from "../github/source-snapshots.ts"
 import { EngineServiceConfig, GitHubAppConfig, GitHubTriggerConfig, StorageRuntimeConfig } from "../runtime/config.ts"
 import { makeServiceEngineLayer } from "../runtime/layers.ts"
 import { sqlClientLayer } from "../runtime/storage.ts"
-import { RunActionRequest, RunSubmissionRequest, ServiceErrorResponse } from "./contracts.ts"
+import { SecretStore } from "../secrets/store.ts"
+import { RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse } from "./contracts.ts"
 import { decodeJson, encodeJson } from "./schema-json.ts"
 
 type EngineService = typeof Engine.Service
@@ -90,6 +92,7 @@ export const startServiceServer = Effect.gen(function* () {
   const runController = yield* RunController
   const gitHubChecks = yield* Effect.serviceOption(GitHubCheckRuns)
   const gitHubIntegration = yield* GitHubIntegration
+  const secretStore = yield* SecretStore
 
   if (runtimeConfig.runRecoveryOnStartup) {
     yield* runController.recoverOnStartup()
@@ -115,6 +118,14 @@ export const startServiceServer = Effect.gen(function* () {
       "/api/runs": {
         GET: () => runJsonEffect(engine.listRuns(), { schema: Schema.Array(WorkflowRunState) }),
         POST: (request) => runJsonEffect(submitRun(engine, request), { schema: WorkflowRunState }),
+      },
+      "/api/secrets": {
+        GET: (request) => runJsonEffect(listSecrets(secretStore, request), { schema: Schema.Array(SecretSummary) }),
+        POST: (request) => runJsonEffect(setSecret(secretStore, request), { noContent: true, status: 201 }),
+      },
+      "/api/secrets/:projectId/:key": {
+        DELETE: (request) =>
+          runJsonEffect(secretStore.deleteSecret(request.params.projectId, request.params.key), { noContent: true }),
       },
       "/api/bindings": {
         GET: () => runJsonEffect(gitHubIntegration.listBindings(), { schema: Schema.Array(GitHubBindingSummary) }),
@@ -197,6 +208,22 @@ const submitRun = (engine: EngineService, request: Request) =>
         ? undefined
         : { workspacePath: submission.options.workspacePath },
     )
+  })
+
+const setSecret = (secretStore: typeof SecretStore.Service, request: Request) =>
+  Effect.gen(function* () {
+    const payload = yield* parseRequestBody(request, SecretSetRequest)
+    yield* secretStore.setSecret(payload.projectId, payload.key, payload.value)
+  })
+
+const listSecrets = (secretStore: typeof SecretStore.Service, request: Request) =>
+  Effect.gen(function* () {
+    const projectId = new URL(request.url).searchParams.get("projectId")
+    if (projectId === null || projectId.trim().length === 0) {
+      return yield* new RequestBodyInvalid({ message: "projectId query parameter is required" })
+    }
+
+    return yield* secretStore.listSecrets(projectId)
   })
 
 const createGitHubBinding = (gitHubIntegration: typeof GitHubIntegration.Service, request: Request) =>
@@ -286,7 +313,7 @@ const runJsonEffect = async <A, I, RD, RE>(
     const value = await Effect.runPromise(effect as Effect.Effect<A, any, never>)
 
     if (options.noContent) {
-      return new Response(null, { status: 204 })
+      return new Response(null, { status: options.status ?? 204 })
     }
 
     return Response.json(encodeJson(options.schema!, value), { status: options.status ?? 200 })

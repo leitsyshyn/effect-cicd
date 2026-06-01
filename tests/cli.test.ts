@@ -20,7 +20,9 @@ import { DslMaterializer } from "../src/dsl/index.ts"
 import { WorkflowModuleLoader } from "../src/dsl/loader.ts"
 import { Engine } from "../src/engine/interface.ts"
 import { GitHubIntegration } from "../src/github/integration.ts"
+import { SecretSummary } from "../src/domain/secrets.ts"
 import type { AuthoredWorkflow } from "../src/dsl/authored-workflow.ts"
+import { SecretsClient } from "../src/service/client.ts"
 
 describe("CLI", () => {
   it.effect("validate succeeds and prints success text", () =>
@@ -294,6 +296,64 @@ describe("CLI", () => {
       expect(output).toContain("bindings:")
       expect(output).toContain("binding: binding:github:demo")
       expect(output).toContain("workflowModulePath: .effect/workflow.ts")
+    }),
+  )
+
+  it.effect("secrets list prints only secret metadata", () =>
+    Effect.gen(function* () {
+      const output = yield* runCli(
+        ["secrets", "list", "project:demo"],
+        Layer.succeed(SecretsClient, {
+          setSecret: () => Effect.die("unused"),
+          listSecrets: () =>
+            Effect.succeed([
+              new SecretSummary({
+                projectId: "project:demo",
+                key: "NPM_TOKEN",
+                createdAt: new Date(0),
+                updatedAt: new Date(0),
+              }),
+            ]),
+          deleteSecret: () => Effect.die("unused"),
+        }),
+      )
+
+      expect(output).toContain("project: project:demo")
+      expect(output).toContain("secrets:")
+      expect(output).toContain("NPM_TOKEN updatedAt=1970-01-01T00:00:00.000Z")
+      expect(output).not.toContain("top-secret-token")
+    }),
+  )
+
+  it.effect("secrets set sends values through SecretsClient without printing them", () =>
+    Effect.gen(function* () {
+      const original = process.env.TEST_SECRET_SOURCE
+      process.env.TEST_SECRET_SOURCE = "top-secret-token"
+      let captured: { readonly projectId: string; readonly key: string; readonly value: string } | undefined
+
+      const output = yield* runCli(
+        ["secrets", "set", "project:demo", "NPM_TOKEN", "--from-env", "TEST_SECRET_SOURCE"],
+        Layer.succeed(SecretsClient, {
+          setSecret: (projectId, key, value) =>
+            Effect.sync(() => {
+              captured = { projectId, key, value }
+            }),
+          listSecrets: () => Effect.die("unused"),
+          deleteSecret: () => Effect.die("unused"),
+        }),
+      )
+
+      if (original === undefined) {
+        delete process.env.TEST_SECRET_SOURCE
+      } else {
+        process.env.TEST_SECRET_SOURCE = original
+      }
+
+      expect(captured).toEqual({ projectId: "project:demo", key: "NPM_TOKEN", value: "top-secret-token" })
+      expect(output).toContain("project: project:demo")
+      expect(output).toContain("secret: NPM_TOKEN")
+      expect(output).toContain("status: stored")
+      expect(output).not.toContain("top-secret-token")
     }),
   )
 })

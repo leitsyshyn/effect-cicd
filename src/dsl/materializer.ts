@@ -3,6 +3,7 @@ import * as Context from "effect/Context"
 
 import { DslMaterializationFailed } from "../domain/errors.ts"
 import { UnitId, WorkflowId } from "../domain/ids.ts"
+import { isSecretRef } from "../domain/secrets.ts"
 import {
   ArtifactDeclaration,
   CancellationPolicyDeclaration,
@@ -115,6 +116,16 @@ const materialize = Effect.fn("dsl.materialize")(function* (authored: AuthoredWo
 const validateCommand = (authoredUnit: AuthoredUnit) => {
   if (authoredUnit.command._tag !== "ContainerCommand") {
     return fail(`Unit ${authoredUnit.unitId} uses an unsupported command declaration`)
+  }
+
+  for (const [name, value] of Object.entries(authoredUnit.command.env ?? {})) {
+    if (name.trim().length === 0) {
+      return fail(`Unit ${authoredUnit.unitId} env name must be non-empty`)
+    }
+
+    if (isSecretRef(value) && value.key.trim().length === 0) {
+      return fail(`Unit ${authoredUnit.unitId} secret env ${name} must reference a non-empty key`)
+    }
   }
 
   return Effect.void

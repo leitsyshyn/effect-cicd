@@ -3,6 +3,7 @@ import { Effect } from "effect"
 
 import { ContainerCommandDescriptor } from "../src/domain/execution-plan.ts"
 import { UnitId, WorkflowId } from "../src/domain/ids.ts"
+import { SecretRef } from "../src/domain/secrets.ts"
 import {
   ArtifactDeclaration,
   CancellationPolicyDeclaration,
@@ -191,6 +192,27 @@ describe("Planner", () => {
 
       expect(plan.units[0]?.source).toEqual(source)
       expect(plan.units[0]?.artifactExpectations[0]?.source).toEqual(artifactSource)
+    }).pipe(Effect.provide(Planner.layer)),
+  )
+
+  it.effect("preserves secret references in the execution plan", () =>
+    Effect.gen(function* () {
+      const planner = yield* Planner
+      const plan = yield* planner.plan(
+        workflow({
+          units: [
+            unit("unit:build", {
+              payloadDeclaration: new ContainerCommandDeclaration({
+                image: "oven/bun:latest",
+                command: ["bun", "publish"],
+                env: { NPM_TOKEN: new SecretRef({ key: "NPM_TOKEN" }) },
+              }),
+            }),
+          ],
+        }),
+      )
+
+      expect(plan.units[0]?.payloadDescriptor.env).toEqual({ NPM_TOKEN: new SecretRef({ key: "NPM_TOKEN" }) })
     }).pipe(Effect.provide(Planner.layer)),
   )
 

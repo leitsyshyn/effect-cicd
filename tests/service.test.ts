@@ -14,6 +14,7 @@ import { EngineServiceConfig, StorageRuntimeConfig } from "../src/runtime/config
 import { makeInMemoryServiceEngineLayer } from "../src/runtime/layers.ts"
 import { engineServiceClientLayer } from "../src/service/client.ts"
 import { startServiceServer } from "../src/service/server.ts"
+import { SecretStore } from "../src/secrets/store.ts"
 
 describe("service boundary", () => {
   it.live("routes call Engine-backed logic", () =>
@@ -63,6 +64,7 @@ describe("service boundary", () => {
             handleWebhook: () => Effect.die("unused"),
             triggerPush: () => Effect.die("unused"),
           }),
+          SecretStore.memoryLayer,
         ),
       )
 
@@ -135,6 +137,7 @@ describe("service boundary", () => {
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
         }),
+        SecretStore.memoryLayer,
       )
 
       const server = yield* withServer(serviceLayer)
@@ -158,6 +161,48 @@ describe("service boundary", () => {
       expect(result.submitted.status).toBe("running")
       expect(result.completed.status).toBe("succeeded")
       expect(result.events.map((event) => event._tag)).toContain("RunSucceeded")
+
+      yield* stopServer(server)
+    }),
+  )
+
+  it.live("service secret management routes store and list metadata without values", () =>
+    Effect.gen(function* () {
+      const port = randomPort()
+      const baseUrl = `http://127.0.0.1:${port}`
+      const serviceLayer = Layer.mergeAll(
+        makeInMemoryServiceEngineLayer(),
+        Layer.succeed(EngineServiceConfig, { baseUrl, port }),
+        Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
+        Layer.succeed(GitHubIntegration, {
+          addBinding: () => Effect.die("unused"),
+          listBindings: () => Effect.succeed([]),
+          handleWebhook: () => Effect.die("unused"),
+          triggerPush: () => Effect.die("unused"),
+        }),
+        SecretStore.memoryLayer,
+      )
+
+      const server = yield* withServer(serviceLayer)
+
+      const createResponse = yield* Effect.promise(() =>
+        fetch(`${baseUrl}/api/secrets`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectId: "project:demo", key: "NPM_TOKEN", value: "top-secret-token" }),
+        }),
+      )
+      const listResponse = yield* Effect.promise(() => fetch(`${baseUrl}/api/secrets?projectId=project%3Ademo`))
+      const secrets = yield* Effect.promise(
+        () =>
+          listResponse.json() as Promise<Array<{ readonly projectId: string; readonly key: string; readonly updatedAt: string; readonly value?: string }>>,
+      )
+
+      expect(createResponse.status).toBe(201)
+      expect(secrets).toHaveLength(1)
+      expect(secrets[0]?.projectId).toBe("project:demo")
+      expect(secrets[0]?.key).toBe("NPM_TOKEN")
+      expect(secrets[0]?.value).toBeUndefined()
 
       yield* stopServer(server)
     }),

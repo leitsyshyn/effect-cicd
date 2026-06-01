@@ -93,10 +93,6 @@ describe("Executor", () => {
             args: [
               "run",
               "--rm",
-              "--env",
-              "A=one",
-              "--env",
-              "B=two",
               "--workdir",
               "/workspace",
               "alpine:latest",
@@ -291,6 +287,8 @@ const request = (overrides: Partial<ConstructorParameters<typeof DispatchRequest
       command: ["sh", "-c", "exit 23"],
       env: {},
     }),
+    env: {},
+    secretEnvNames: [],
     inputs: [],
     artifacts: [
       new ArtifactDeclaration({

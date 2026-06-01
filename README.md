@@ -164,6 +164,97 @@ Retry a terminal run as a new run:
 ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs retry <runId>
 ```
 
+## Secrets
+
+Self-hosted secrets are now product-owned data stored separately from workflow run state and scoped per project.
+
+Before starting the persistent service, set an application master key for secret encryption at rest:
+
+```bash
+export SECRETS_MASTER_KEY="$(openssl rand -base64 32)"
+```
+
+In workflow code, use explicit secret references in container env declarations:
+
+```ts
+import { containerCommand, secret, unit, workflow } from "./src/dsl/index.ts"
+
+export default workflow({
+  workflowId: "workflow:publish",
+  name: "publish",
+  metadata: {
+    projectId: "project:acme-web",
+  },
+  units: [
+    unit({
+      unitId: "unit:publish",
+      name: "publish",
+      command: containerCommand({
+        image: "oven/bun:1",
+        command: ["bun", "publish"],
+        env: {
+          NPM_TOKEN: secret("NPM_TOKEN"),
+        },
+      }),
+    }),
+  ],
+})
+```
+
+Set a secret through the CLI without putting the value on the command line:
+
+```bash
+export NPM_TOKEN=replace-me
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts secrets set project:acme-web NPM_TOKEN --from-env NPM_TOKEN
+```
+
+List stored secret metadata:
+
+```bash
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts secrets list project:acme-web
+```
+
+Delete a stored secret:
+
+```bash
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts secrets delete project:acme-web NPM_TOKEN
+```
+
+Direct service API:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/secrets \
+  -H 'content-type: application/json' \
+  -d '{"projectId":"project:acme-web","key":"NPM_TOKEN","value":"replace-me"}'
+
+curl 'http://127.0.0.1:3000/api/secrets?projectId=project%3Aacme-web'
+
+curl -X DELETE http://127.0.0.1:3000/api/secrets/project%3Aacme-web/NPM_TOKEN
+```
+
+What the current implementation guarantees:
+
+- Secret values are stored in Postgres in encrypted form using `SECRETS_MASTER_KEY`.
+- Secret names are isolated by `projectId`, so different projects can safely reuse names like `NPM_TOKEN`.
+- Workflow definitions and execution plans keep `SecretRef` declarations, not resolved values.
+- Runtime secret lookup uses workflow `metadata.projectId` when present, otherwise `workflowId`.
+- Secret values are resolved only when building executor dispatch requests.
+- Run state, event payloads, CLI inspection output, and dashboard inspection responses do not include resolved secret values.
+- Persisted stdout/stderr logs redact injected secret values before storage.
+
+Current limitations:
+
+- Secret scope is single-node self-hosted/local; there is no hosted backend integration yet.
+- Anyone who can read the process environment of the engine service and the configured master key can decrypt stored secrets.
+- If a user command transforms a secret before printing it, the current deterministic redaction pass may not catch that derived value.
+
+Typical uses for this phase:
+
+- private repository access tokens
+- package registry auth such as `NPM_TOKEN`
+- deploy credentials injected as env vars
+- signing or release tokens used by publish steps
+
 ## GitHub App CI Loop
 
 The service now uses a GitHub App for auth, webhook verification, repository snapshot download, and Checks API updates.

@@ -22,6 +22,8 @@ import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { EventLog } from "../src/engine/stores/event-log.ts"
 import { StateStore } from "../src/engine/stores/state-store.ts"
 import { StorageTransactor } from "../src/runtime/storage.ts"
+import { SecretRef } from "../src/domain/secrets.ts"
+import { SecretStore } from "../src/secrets/store.ts"
 
 describe("Engine interface", () => {
   it.effect("validate delegates to Planner for a valid workflow", () =>
@@ -195,6 +197,24 @@ describe("Engine interface", () => {
       ),
     ),
   )
+
+  it.effect("inspection surfaces keep secret references but never resolved values", () =>
+    Effect.gen(function* () {
+      const engine = yield* Engine
+      const secretStore = yield* SecretStore
+
+      yield* secretStore.setSecret("workflow:inspect-secret", "NPM_TOKEN", "top-secret-token")
+      const started = yield* engine.startRun(
+        plan("workflow:inspect-secret", [planUnit("unit:build", [], { NPM_TOKEN: new SecretRef({ key: "NPM_TOKEN" }) })]),
+      )
+      const inspected = yield* engine.inspectRun(started.runId)
+      const events = yield* engine.readRunEvents(started.runId)
+
+      expect(inspected.execution.plan.units[0]?.payloadDescriptor.env).toEqual({ NPM_TOKEN: new SecretRef({ key: "NPM_TOKEN" }) })
+      expect(JSON.stringify(inspected)).not.toContain("top-secret-token")
+      expect(JSON.stringify(events)).not.toContain("top-secret-token")
+    }).pipe(Effect.provide(runtimeLayer())),
+  )
 })
 
 const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
@@ -205,6 +225,7 @@ const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
       Layer.provideMerge(StateStore.memoryLayer),
       Layer.provideMerge(EventLog.memoryLayer),
       Layer.provideMerge(ArtifactStore.memoryLayer),
+      Layer.provideMerge(SecretStore.memoryLayer),
       Layer.provideMerge(Executor.testLayer(options)),
       Layer.provideMerge(updatesLayer),
     )
@@ -218,6 +239,7 @@ const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
       Layer.provideMerge(StateStore.memoryLayer),
       Layer.provideMerge(EventLog.memoryLayer),
       Layer.provideMerge(ArtifactStore.memoryLayer),
+      Layer.provideMerge(SecretStore.memoryLayer),
       Layer.provideMerge(updatesLayer),
     )
   }
@@ -276,7 +298,11 @@ const plan = (
     diagnostics: [],
   })
 
-const planUnit = (unitId: string, dependencies: ReadonlyArray<string> = []) =>
+const planUnit = (
+  unitId: string,
+  dependencies: ReadonlyArray<string> = [],
+  env: Record<string, string | SecretRef> = {},
+) =>
   new PlanUnit({
     unitId: UnitId.make(unitId),
     name: unitId.replace("unit:", ""),
@@ -284,7 +310,7 @@ const planUnit = (unitId: string, dependencies: ReadonlyArray<string> = []) =>
     payloadDescriptor: new ContainerCommandDescriptor({
       image: "oven/bun:latest",
       command: ["bun", "test"],
-      env: {},
+      env,
     }),
     logExpectations: [named("stdout")],
     artifactExpectations: [artifact("dist")],

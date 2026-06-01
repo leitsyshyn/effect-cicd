@@ -1,3 +1,4 @@
+import { SecretRef } from "../domain/secrets.ts"
 import type {
   AuthoredArtifactDeclaration,
   AuthoredCancellationPolicy,
@@ -17,6 +18,8 @@ export const containerCommand = (definition: Omit<AuthoredContainerCommand, "_ta
   _tag: "ContainerCommand",
   ...definition,
 })
+
+export const secret = (key: string) => new SecretRef({ key })
 
 export const artifact = (definition: AuthoredArtifactDeclaration): AuthoredArtifactDeclaration => ({
   kind: "file",

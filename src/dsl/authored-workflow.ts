@@ -1,3 +1,5 @@
+import type { SecretRef } from "../domain/secrets.ts"
+
 export type AuthoredMetadata = Readonly<Record<string, unknown>>
 
 export interface AuthoredSourceMetadata {
@@ -23,7 +25,7 @@ export interface AuthoredContainerCommand {
   readonly _tag: "ContainerCommand"
   readonly image: string
   readonly command: readonly [string, ...Array<string>]
-  readonly env?: Readonly<Record<string, string>>
+  readonly env?: Readonly<Record<string, string | SecretRef>>
   readonly workingDirectory?: string
 }
 

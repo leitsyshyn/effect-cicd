@@ -7,6 +7,7 @@ import {
   containerCommand,
   DslMaterializer,
   retry,
+  secret,
   unit,
   workflow,
   type AuthoredUnit,
@@ -147,6 +148,27 @@ describe("DslMaterializer", () => {
         "unit:build->unit:test",
       ])
     }).pipe(Effect.provide(Layer.mergeAll(DslMaterializer.layer, Planner.layer))),
+  )
+
+  it.effect("secret env references materialize explicitly", () =>
+    Effect.gen(function* () {
+      const materializer = yield* DslMaterializer
+      const definition = yield* materializer.materialize(
+        authoredWorkflow({
+          units: [
+            authoredUnit("unit:build", {
+              command: containerCommand({
+                image: "oven/bun:latest",
+                command: ["bun", "run", "build"],
+                env: { NPM_TOKEN: secret("NPM_TOKEN") },
+              }),
+            }),
+          ],
+        }),
+      )
+
+      expect(definition.units[0]?.payloadDeclaration.env).toEqual({ NPM_TOKEN: secret("NPM_TOKEN") })
+    }).pipe(Effect.provide(DslMaterializer.layer)),
   )
 })
 

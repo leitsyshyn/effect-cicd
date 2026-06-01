@@ -218,7 +218,7 @@ const convertPayloadDeclaration = (payloadDeclaration: PayloadDeclaration) => {
       return new ContainerCommandDescriptor({
         image: payloadDeclaration.image,
         command: payloadDeclaration.command,
-        env: payloadDeclaration.env ?? {},
+        env: { ...(payloadDeclaration.env ?? {}) },
         workingDirectory: payloadDeclaration.workingDirectory,
       })
   }

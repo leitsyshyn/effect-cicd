@@ -28,6 +28,8 @@ export class DispatchRequest extends Schema.Class<DispatchRequest>("DispatchRequ
   attemptId: AttemptId,
   attemptNumber: PositiveInt,
   payloadDescriptor: PayloadDescriptor,
+  env: Schema.Record(Schema.String, Schema.String),
+  secretEnvNames: Schema.Array(Schema.String),
   workspace: Schema.optional(DispatchWorkspace),
   inputs: Schema.Array(DispatchInput),
   artifacts: Schema.Array(ArtifactDeclaration),
@@ -155,7 +157,10 @@ export class LocalContainerExecutor {
 
 const executeDockerRequest = Effect.fn("LocalContainerExecutor.executeDockerRequest")(function* (request: DispatchRequest) {
   const startedAt = yield* nowDate
-  const handle = yield* ChildProcess.make("docker", dockerArgs(request.payloadDescriptor, request.workspace))
+  const handle = yield* ChildProcess.make("docker", dockerArgs(request.env, request.payloadDescriptor, request.workspace), {
+    env: request.env,
+    extendEnv: true,
+  })
   const [stdout, stderr, exitCode] = yield* Effect.all(
     [readText(handle.stdout), readText(handle.stderr), handle.exitCode],
     { concurrency: "unbounded" },
@@ -197,10 +202,14 @@ const executeDockerRequest = Effect.fn("LocalContainerExecutor.executeDockerRequ
   })
 })
 
-const dockerArgs = (payloadDescriptor: PayloadDescriptor, workspace: DispatchWorkspace | undefined) => {
-  const envArgs = Object.keys(payloadDescriptor.env)
+const dockerArgs = (
+  env: Readonly<Record<string, string>>,
+  payloadDescriptor: PayloadDescriptor,
+  workspace: DispatchWorkspace | undefined,
+) => {
+  const envArgs = Object.keys(env)
     .sort()
-    .flatMap((name) => ["--env", `${name}=${payloadDescriptor.env[name]}`])
+    .flatMap((name) => ["--env", name])
   const volumeArgs = workspace === undefined ? [] : ["--volume", `${workspace.hostPath}:${workspace.mountPath}`]
   const workingDirectory = resolveContainerWorkingDirectory(payloadDescriptor, workspace)
 

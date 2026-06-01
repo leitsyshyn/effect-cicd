@@ -1,4 +1,4 @@
-import { Console, Effect, Layer, Option } from "effect"
+import { Console, Effect, Layer, Option, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import { dirname, resolve as resolvePath } from "node:path"
 
@@ -16,9 +16,13 @@ import { makeDurableStorageLayer, makeInMemoryEngineLayer } from "../runtime/lay
 import { FetchHttpClient } from "effect/unstable/http"
 
 import { EngineServiceConfig } from "../runtime/config.ts"
-import { engineServiceClientLayer, gitHubIntegrationClientLayer } from "../service/client.ts"
+import { engineServiceClientLayer, gitHubIntegrationClientLayer, SecretsClient } from "../service/client.ts"
 
 export const cliVersion = "0.0.0"
+
+class CliInputInvalid extends Schema.TaggedErrorClass<CliInputInvalid>()("CliInputInvalid", {
+  message: Schema.String,
+}) {}
 
 export { makeDurableStorageLayer }
 
@@ -38,6 +42,10 @@ export const makeAppLayer = () =>
       Layer.provideMerge(EngineServiceConfig.layer),
     ),
     gitHubIntegrationClientLayer.pipe(
+      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(EngineServiceConfig.layer),
+    ),
+    SecretsClient.layer.pipe(
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provideMerge(EngineServiceConfig.layer),
     ),
@@ -72,6 +80,10 @@ const branchFlag = Flag.string("branch").pipe(
 const workspaceSubdirFlag = Flag.string("workspace-subdir").pipe(
   Flag.optional,
   Flag.withDescription("Run the workflow inside a repository subdirectory"),
+)
+
+const fromEnvFlag = Flag.string("from-env").pipe(
+  Flag.withDescription("Read the secret value from an existing environment variable"),
 )
 
 const validateCommand = Command.make(
@@ -297,9 +309,59 @@ const bindingsCommand = Command.make("bindings").pipe(
   Command.withSubcommands([bindingsAddCommand, bindingsListCommand]),
 )
 
+const secretsSetCommand = Command.make(
+  "set",
+  {
+    projectId: Argument.string("projectId"),
+    key: Argument.string("key"),
+    fromEnv: fromEnvFlag,
+  },
+  ({ projectId, key, fromEnv }) =>
+    Effect.gen(function* () {
+      const secrets = yield* SecretsClient
+      const value = process.env[fromEnv]
+
+      if (value === undefined) {
+        return yield* Console.error(`missing environment variable for --from-env: ${fromEnv}`).pipe(
+          Effect.flatMap(() => Effect.fail(new CliInputInvalid({ message: "Secret value source missing" }))),
+        )
+      }
+
+      yield* secrets.setSecret(projectId, key, value)
+      yield* printLines([`project: ${projectId}`, `secret: ${key}`, "status: stored"])
+    }),
+).pipe(Command.withDescription("Store or update a secret from an existing environment variable"))
+
+const secretsListCommand = Command.make("list", { projectId: Argument.string("projectId") }, ({ projectId }) =>
+  Effect.gen(function* () {
+    const secrets = yield* SecretsClient
+    const items = yield* secrets.listSecrets(projectId)
+    yield* printLines(renderSecretsList(projectId, items))
+  }),
+).pipe(Command.withDescription("List stored secret keys without values"))
+
+const secretsDeleteCommand = Command.make(
+  "delete",
+  {
+    projectId: Argument.string("projectId"),
+    key: Argument.string("key"),
+  },
+  ({ projectId, key }) =>
+    Effect.gen(function* () {
+      const secrets = yield* SecretsClient
+      yield* secrets.deleteSecret(projectId, key)
+      yield* printLines([`project: ${projectId}`, `secret: ${key}`, "status: deleted"])
+    }),
+).pipe(Command.withDescription("Delete a stored secret"))
+
+const secretsCommand = Command.make("secrets").pipe(
+  Command.withDescription("Manage self-hosted secrets"),
+  Command.withSubcommands([secretsSetCommand, secretsListCommand, secretsDeleteCommand]),
+)
+
 export const cli = Command.make("effect-cicd").pipe(
   Command.withDescription("Minimal Engine-backed CLI MVP"),
-  Command.withSubcommands([validateCommand, planCommand, runCommand, runsCommand, bindingsCommand]),
+  Command.withSubcommands([validateCommand, planCommand, runCommand, runsCommand, bindingsCommand, secretsCommand]),
 )
 
 export const cliProgram = Command.run(cli, { version: cliVersion })
@@ -410,6 +472,17 @@ const renderRunState = (run: WorkflowRunState) => [
 const renderBindingsList = (bindings: ReadonlyArray<GitHubBindingSummary>) => [
   "bindings:",
   ...(bindings.length === 0 ? ["-"] : bindings.flatMap((binding) => renderBindingSummary(binding))),
+]
+
+const renderSecretsList = (
+  projectId: string,
+  secrets: ReadonlyArray<{ readonly key: string; readonly createdAt: Date; readonly updatedAt: Date }>,
+) => [
+  `project: ${projectId}`,
+  "secrets:",
+  ...(secrets.length === 0
+    ? ["-"]
+    : secrets.map((secret) => `${secret.key} updatedAt=${secret.updatedAt.toISOString()}`)),
 ]
 
 const renderBindingSummary = (binding: GitHubBindingSummary) => [

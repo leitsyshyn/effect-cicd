@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 
 import { UnitId, WorkflowId } from "./ids.ts"
+import { SecretRef } from "./secrets.ts"
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
 const PositiveNumber = Schema.Number.check(Schema.isGreaterThan(0))
@@ -39,7 +40,7 @@ export class ContainerCommandDeclaration extends Schema.TaggedClass<ContainerCom
   {
     image: Schema.String,
     command: Schema.NonEmptyArray(Schema.String),
-    env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+    env: Schema.optional(Schema.Record(Schema.String, Schema.Union([Schema.String, SecretRef]))),
     workingDirectory: Schema.optional(Schema.String),
   },
 ) {}

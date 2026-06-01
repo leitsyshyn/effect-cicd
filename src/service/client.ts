@@ -10,14 +10,16 @@ import { WorkflowEvent } from "../domain/events.ts"
 import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubTriggerResponse } from "../domain/github.ts"
 import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
 import { RunExecutionOptions, WorkflowRunState, WorkflowRunStatus } from "../domain/runtime-state.ts"
+import { SecretSummary } from "../domain/secrets.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
 import { Engine } from "../engine/interface.ts"
 import { type RunStartOptions } from "../engine/orchestrator.ts"
 import { RunUpdate } from "../engine/run-updates.ts"
 import { GitHubIntegration, type GitHubTriggerRequest } from "../github/integration.ts"
 import { EngineServiceConfig } from "../runtime/config.ts"
-import { RunActionRequest, RunSubmissionRequest, ServiceErrorResponse } from "./contracts.ts"
+import { RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse } from "./contracts.ts"
 import { decodeJson, encodeJson } from "./schema-json.ts"
+import * as Context from "effect/Context"
 
 export const engineServiceClientLayer = Layer.effect(
   Engine,
@@ -193,6 +195,58 @@ export const gitHubIntegrationClientLayer = Layer.effect(
 )
 
 export const defaultGitHubIntegrationClientLayer = gitHubIntegrationClientLayer.pipe(
+  Layer.provide(FetchHttpClient.layer),
+  Layer.provide(EngineServiceConfig.layer),
+)
+
+export class SecretsClient extends Context.Service<
+  SecretsClient,
+  {
+    readonly setSecret: (projectId: string, key: string, value: string) => Effect.Effect<void, DomainError>
+    readonly listSecrets: (projectId: string) => Effect.Effect<ReadonlyArray<SecretSummary>, DomainError>
+    readonly deleteSecret: (projectId: string, key: string) => Effect.Effect<void, DomainError>
+  }
+>()("@effect-cicd/service/SecretsClient") {
+  static readonly layer = Layer.effect(
+    SecretsClient,
+    Effect.gen(function* () {
+      const config = yield* EngineServiceConfig
+      const http = (yield* HttpClient.HttpClient).pipe(
+        HttpClient.mapRequest(flow(HttpClientRequest.prependUrl(config.baseUrl), HttpClientRequest.acceptJson)),
+      )
+
+      const setSecret = Effect.fn("SecretsClient.setSecret")((projectId: string, key: string, value: string) =>
+        requestJsonNoContent(
+          http,
+          HttpClientRequest.post("/api/secrets").pipe(
+            HttpClientRequest.bodyJsonUnsafe(encodeJson(SecretSetRequest, new SecretSetRequest({ projectId, key, value }))),
+          ),
+        ),
+      )
+
+      const listSecrets = Effect.fn("SecretsClient.listSecrets")((projectId: string) =>
+        requestJson(
+          http,
+          HttpClientRequest.get(`/api/secrets?projectId=${encodeURIComponent(projectId)}`),
+          Schema.Array(SecretSummary),
+        ),
+      )
+
+      const deleteSecret = Effect.fn("SecretsClient.deleteSecret")((projectId: string, key: string) =>
+        requestJsonNoContent(
+          http,
+          HttpClientRequest.delete(
+            `/api/secrets/${encodeURIComponent(projectId)}/${encodeURIComponent(key)}`,
+          ),
+        ),
+      )
+
+      return { setSecret, listSecrets, deleteSecret }
+    }),
+  )
+}
+
+export const defaultSecretsClientLayer = SecretsClient.layer.pipe(
   Layer.provide(FetchHttpClient.layer),
   Layer.provide(EngineServiceConfig.layer),
 )

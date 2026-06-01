@@ -262,6 +262,26 @@ export const storageMigrationLayer = PgMigrator.layer({
       yield* sql`CREATE INDEX IF NOT EXISTS github_run_links_installation_repo_idx
         ON github_run_links (installation_id, repository_id, updated_at DESC, run_id ASC)`
     }),
+    "0004_secrets": Effect.gen(function* () {
+      const sql = yield* SqlClient
+
+      yield* sql`CREATE TABLE IF NOT EXISTS secrets (
+        project_id text NOT NULL,
+        secret_key text PRIMARY KEY,
+        algorithm text NOT NULL,
+        iv_base64 text NOT NULL,
+        ciphertext_base64 text NOT NULL,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL
+      )`
+
+      yield* sql`ALTER TABLE secrets ADD COLUMN IF NOT EXISTS project_id text`
+      yield* sql`UPDATE secrets SET project_id = 'workflow:default' WHERE project_id IS NULL`
+      yield* sql`ALTER TABLE secrets ALTER COLUMN project_id SET NOT NULL`
+      yield* sql`ALTER TABLE secrets DROP CONSTRAINT IF EXISTS secrets_pkey`
+      yield* sql`ALTER TABLE secrets ADD PRIMARY KEY (project_id, secret_key)`
+      yield* sql`CREATE INDEX IF NOT EXISTS secrets_updated_at_idx ON secrets (project_id, updated_at DESC, secret_key ASC)`
+    }),
   }),
 })
 

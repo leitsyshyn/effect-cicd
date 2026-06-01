@@ -2,7 +2,11 @@ import { Clock, Effect, Layer, Option } from "effect"
 import * as Context from "effect/Context"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
-import { ExecutorFailed, RunNotFound, StoreUnavailable } from "../domain/errors.ts"
+import {
+  ExecutorFailed,
+  RunNotFound,
+  StoreUnavailable,
+} from "../domain/errors.ts"
 import {
   ArtifactRegistered,
   AttemptCanceled,
@@ -28,6 +32,7 @@ import {
 } from "../domain/events.ts"
 import { ExecutionPlan, PlanRetryPolicy, PlanUnit } from "../domain/execution-plan.ts"
 import { AttemptId, EventId, RunId, UnitId } from "../domain/ids.ts"
+import { isSecretRef } from "../domain/secrets.ts"
 import {
   ExecutionAttemptState,
   ExecutionUnitState,
@@ -38,6 +43,7 @@ import {
   WorkflowRunState,
 } from "../domain/runtime-state.ts"
 import { StorageTransactor } from "../runtime/storage.ts"
+import { SecretStore } from "../secrets/store.ts"
 import { DispatchRequest, DispatchWorkspace, Executor, ExecutorFailureSummary, ExecutorResult } from "./executor.ts"
 import { RunUpdate, RunUpdates } from "./run-updates.ts"
 import { ArtifactStore } from "./stores/artifact-store.ts"
@@ -77,6 +83,7 @@ export class Orchestrator extends Context.Service<
       const eventLog = yield* EventLog
       const artifactStore = yield* ArtifactStore
       const executor = yield* Executor
+      const secretStore = yield* SecretStore
       const storageTransactor = yield* StorageTransactor
       const runUpdates = yield* Effect.serviceOption(RunUpdates)
 
@@ -268,17 +275,30 @@ export class Orchestrator extends Context.Service<
         )
         yield* publishRunUpdate(run, "AttemptStarted")
 
-        const request = buildDispatchRequest(run, planUnit, attemptId, attemptNumber)
-        const result = yield* Effect.onInterrupt(
-          executor.execute(request).pipe(
-            Effect.catchTag("ExecutorFailed", (error) => Effect.succeed(executorFailureResult(request, error))),
-          ),
-          () => finalizeCancellationState(run, `Cancellation requested while executing ${unitId}`).pipe(Effect.asVoid),
+        const request = yield* buildDispatchRequest(secretStore, run, planUnit, attemptId, attemptNumber).pipe(
+          Effect.catchTags({
+            SecretBackendUnavailable: (error) =>
+              Effect.succeed(secretResolutionFailureResult(run, unitId, attemptId, attemptNumber, error.message)),
+            SecretNameInvalid: (error) =>
+              Effect.succeed(secretResolutionFailureResult(run, unitId, attemptId, attemptNumber, error.message)),
+            SecretNotFound: (error) =>
+              Effect.succeed(secretResolutionFailureResult(run, unitId, attemptId, attemptNumber, `Secret ${error.key} not found`)),
+          }),
         )
+
+        const result =
+          request instanceof DispatchRequest
+            ? yield* Effect.onInterrupt(
+                executor.execute(request).pipe(
+                  Effect.catchTag("ExecutorFailed", (error) => Effect.succeed(executorFailureResult(request, error))),
+                ),
+                () => finalizeCancellationState(run, `Cancellation requested while executing ${unitId}`).pipe(Effect.asVoid),
+              )
+            : request
 
         const attemptStartedAt = result.startedAt ?? runningAttempt.startedAt
         const finishedAt = result.finishedAt ?? (yield* nowDate)
-        const logs = yield* registerLogs(run.runId, unitId, attemptId, result.logs)
+        const logs = yield* registerLogs(run.runId, unitId, attemptId, result.logs, requestRedactionValues(request))
         const artifacts = yield* registerArtifacts(run.runId, unitId, attemptId, result.artifacts)
 
         if (result.outcome === "succeeded") {
@@ -472,12 +492,13 @@ export class Orchestrator extends Context.Service<
         unitId: UnitId,
         attemptId: AttemptId,
         logs: ReadonlyArray<RegisteredLog>,
+        redactionValues: ReadonlyArray<string>,
       ) =>
         Effect.gen(function* () {
           const registered = new Array<LogMetadata>()
 
           for (const log of logs) {
-            const persisted = yield* artifactStore.registerLog(log)
+            const persisted = yield* artifactStore.registerLog(redactRegisteredLog(log, redactionValues))
             registered.push(persisted)
             yield* appendEvent(runId, (base) => new LogRegistered({ ...base, unitId, attemptId, log: persisted }))
           }
@@ -667,36 +688,113 @@ const executorFailureResult = (request: DispatchRequest, error: ExecutorFailed) 
   })
 
 const buildDispatchRequest = (
+  secretStore: typeof SecretStore.Service,
   run: WorkflowRunState,
   planUnit: PlanUnit,
   attemptId: AttemptId,
   attemptNumber: number,
 ) =>
-  new DispatchRequest({
+  Effect.gen(function* () {
+    const projectId = projectIdForRun(run)
+    const resolvedEnv = new Map<string, string>()
+    const secretEnvNames = new Array<string>()
+
+    for (const [name, value] of Object.entries(planUnit.payloadDescriptor.env)) {
+      if (isSecretRef(value)) {
+        resolvedEnv.set(name, yield* secretStore.resolveSecret(projectId, value.key))
+        secretEnvNames.push(name)
+      } else {
+        resolvedEnv.set(name, value)
+      }
+    }
+
+    return new DispatchRequest({
+      runId: run.runId,
+      unitId: planUnit.unitId,
+      attemptId,
+      attemptNumber,
+      payloadDescriptor: planUnit.payloadDescriptor,
+      env: Object.fromEntries(resolvedEnv),
+      secretEnvNames,
+      workspace:
+        run.execution.options.workspacePath === undefined
+          ? undefined
+          : new DispatchWorkspace({
+              hostPath: run.execution.options.workspacePath,
+              mountPath: containerWorkspaceMountPath,
+            }),
+      inputs: [],
+      artifacts: planUnit.artifactExpectations,
+      logNames: planUnit.logExpectations.map((log) => log.name),
+      policies: planUnit.policies,
+      correlation: {
+        workflowId: run.workflowId.toString(),
+        planId: run.planId.toString(),
+        runId: run.runId.toString(),
+        unitId: planUnit.unitId.toString(),
+        attemptId: attemptId.toString(),
+      },
+    })
+  })
+
+const secretResolutionFailureResult = (
+  run: WorkflowRunState,
+  unitId: UnitId,
+  attemptId: AttemptId,
+  attemptNumber: number,
+  message: string,
+) =>
+  new ExecutorResult({
     runId: run.runId,
-    unitId: planUnit.unitId,
+    unitId,
     attemptId,
     attemptNumber,
-    payloadDescriptor: planUnit.payloadDescriptor,
-    workspace:
-      run.execution.options.workspacePath === undefined
-        ? undefined
-        : new DispatchWorkspace({
-            hostPath: run.execution.options.workspacePath,
-            mountPath: containerWorkspaceMountPath,
-          }),
-    inputs: [],
-    artifacts: planUnit.artifactExpectations,
-    logNames: planUnit.logExpectations.map((log) => log.name),
-    policies: planUnit.policies,
-    correlation: {
-      workflowId: run.workflowId.toString(),
-      planId: run.planId.toString(),
-      runId: run.runId.toString(),
-      unitId: planUnit.unitId.toString(),
-      attemptId: attemptId.toString(),
-    },
+    outcome: "failed",
+    exitCode: 1,
+    failure: new ExecutorFailureSummary({ message }),
+    outputs: {},
+    artifacts: [],
+    logs: [],
+    diagnostics: [],
   })
+
+const requestRedactionValues = (request: DispatchRequest | ExecutorResult) =>
+  request instanceof DispatchRequest
+    ? request.secretEnvNames
+        .map((name) => request.env[name])
+        .filter((value): value is string => value !== undefined && value.length > 0)
+    : []
+
+const redactRegisteredLog = (log: RegisteredLog, redactionValues: ReadonlyArray<string>) => {
+  const content = redactText(log.content, redactionValues)
+
+  return new RegisteredLog({
+    metadata: new LogMetadata({
+      ...log.metadata,
+      summary: log.metadata.summary === undefined ? undefined : redactText(log.metadata.summary, redactionValues),
+    }),
+    content,
+  })
+}
+
+const redactText = (text: string, redactionValues: ReadonlyArray<string>) => {
+  let redacted = text
+
+  for (const value of [...new Set(redactionValues)].sort((left, right) => right.length - left.length)) {
+    if (value.length === 0) {
+      continue
+    }
+
+    redacted = redacted.split(value).join("[REDACTED]")
+  }
+
+  return redacted
+}
+
+const projectIdForRun = (run: WorkflowRunState) => {
+  const candidate = run.execution.plan.metadata.projectId
+  return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : run.workflowId.toString()
+}
 
 const summarizeProgress = (units: ReadonlyArray<ExecutionUnitState>) =>
   new ProgressSummary({

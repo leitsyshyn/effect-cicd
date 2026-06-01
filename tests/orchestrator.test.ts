@@ -14,6 +14,8 @@ import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { EventLog } from "../src/engine/stores/event-log.ts"
 import { StateStore } from "../src/engine/stores/state-store.ts"
 import { StorageTransactor } from "../src/runtime/storage.ts"
+import { SecretRef } from "../src/domain/secrets.ts"
+import { SecretStore } from "../src/secrets/store.ts"
 
 describe("Orchestrator", () => {
   it.effect("single-unit successful plan creates a succeeded run", () =>
@@ -109,6 +111,110 @@ describe("Orchestrator", () => {
         expect(requests[0]?.payloadDescriptor).toBeInstanceOf(ContainerCommandDescriptor)
       }).pipe(Effect.provide(runtimeLayer({ requests })))
     },
+  )
+
+  it.effect("secret-backed env values resolve only for dispatch", () =>
+    {
+      const requests = new Array<DispatchRequest>()
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator
+        const secretStore = yield* SecretStore
+
+        yield* secretStore.setSecret("workflow:secret-env", "NPM_TOKEN", "top-secret-token")
+        const run = yield* orchestrator.startRun(
+          plan("workflow:secret-env", [planUnit("unit:build", [], { NPM_TOKEN: new SecretRef({ key: "NPM_TOKEN" }) })]),
+        )
+
+        expect(run.status).toBe("succeeded")
+        expect(requests[0]?.env).toEqual({ NPM_TOKEN: "top-secret-token" })
+        expect(requests[0]?.secretEnvNames).toEqual(["NPM_TOKEN"])
+        expect(run.execution.plan.units[0]?.payloadDescriptor.env).toEqual({ NPM_TOKEN: new SecretRef({ key: "NPM_TOKEN" }) })
+      }).pipe(Effect.provide(runtimeLayer({ requests })))
+    },
+  )
+
+  it.effect("runtime secret resolution uses project metadata scope when present", () =>
+    {
+      const requests = new Array<DispatchRequest>()
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator
+        const secretStore = yield* SecretStore
+
+        yield* secretStore.setSecret("project:alpha", "NPM_TOKEN", "alpha-token")
+        yield* secretStore.setSecret("project:beta", "NPM_TOKEN", "beta-token")
+
+        const run = yield* orchestrator.startRun(
+          plan(
+            "workflow:project-beta",
+            [planUnit("unit:build", [], { NPM_TOKEN: new SecretRef({ key: "NPM_TOKEN" }) })],
+            [],
+            { projectId: "project:beta" },
+          ),
+        )
+
+        expect(run.status).toBe("succeeded")
+        expect(requests[0]?.env).toEqual({ NPM_TOKEN: "beta-token" })
+      }).pipe(Effect.provide(runtimeLayer({ requests })))
+    },
+  )
+
+  it.effect("missing secrets fail the run cleanly without persisting secret values", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+      const eventLog = yield* EventLog
+
+      const run = yield* orchestrator.startRun(
+        plan("workflow:missing-secret", [planUnit("unit:build", [], { NPM_TOKEN: new SecretRef({ key: "NPM_TOKEN" }) })]),
+      )
+      const events = yield* eventLog.readRunEvents(run.runId)
+
+      expect(run.status).toBe("failed")
+      expect(run.failure?.message).toContain("Secret workflow:missing-secret:NPM_TOKEN not found")
+      expect(JSON.stringify(run)).not.toContain("top-secret-token")
+      expect(JSON.stringify(events)).not.toContain("top-secret-token")
+    }).pipe(Effect.provide(runtimeLayer())),
+  )
+
+  it.effect("persisted logs redact injected secret values", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator
+      const secretStore = yield* SecretStore
+      const artifactStore = yield* ArtifactStore
+
+      yield* secretStore.setSecret("workflow:redaction", "NPM_TOKEN", "top-secret-token")
+      const run = yield* orchestrator.startRun(
+        plan("workflow:redaction", [planUnit("unit:build", [], { NPM_TOKEN: new SecretRef({ key: "NPM_TOKEN" }) })]),
+      )
+      const payload = yield* artifactStore.readLogPayload(LogRef.make(`log:attempt:${run.runId}:unit:build:1:stdout`))
+
+      expect(payload).toContain("[REDACTED]")
+      expect(payload).not.toContain("top-secret-token")
+    }).pipe(
+      Effect.provide(
+        runtimeLayer({
+          resultsByUnitId: {
+            "unit:build": {
+              logs: [
+                new RegisteredLog({
+                  metadata: new LogMetadata({
+                    logRef: LogRef.make("log:redaction"),
+                    runId: RunId.make("run:redaction"),
+                    unitId: UnitId.make("unit:build"),
+                    attemptId: AttemptId.make("attempt:redaction"),
+                    name: "stdout",
+                    status: "available",
+                    summary: "printed top-secret-token",
+                  }),
+                  content: "printed top-secret-token\n",
+                }),
+              ],
+            },
+          },
+        }),
+      ),
+    ),
   )
 
   it.effect("StateStore contains current run, unit, and attempt state after execution", () =>
@@ -234,6 +340,7 @@ const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
     Layer.provideMerge(StateStore.memoryLayer),
     Layer.provideMerge(EventLog.memoryLayer),
     Layer.provideMerge(ArtifactStore.memoryLayer),
+    Layer.provideMerge(SecretStore.memoryLayer),
     Layer.provideMerge(Executor.testLayer(options)),
     Layer.provideMerge(RunUpdates.noopLayer),
   )
@@ -242,19 +349,24 @@ const plan = (
   workflowId: string,
   units: ReadonlyArray<PlanUnit>,
   dependencies: ReadonlyArray<PlanDependency> = [],
+  metadata: Record<string, unknown> = {},
 ) =>
   new ExecutionPlan({
     planId: PlanId.make(`plan:${workflowId}`),
     schemaVersion: "0.1.0",
     workflowId: WorkflowId.make(workflowId),
     workflowName: workflowId.replace("workflow:", ""),
-    metadata: {},
+    metadata,
     units,
     dependencies,
     diagnostics: [],
   })
 
-const planUnit = (unitId: string, dependencies: ReadonlyArray<string> = []) =>
+const planUnit = (
+  unitId: string,
+  dependencies: ReadonlyArray<string> = [],
+  env: Record<string, string | SecretRef> = {},
+) =>
   new PlanUnit({
     unitId: UnitId.make(unitId),
     name: unitId.replace("unit:", ""),
@@ -262,7 +374,7 @@ const planUnit = (unitId: string, dependencies: ReadonlyArray<string> = []) =>
     payloadDescriptor: new ContainerCommandDescriptor({
       image: "oven/bun:latest",
       command: ["bun", "test"],
-      env: {},
+      env,
     }),
     logExpectations: [named("stdout")],
     artifactExpectations: [artifact("dist")],

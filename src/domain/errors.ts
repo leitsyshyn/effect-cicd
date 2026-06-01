@@ -63,6 +63,22 @@ export class ExecutorFailed extends Schema.TaggedErrorClass<ExecutorFailed>()("E
   message: Schema.String,
 }) {}
 
+export class SecretNotFound extends Schema.TaggedErrorClass<SecretNotFound>()("SecretNotFound", {
+  key: Schema.String,
+}) {}
+
+export class SecretNameInvalid extends Schema.TaggedErrorClass<SecretNameInvalid>()("SecretNameInvalid", {
+  key: Schema.String,
+  message: Schema.String,
+}) {}
+
+export class SecretBackendUnavailable extends Schema.TaggedErrorClass<SecretBackendUnavailable>()(
+  "SecretBackendUnavailable",
+  {
+    message: Schema.String,
+  },
+) {}
+
 export class GitHubBindingRejected extends Schema.TaggedErrorClass<GitHubBindingRejected>()("GitHubBindingRejected", {
   message: Schema.String,
 }) {}
@@ -112,6 +128,9 @@ export const DomainError = Schema.Union([
   StoreUnavailable,
   EngineUnavailable,
   ExecutorFailed,
+  SecretNotFound,
+  SecretNameInvalid,
+  SecretBackendUnavailable,
   GitHubBindingRejected,
   GitHubWebhookUnauthorized,
   GitHubConfigMissing,
