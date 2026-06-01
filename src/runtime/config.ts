@@ -122,6 +122,31 @@ export class StorageRuntimeConfig extends Context.Service<
   )
 }
 
+export class SchedulerConfig extends Context.Service<
+  SchedulerConfig,
+  {
+    readonly maxConcurrentRuns: number
+    readonly maxConcurrentRunsPerProject: number
+  }
+>()("@effect-cicd/runtime/SchedulerConfig") {
+  static readonly layer = Layer.effect(
+    SchedulerConfig,
+    Effect.gen(function* () {
+      const maxConcurrentRuns = yield* Config.int("MAX_CONCURRENT_RUNS").pipe(
+        Config.orElse(() => Config.succeed(1)),
+      )
+      const maxConcurrentRunsPerProject = yield* Config.int("MAX_CONCURRENT_RUNS_PER_PROJECT").pipe(
+        Config.orElse(() => Config.succeed(1)),
+      )
+
+      return {
+        maxConcurrentRuns,
+        maxConcurrentRunsPerProject,
+      }
+    }),
+  )
+}
+
 export class EngineServiceConfig extends Context.Service<
   EngineServiceConfig,
   {
@@ -151,6 +176,7 @@ export class GitHubTriggerConfig extends Context.Service<
   GitHubTriggerConfig,
   {
     readonly workspaceRoot: string
+    readonly snapshotRetentionPerProject: number
   }
 >()("@effect-cicd/runtime/GitHubTriggerConfig") {
   static readonly layer = Layer.effect(
@@ -159,8 +185,11 @@ export class GitHubTriggerConfig extends Context.Service<
       const workspaceRoot = yield* Config.string("GITHUB_WORKSPACE_ROOT").pipe(
         Config.orElse(() => Config.succeed(resolvePath(process.cwd(), ".effect-cicd", "github"))),
       )
+      const snapshotRetentionPerProject = yield* Config.int("GITHUB_SNAPSHOT_RETENTION_PER_PROJECT").pipe(
+        Config.orElse(() => Config.succeed(5)),
+      )
 
-      return { workspaceRoot }
+      return { workspaceRoot, snapshotRetentionPerProject }
     }),
   )
 }

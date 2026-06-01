@@ -5,6 +5,7 @@ import { isSqlError } from "effect/unstable/sql/SqlError"
 
 import { GitHubBinding } from "../domain/github.ts"
 import { StoreUnavailable } from "../domain/errors.ts"
+import { ProjectSummary } from "../domain/project.ts"
 import { decodeGitHubBinding, encodeGitHubBinding } from "../runtime/storage-codecs.ts"
 
 export class GitHubBindingStore extends Context.Service<
@@ -12,6 +13,7 @@ export class GitHubBindingStore extends Context.Service<
   {
     readonly create: (binding: GitHubBinding) => Effect.Effect<void, StoreUnavailable>
     readonly list: () => Effect.Effect<ReadonlyArray<GitHubBinding>, StoreUnavailable>
+    readonly listProjects: () => Effect.Effect<ReadonlyArray<ProjectSummary>, StoreUnavailable>
     readonly listEnabledForPush: (
       installationId: number,
       repositoryId: number,
@@ -30,6 +32,9 @@ export class GitHubBindingStore extends Context.Service<
 
     const list = () => Effect.sync(() => [...bindings.values()].sort(compareBindings))
 
+    const listProjects = () =>
+      Effect.sync(() => summarizeProjects([...bindings.values()], []))
+
     const listEnabledForPush = (installationId: number, repositoryId: number, repositoryOwner: string, repositoryName: string) =>
       Effect.sync(() =>
         [...bindings.values()]
@@ -47,7 +52,7 @@ export class GitHubBindingStore extends Context.Service<
           .sort(compareBindings),
       )
 
-    return { create, list, listEnabledForPush }
+    return { create, list, listProjects, listEnabledForPush }
   })
 
   static readonly postgresLayer = Layer.effect(
@@ -61,6 +66,7 @@ export class GitHubBindingStore extends Context.Service<
         yield* catchSql("create GitHub binding", sql`
           INSERT INTO github_bindings (
             binding_id,
+            project_id,
             provider,
             repo_owner,
             repo_name,
@@ -77,6 +83,7 @@ export class GitHubBindingStore extends Context.Service<
             binding_json
           ) VALUES (
             ${binding.bindingId},
+            ${binding.projectId},
             ${binding.provider},
             ${binding.repositoryOwner},
             ${binding.repositoryName},
@@ -105,6 +112,20 @@ export class GitHubBindingStore extends Context.Service<
         return rows.map((row) => decodeGitHubBinding(row.binding_json))
       })
 
+      const listProjects = Effect.fn("GitHubBindingStore.listProjects")(function* () {
+        const bindings = yield* list()
+        const runRows = yield* catchSql(
+          "list project run counts",
+          sql<{ readonly project_id: string; readonly run_count: number; readonly latest_run_at: Date | null }>`
+            SELECT project_id, COUNT(*)::int AS run_count, MAX(updated_at) AS latest_run_at
+            FROM workflow_runs
+            GROUP BY project_id
+          `,
+        )
+
+        return summarizeProjects(bindings, runRows)
+      })
+
       const listEnabledForPush = Effect.fn("GitHubBindingStore.listEnabledForPush")(
         function* (installationId: number, repositoryId: number, repositoryOwner: string, repositoryName: string) {
           const rows = yield* catchSql("list matching GitHub bindings", sql<{ readonly binding_json: unknown }>`
@@ -126,9 +147,41 @@ export class GitHubBindingStore extends Context.Service<
         },
       )
 
-      return { create, list, listEnabledForPush }
+      return { create, list, listProjects, listEnabledForPush }
     }),
   )
+}
+
+const summarizeProjects = (
+  bindings: ReadonlyArray<GitHubBinding>,
+  runRows: ReadonlyArray<{ readonly project_id: string; readonly run_count: number; readonly latest_run_at: Date | null }>,
+) => {
+  const runsByProject = new Map(runRows.map((row) => [row.project_id, row]))
+  const grouped = new Map<string, Array<GitHubBinding>>()
+
+  for (const binding of bindings) {
+    const items = grouped.get(binding.projectId) ?? []
+    items.push(binding)
+    grouped.set(binding.projectId, items)
+  }
+
+  return [...grouped.entries()]
+    .sort((left, right) => compareStrings(left[0], right[0]))
+    .map(([projectId, projectBindings]) => {
+      const first = projectBindings[0]!
+      const runRow = runsByProject.get(projectId)
+
+      return new ProjectSummary({
+        projectId: first.projectId,
+        provider: first.provider,
+        repositoryOwner: first.repositoryOwner,
+        repositoryName: first.repositoryName,
+        repositoryId: first.repositoryId,
+        bindingCount: projectBindings.length,
+        runCount: runRow?.run_count ?? 0,
+        latestRunAt: runRow?.latest_run_at ?? undefined,
+      })
+    })
 }
 
 const compareBindings = (left: GitHubBinding, right: GitHubBinding) => {

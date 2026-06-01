@@ -2,7 +2,7 @@ import { Schema } from "effect"
 
 import { ArtifactMetadata, LogMetadata } from "./artifacts.ts"
 import { ExecutionPlan } from "./execution-plan.ts"
-import { AttemptId, PlanId, RunId, UnitId, WorkflowId } from "./ids.ts"
+import { AttemptId, PlanId, ProjectId, RunId, UnitId, WorkflowId } from "./ids.ts"
 import { ReportSummary } from "./reports.ts"
 import { DataValueFormat } from "./workflow-definition.ts"
 
@@ -10,7 +10,7 @@ const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
 
 export const WorkflowRunStatus = Schema.Literals([
-  "created",
+  "queued",
   "running",
   "succeeded",
   "failed",
@@ -113,6 +113,7 @@ export class ExecutionUnitState extends Schema.Class<ExecutionUnitState>("Execut
 
 export class WorkflowRunState extends Schema.Class<WorkflowRunState>("WorkflowRunState")({
   runId: RunId,
+  projectId: ProjectId,
   workflowId: WorkflowId,
   planId: PlanId,
   execution: RunExecutionContext,

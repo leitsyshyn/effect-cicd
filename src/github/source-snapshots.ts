@@ -1,10 +1,11 @@
 import { Effect, Layer } from "effect"
 import * as Context from "effect/Context"
 import { dirname, resolve as resolvePath } from "node:path"
-import { mkdir, rename, rm, stat } from "node:fs/promises"
+import { mkdir, readdir, rename, rm, stat } from "node:fs/promises"
 
 import { SourceAcquisitionFailed } from "../domain/errors.ts"
 import { GitHubBinding, GitHubRepositorySnapshot } from "../domain/github.ts"
+import { sanitizeProjectPathSegment } from "../domain/project.ts"
 import { GitHubTriggerConfig } from "../runtime/config.ts"
 import { GitHubApiClient } from "./api-client.ts"
 
@@ -27,17 +28,14 @@ export class GitHubSourceSnapshots extends Context.Service<
       const acquire = Effect.fn("GitHubSourceSnapshots.acquire")(
         function* (binding: GitHubBinding, ref: string, commitSha: string) {
           const repository = `${binding.repositoryOwner}/${binding.repositoryName}`
-          const snapshotPath = resolvePath(
-            config.workspaceRoot,
-            sanitizePathSegment(binding.repositoryOwner),
-            sanitizePathSegment(binding.repositoryName),
-            commitSha,
-          )
+          const projectRoot = resolvePath(config.workspaceRoot, binding.provider, sanitizeProjectPathSegment(binding.projectId))
+          const snapshotPath = resolvePath(projectRoot, commitSha)
           const workspacePath =
             binding.workspaceSubdir === undefined ? snapshotPath : resolvePath(snapshotPath, binding.workspaceSubdir)
 
           if (!(yield* pathExists(snapshotPath))) {
             yield* materializeSnapshot(gitHubApi, binding, repository, ref, commitSha, snapshotPath)
+            yield* pruneSnapshots(projectRoot, snapshotPath, config.snapshotRetentionPerProject)
           }
 
           if (!(yield* pathExists(workspacePath))) {
@@ -51,6 +49,7 @@ export class GitHubSourceSnapshots extends Context.Service<
           }
 
           return new GitHubRepositorySnapshot({
+            projectId: binding.projectId,
             repository,
             ref,
             commitSha,
@@ -152,11 +151,39 @@ const pathExists = (path: string) =>
       .catch(() => false),
   )
 
-const sanitizePathSegment = (segment: string) => segment.replace(/[^A-Za-z0-9._-]/g, "_")
-
 const processEnv = Object.fromEntries(
   Object.entries(process.env).map(([key, value]) => [key, value ?? ""]),
 )
+
+const pruneSnapshots = (projectRoot: string, currentSnapshotPath: string, retentionCount: number) =>
+  Effect.promise(async () => {
+    try {
+      if (retentionCount < 1) {
+        return
+      }
+
+      const entries = await readdir(projectRoot).catch(() => [])
+      const snapshots = await Promise.all(
+        entries.map(async (entry) => {
+          const snapshotPath = resolvePath(projectRoot, entry)
+          const stats = await stat(snapshotPath).catch(() => undefined)
+
+          return stats?.isDirectory() ? { path: snapshotPath, modifiedAt: stats.mtimeMs } : undefined
+        }),
+      )
+
+      const staleEntries = snapshots
+        .filter(
+          (entry): entry is { readonly path: string; readonly modifiedAt: number } => entry !== undefined && entry.path !== currentSnapshotPath,
+        )
+        .sort((left, right) => right.modifiedAt - left.modifiedAt || left.path.localeCompare(right.path))
+        .slice(Math.max(retentionCount - 1, 0))
+
+      await Promise.all(staleEntries.map((entry) => rm(entry.path, { recursive: true, force: true })))
+    } catch {
+      return
+    }
+  })
 
 const toErrorMessage = (error: unknown) => {
   if (error instanceof Error) {

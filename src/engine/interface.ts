@@ -25,7 +25,7 @@ export class Engine extends Context.Service<
     readonly submitRun: (plan: ExecutionPlan, options?: RunStartOptions) => Effect.Effect<WorkflowRunState, DomainError>
     readonly cancelRun: (runId: RunId, reason?: string) => Effect.Effect<WorkflowRunState, DomainError>
     readonly retryRun: (runId: RunId, reason?: string) => Effect.Effect<WorkflowRunState, DomainError>
-    readonly listRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, DomainError>
+    readonly listRuns: (projectId?: string) => Effect.Effect<ReadonlyArray<WorkflowRunState>, DomainError>
     readonly inspectRun: (runId: RunId) => Effect.Effect<WorkflowRunState, DomainError>
     readonly streamRuns: () => Stream.Stream<RunUpdate, DomainError>
     readonly streamRun: (runId: RunId) => Stream.Stream<RunUpdate, DomainError>
@@ -63,7 +63,7 @@ export class Engine extends Context.Service<
 
       const retryRun = Effect.fn("Engine.retryRun")((runId: RunId, reason?: string) => runController.retryRun(runId, reason))
 
-      const listRuns = Effect.fn("Engine.listRuns")(() => stateStore.listRuns())
+      const listRuns = Effect.fn("Engine.listRuns")((projectId?: string) => stateStore.listRuns(projectId))
 
       const inspectRun = Effect.fn("Engine.inspectRun")((runId: RunId) => orchestrator.inspectRun(runId))
 

@@ -16,7 +16,9 @@ export class StateStore extends Context.Service<
     readonly getRun: (runId: RunId) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
     readonly updateUnit: (state: ExecutionUnitState) => Effect.Effect<void, UnitNotFound | StoreUnavailable>
     readonly updateAttempt: (state: ExecutionAttemptState) => Effect.Effect<void, UnitNotFound | StoreUnavailable>
-    readonly listRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, StoreUnavailable>
+    readonly listRuns: (projectId?: string) => Effect.Effect<ReadonlyArray<WorkflowRunState>, StoreUnavailable>
+    readonly listQueuedRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, StoreUnavailable>
+    readonly listActiveRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, StoreUnavailable>
     readonly listIncompleteRuns: () => Effect.Effect<ReadonlyArray<WorkflowRunState>, StoreUnavailable>
     readonly getUnit: (runId: RunId, unitId: UnitId) => Effect.Effect<ExecutionUnitState, UnitNotFound | StoreUnavailable>
   }
@@ -119,14 +121,26 @@ export class StateStore extends Context.Service<
         }),
       )
 
+    const listQueuedRuns = () =>
+      Effect.sync(() =>
+        [...runs.values()].filter((run) => run.status === "queued").sort(compareQueuedRuns),
+      )
+
+    const listActiveRuns = () =>
+      Effect.sync(() =>
+        [...runs.values()].filter((run) => activeRunStatuses.has(run.status)).sort(compareRuns),
+      )
+
     const listIncompleteRuns = () =>
       Effect.sync(() =>
         [...runs.values()].filter((run) => !terminalRunStatuses.has(run.status)),
       )
 
-    const listRuns = () =>
+    const listRuns = (projectId?: string) =>
       Effect.sync(() =>
-        [...runs.values()].sort((left, right) => compareRuns(right, left)),
+        [...runs.values()]
+          .filter((run) => projectId === undefined || run.projectId === projectId)
+          .sort((left, right) => compareRuns(right, left)),
       )
 
     const getUnit = (runId: RunId, unitId: UnitId) =>
@@ -150,6 +164,8 @@ export class StateStore extends Context.Service<
       updateUnit,
       updateAttempt,
       listRuns,
+      listQueuedRuns,
+      listActiveRuns,
       listIncompleteRuns,
       getUnit,
     }
@@ -161,6 +177,7 @@ export class StateStore extends Context.Service<
       const sql = yield* SqlClient
 
       const upsertableFields = (state: WorkflowRunState) => ({
+        projectId: state.projectId,
         workflowId: state.workflowId,
         planId: state.planId,
         status: state.status,
@@ -177,6 +194,7 @@ export class StateStore extends Context.Service<
         yield* catchSql("create workflow run", sql`
           INSERT INTO workflow_runs (
             run_id,
+            project_id,
             workflow_id,
             plan_id,
             status,
@@ -187,6 +205,7 @@ export class StateStore extends Context.Service<
             state_json
           ) VALUES (
             ${state.runId},
+            ${fields.projectId},
             ${fields.workflowId},
             ${fields.planId},
             ${fields.status},
@@ -203,7 +222,8 @@ export class StateStore extends Context.Service<
         const fields = upsertableFields(state)
         const rows = yield* catchSql("update workflow run", sql<{ readonly run_id: string }>`
           UPDATE workflow_runs
-          SET workflow_id = ${fields.workflowId},
+          SET project_id = ${fields.projectId},
+              workflow_id = ${fields.workflowId},
               plan_id = ${fields.planId},
               status = ${fields.status},
               created_at = ${fields.createdAt},
@@ -235,11 +255,43 @@ export class StateStore extends Context.Service<
         return decodeWorkflowRunState(row.state_json)
       })
 
-      const listRuns = Effect.fn("StateStore.listRuns")(function* () {
-        const rows = yield* catchSql("list workflow runs", sql<{ readonly state_json: unknown }>`
+      const listRuns = Effect.fn("StateStore.listRuns")(function* (projectId?: string) {
+        const rows = yield* catchSql(
+          "list workflow runs",
+          projectId === undefined
+            ? sql<{ readonly state_json: unknown }>`
+                SELECT state_json
+                FROM workflow_runs
+                ORDER BY updated_at DESC, run_id ASC
+              `
+            : sql<{ readonly state_json: unknown }>`
+                SELECT state_json
+                FROM workflow_runs
+                WHERE project_id = ${projectId}
+                ORDER BY updated_at DESC, run_id ASC
+              `,
+        )
+
+        return rows.map((row: { readonly state_json: unknown }) => decodeWorkflowRunState(row.state_json))
+      })
+
+      const listQueuedRuns = Effect.fn("StateStore.listQueuedRuns")(function* () {
+        const rows = yield* catchSql("list queued workflow runs", sql<{ readonly state_json: unknown }>`
           SELECT state_json
           FROM workflow_runs
-          ORDER BY updated_at DESC, run_id ASC
+          WHERE status = 'queued'
+          ORDER BY created_at ASC, run_id ASC
+        `)
+
+        return rows.map((row: { readonly state_json: unknown }) => decodeWorkflowRunState(row.state_json))
+      })
+
+      const listActiveRuns = Effect.fn("StateStore.listActiveRuns")(function* () {
+        const rows = yield* catchSql("list active workflow runs", sql<{ readonly state_json: unknown }>`
+          SELECT state_json
+          FROM workflow_runs
+          WHERE status IN ('running', 'canceling')
+          ORDER BY created_at ASC, run_id ASC
         `)
 
         return rows.map((row: { readonly state_json: unknown }) => decodeWorkflowRunState(row.state_json))
@@ -249,7 +301,7 @@ export class StateStore extends Context.Service<
         const rows = yield* catchSql("list incomplete workflow runs", sql<{ readonly state_json: unknown }>`
           SELECT state_json
           FROM workflow_runs
-          WHERE status NOT IN ('succeeded', 'failed', 'canceled', 'interrupted')
+          WHERE status NOT IN ('succeeded', 'failed', 'timed_out', 'canceled', 'interrupted')
           ORDER BY updated_at DESC, run_id ASC
         `)
 
@@ -346,6 +398,8 @@ export class StateStore extends Context.Service<
         updateUnit,
         updateAttempt,
         listRuns,
+        listQueuedRuns,
+        listActiveRuns,
         listIncompleteRuns,
         getUnit,
       }
@@ -353,10 +407,17 @@ export class StateStore extends Context.Service<
   )
 }
 
-const terminalRunStatuses = new Set(["succeeded", "failed", "canceled", "interrupted"])
+const terminalRunStatuses = new Set(["succeeded", "failed", "timed_out", "canceled", "interrupted"])
+
+const activeRunStatuses = new Set(["running", "canceling"])
 
 const compareRuns = (left: WorkflowRunState, right: WorkflowRunState) => {
   const timeDelta = left.updatedAt.getTime() - right.updatedAt.getTime()
+  return timeDelta === 0 ? compareStrings(left.runId, right.runId) : timeDelta
+}
+
+const compareQueuedRuns = (left: WorkflowRunState, right: WorkflowRunState) => {
+  const timeDelta = left.createdAt.getTime() - right.createdAt.getTime()
   return timeDelta === 0 ? compareStrings(left.runId, right.runId) : timeDelta
 }
 

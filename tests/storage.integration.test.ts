@@ -8,7 +8,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import { cli, cliVersion, makeDurableStorageLayer } from "../src/cli/index.ts"
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../src/domain/artifacts.ts"
 import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanUnit } from "../src/domain/execution-plan.ts"
-import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
+import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, ProjectId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { RunCreated } from "../src/domain/events.ts"
 import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState, ExecutionAttemptState, ExecutionUnitState } from "../src/domain/runtime-state.ts"
 import { DslMaterializer } from "../src/dsl/index.ts"
@@ -20,7 +20,7 @@ import { RunController } from "../src/engine/run-controller.ts"
 import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { EventLog } from "../src/engine/stores/event-log.ts"
 import { StateStore } from "../src/engine/stores/state-store.ts"
-import { StorageRuntimeConfig } from "../src/runtime/config.ts"
+import { SchedulerConfig, StorageRuntimeConfig } from "../src/runtime/config.ts"
 import { WorkflowModuleLoader } from "../src/dsl/loader.ts"
 import { ArtifactDeclaration, NamedDeclaration } from "../src/domain/workflow-definition.ts"
 
@@ -65,6 +65,7 @@ describe("durable storage integration", () => {
     const attemptId = AttemptId.make(`attempt:${runId}:unit:build:1`)
     const run = new WorkflowRunState({
       runId,
+      projectId: ProjectId.make("project:storage"),
       workflowId: WorkflowId.make(`workflow:storage:${crypto.randomUUID()}`),
       planId: PlanId.make(`plan:storage:${crypto.randomUUID()}`),
       execution: executionContextFor("workflow:storage", "plan:storage", ["unit:build"]),
@@ -262,7 +263,12 @@ const durableCliLayer = (options: TestExecutorLayerOptions = {}) => {
     Layer.provideMerge(storageLayer),
     Layer.provideMerge(Executor.testLayer(options)),
   )
-  const runControllerLayer = RunController.layer.pipe(Layer.provideMerge(orchestratorLayer))
+  const schedulerLayer = Layer.succeed(SchedulerConfig, { maxConcurrentRuns: 10, maxConcurrentRunsPerProject: 10 })
+  const runControllerLayer = RunController.layer.pipe(
+    Layer.provideMerge(orchestratorLayer),
+    Layer.provideMerge(storageLayer),
+    Layer.provideMerge(schedulerLayer),
+  )
 
   return Layer.mergeAll(
     storageSupportLayer,
@@ -281,7 +287,7 @@ const durableCliLayer = (options: TestExecutorLayerOptions = {}) => {
       Layer.provideMerge(runControllerLayer),
       Layer.provideMerge(storageLayer),
     ),
-  ).pipe(Layer.provideMerge(runtimeSupportLayer), Layer.provideMerge(storageConfigLayer(false)))
+  ).pipe(Layer.provideMerge(runtimeSupportLayer), Layer.provideMerge(storageConfigLayer(false)), Layer.provideMerge(schedulerLayer))
 }
 
 const realDurableCliLayer = () => {
@@ -294,7 +300,12 @@ const realDurableCliLayer = () => {
       ),
     ),
   )
-  const runControllerLayer = RunController.layer.pipe(Layer.provideMerge(orchestratorLayer))
+  const schedulerLayer = Layer.succeed(SchedulerConfig, { maxConcurrentRuns: 10, maxConcurrentRunsPerProject: 10 })
+  const runControllerLayer = RunController.layer.pipe(
+    Layer.provideMerge(orchestratorLayer),
+    Layer.provideMerge(storageLayer),
+    Layer.provideMerge(schedulerLayer),
+  )
 
   return Layer.mergeAll(
     TestConsole.layer,
@@ -312,7 +323,7 @@ const realDurableCliLayer = () => {
       Layer.provideMerge(runControllerLayer),
       Layer.provideMerge(storageLayer),
     ),
-  ).pipe(Layer.provideMerge(runtimeSupportLayer), Layer.provideMerge(storageConfigLayer(false)))
+  ).pipe(Layer.provideMerge(runtimeSupportLayer), Layer.provideMerge(storageConfigLayer(false)), Layer.provideMerge(schedulerLayer))
 }
 
 const runCli = (args: ReadonlyArray<string>, runtimeLayer: Layer.Layer<any, any, any>) =>
@@ -400,6 +411,7 @@ const interruptedSeedRun = (workflowId: string) => {
 
   return new WorkflowRunState({
     runId,
+    projectId: ProjectId.make(`project:${workflowId}`),
     workflowId: WorkflowId.make(workflowId),
     planId: PlanId.make(`plan:${workflowId}`),
     execution: executionContextFor(workflowId, `plan:${workflowId}`, ["unit:build", "unit:test"]),

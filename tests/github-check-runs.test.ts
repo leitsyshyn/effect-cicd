@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { createHmac } from "node:crypto"
 
-import { AttemptId, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
+import { AttemptId, PlanId, ProjectId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { ContainerCommandDescriptor, ExecutionPlan, PlanUnit } from "../src/domain/execution-plan.ts"
 import {
   ExecutionAttemptState,
@@ -34,6 +34,7 @@ describe("GitHub checks lifecycle", () => {
 const sampleRun = (status: WorkflowRunState["status"]) =>
   new WorkflowRunState({
     runId: RunId.make(`run:${status}`),
+    projectId: ProjectId.make("project:github:test"),
     workflowId: WorkflowId.make("workflow:github:test"),
     planId: PlanId.make("plan:github:test"),
     execution: new RunExecutionContext({

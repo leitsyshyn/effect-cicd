@@ -3,7 +3,7 @@ import { Effect } from "effect"
 
 import { ArtifactMetadata, LogMetadata } from "../src/domain/artifacts.ts"
 import { RunCreated, RunStarted, UnitSucceeded } from "../src/domain/events.ts"
-import { PlanId, RunId, UnitId, WorkflowId, AttemptId, ArtifactRef, LogRef, EventId } from "../src/domain/ids.ts"
+import { PlanId, ProjectId, RunId, UnitId, WorkflowId, AttemptId, ArtifactRef, LogRef, EventId } from "../src/domain/ids.ts"
 import { ExecutionAttemptState, ExecutionUnitState, ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState } from "../src/domain/runtime-state.ts"
 import { ExecutionPlan, PlanDependency, PlanUnit, ContainerCommandDescriptor } from "../src/domain/execution-plan.ts"
 import { NamedDeclaration, ArtifactDeclaration } from "../src/domain/workflow-definition.ts"
@@ -93,6 +93,7 @@ const sampleRun = () => {
 
   return new WorkflowRunState({
     runId,
+    projectId: ProjectId.make("project:dashboard"),
     workflowId: WorkflowId.make("workflow:dashboard"),
     planId: PlanId.make("plan:dashboard"),
     execution: new RunExecutionContext({

@@ -4,7 +4,7 @@ import { TestClock } from "effect/testing"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../src/domain/artifacts.ts"
 import { ContainerCommandDescriptor, ExecutionPlan, PlanDependency, PlanTimeoutPolicy, PlanUnit } from "../src/domain/execution-plan.ts"
-import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
+import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, ProjectId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { ProducedReport } from "../src/domain/reports.ts"
 import { RunCreated } from "../src/domain/events.ts"
 import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState, ExecutionUnitState, ExecutionAttemptState } from "../src/domain/runtime-state.ts"
@@ -689,6 +689,7 @@ const interruptedSeedRun = (workflowId: string) => {
 
   return new WorkflowRunState({
     runId,
+    projectId: ProjectId.make(`project:${workflowId}`),
     workflowId: WorkflowId.make(workflowId),
     planId: PlanId.make(`plan:${workflowId}`),
     execution: new RunExecutionContext({

@@ -3,7 +3,7 @@ import * as Context from "effect/Context"
 
 import { DomainError } from "../domain/errors.ts"
 import { GitHubRunLink } from "../domain/github.ts"
-import { BindingId, RunId } from "../domain/ids.ts"
+import { BindingId, ProjectId, RunId } from "../domain/ids.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
 import { Engine } from "../engine/interface.ts"
 import { RunUpdate, RunUpdates } from "../engine/run-updates.ts"
@@ -13,6 +13,7 @@ import { GitHubRunLinkStore } from "./run-link-store.ts"
 
 export interface GitHubRunRegistration {
   readonly bindingId: BindingId
+  readonly projectId: ProjectId
   readonly installationId: number
   readonly repositoryId: number
   readonly repositoryOwner: string
@@ -57,6 +58,7 @@ export class GitHubCheckRuns extends Context.Service<
           const link = new GitHubRunLink({
             runId: run.runId,
             bindingId: registration.bindingId,
+            projectId: registration.projectId,
             provider: "github",
             installationId: registration.installationId,
             repositoryId: registration.repositoryId,
@@ -152,7 +154,7 @@ export const toGitHubCheckLifecycle = (run: WorkflowRunState): GitHubCheckLifecy
   const interruptedUnit = run.units.find((unit) => unit.status === "interrupted")
 
   switch (run.status) {
-    case "created":
+    case "queued":
       return {
         status: "queued",
         title: "Workflow queued",

@@ -22,6 +22,7 @@ import { RunUpdates } from "../src/engine/run-updates.ts"
 import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { EventLog } from "../src/engine/stores/event-log.ts"
 import { StateStore } from "../src/engine/stores/state-store.ts"
+import { SchedulerConfig } from "../src/runtime/config.ts"
 import { StorageTransactor } from "../src/runtime/storage.ts"
 import { SecretRef } from "../src/domain/secrets.ts"
 import { SecretStore } from "../src/secrets/store.ts"
@@ -275,6 +276,7 @@ describe("Engine interface", () => {
 const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
   {
     const updatesLayer = RunUpdates.noopLayer
+    const schedulerLayer = Layer.succeed(SchedulerConfig, { maxConcurrentRuns: 10, maxConcurrentRunsPerProject: 10 })
     const orchestratorLayer = Orchestrator.layer.pipe(
       Layer.provideMerge(StorageTransactor.memoryLayer),
       Layer.provideMerge(StateStore.memoryLayer),
@@ -284,7 +286,11 @@ const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
       Layer.provideMerge(Executor.testLayer(options)),
       Layer.provideMerge(updatesLayer),
     )
-    const runControllerLayer = RunController.layer.pipe(Layer.provideMerge(orchestratorLayer))
+    const runControllerLayer = RunController.layer.pipe(
+      Layer.provideMerge(orchestratorLayer),
+      Layer.provideMerge(StateStore.memoryLayer),
+      Layer.provideMerge(schedulerLayer),
+    )
 
     return Engine.layer.pipe(
       Layer.provideMerge(Planner.layer),
@@ -296,6 +302,7 @@ const runtimeLayer = (options: TestExecutorLayerOptions = {}) =>
       Layer.provideMerge(ArtifactStore.memoryLayer),
       Layer.provideMerge(SecretStore.memoryLayer),
       Layer.provideMerge(updatesLayer),
+      Layer.provideMerge(schedulerLayer),
     )
   }
 

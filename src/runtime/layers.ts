@@ -11,6 +11,7 @@ import { EventLog } from "../engine/stores/event-log.ts"
 import { StateStore } from "../engine/stores/state-store.ts"
 import { SecretEncryptionConfig, SecretStore } from "../secrets/store.ts"
 import { ObjectStorageClient, StorageTransactor, sqlClientLayer, storageMigrationLayer } from "./storage.ts"
+import { SchedulerConfig } from "./config.ts"
 
 export const makeDurableStorageLayer = () => {
   const sqlLayer = sqlClientLayer
@@ -40,11 +41,16 @@ export const makeServiceEngineLayer = () => {
     Layer.provideMerge(LocalContainerExecutor.layer),
     Layer.provideMerge(updatesLayer),
   )
-  const runControllerLayer = RunController.layer.pipe(Layer.provideMerge(orchestratorLayer))
+  const runControllerLayer = RunController.layer.pipe(
+    Layer.provideMerge(orchestratorLayer),
+    Layer.provideMerge(storageLayer),
+    Layer.provideMerge(SchedulerConfig.layer),
+  )
 
   return Layer.mergeAll(
     storageLayer,
     updatesLayer,
+    SchedulerConfig.layer,
     orchestratorLayer,
     runControllerLayer,
     Engine.layer.pipe(
@@ -74,7 +80,12 @@ export const makeInMemoryEngineLayer = (options: TestExecutorLayerOptions = {}) 
     Layer.provideMerge(executorLayer),
     Layer.provideMerge(updatesLayer),
   )
-  const runControllerLayer = RunController.layer.pipe(Layer.provideMerge(orchestratorLayer))
+  const schedulerLayer = SchedulerConfig.layer
+  const runControllerLayer = RunController.layer.pipe(
+    Layer.provideMerge(orchestratorLayer),
+    Layer.provideMerge(stateLayer),
+    Layer.provideMerge(schedulerLayer),
+  )
 
   return Layer.mergeAll(
     transactorLayer,
@@ -84,6 +95,7 @@ export const makeInMemoryEngineLayer = (options: TestExecutorLayerOptions = {}) 
     secretLayer,
     executorLayer,
     updatesLayer,
+    schedulerLayer,
     orchestratorLayer,
     runControllerLayer,
     Engine.layer.pipe(
@@ -96,6 +108,7 @@ export const makeInMemoryEngineLayer = (options: TestExecutorLayerOptions = {}) 
       Layer.provideMerge(artifactLayer),
       Layer.provideMerge(secretLayer),
       Layer.provideMerge(updatesLayer),
+      Layer.provideMerge(schedulerLayer),
     ),
   )
 }
@@ -117,7 +130,12 @@ export const makeInMemoryServiceEngineLayer = (options: TestExecutorLayerOptions
     Layer.provideMerge(executorLayer),
     Layer.provideMerge(updatesLayer),
   )
-  const runControllerLayer = RunController.layer.pipe(Layer.provideMerge(orchestratorLayer))
+  const schedulerLayer = SchedulerConfig.layer
+  const runControllerLayer = RunController.layer.pipe(
+    Layer.provideMerge(orchestratorLayer),
+    Layer.provideMerge(stateLayer),
+    Layer.provideMerge(schedulerLayer),
+  )
 
   return Layer.mergeAll(
     transactorLayer,
@@ -127,6 +145,7 @@ export const makeInMemoryServiceEngineLayer = (options: TestExecutorLayerOptions
     secretLayer,
     executorLayer,
     updatesLayer,
+    schedulerLayer,
     orchestratorLayer,
     runControllerLayer,
     Engine.layer.pipe(
@@ -139,6 +158,7 @@ export const makeInMemoryServiceEngineLayer = (options: TestExecutorLayerOptions
       Layer.provideMerge(artifactLayer),
       Layer.provideMerge(secretLayer),
       Layer.provideMerge(updatesLayer),
+      Layer.provideMerge(schedulerLayer),
     ),
   )
 }

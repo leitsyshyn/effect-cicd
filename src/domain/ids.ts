@@ -15,6 +15,9 @@ export type RunId = typeof RunId.Type
 export const BindingId = Schema.String.pipe(Schema.brand("BindingId"))
 export type BindingId = typeof BindingId.Type
 
+export const ProjectId = Schema.String.pipe(Schema.brand("ProjectId"))
+export type ProjectId = typeof ProjectId.Type
+
 export const AttemptId = Schema.String.pipe(Schema.brand("AttemptId"))
 export type AttemptId = typeof AttemptId.Type
 

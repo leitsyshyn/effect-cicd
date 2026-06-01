@@ -46,6 +46,7 @@ export class GitHubRunLinkStore extends Context.Service<
           INSERT INTO github_run_links (
             run_id,
             binding_id,
+            project_id,
             installation_id,
             repository_id,
             repo_owner,
@@ -62,6 +63,7 @@ export class GitHubRunLinkStore extends Context.Service<
           ) VALUES (
             ${link.runId},
             ${link.bindingId},
+            ${link.projectId},
             ${link.installationId},
             ${link.repositoryId},
             ${link.repositoryOwner},
@@ -78,6 +80,7 @@ export class GitHubRunLinkStore extends Context.Service<
           )
           ON CONFLICT (run_id) DO UPDATE SET
             binding_id = EXCLUDED.binding_id,
+            project_id = EXCLUDED.project_id,
             installation_id = EXCLUDED.installation_id,
             repository_id = EXCLUDED.repository_id,
             repo_owner = EXCLUDED.repo_owner,

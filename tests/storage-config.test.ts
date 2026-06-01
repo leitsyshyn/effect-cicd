@@ -4,7 +4,7 @@ import { ConfigProvider, Effect, Layer, Redacted } from "effect"
 import { ArtifactMetadata, LogMetadata } from "../src/domain/artifacts.ts"
 import { ArtifactRegistered, RunCreated } from "../src/domain/events.ts"
 import { ContainerCommandDescriptor, ExecutionPlan, PlanUnit } from "../src/domain/execution-plan.ts"
-import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
+import { ArtifactRef, AttemptId, EventId, LogRef, PlanId, ProjectId, RunId, UnitId, WorkflowId } from "../src/domain/ids.ts"
 import { ExecutionAttemptState, ExecutionUnitState, ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState } from "../src/domain/runtime-state.ts"
 import { ObjectStorageConfig, PostgresConfig, StorageRuntimeConfig } from "../src/runtime/config.ts"
 import {
@@ -84,6 +84,7 @@ describe("storage codecs", () => {
     })
     const run = new WorkflowRunState({
       runId,
+      projectId: ProjectId.make("project:codec"),
       workflowId: WorkflowId.make("workflow:codec"),
       planId: PlanId.make("plan:codec"),
       execution: new RunExecutionContext({

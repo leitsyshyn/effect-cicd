@@ -7,6 +7,7 @@ import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { WorkflowEvent } from "../domain/events.ts"
 import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubTriggerResponse } from "../domain/github.ts"
 import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
+import { ProjectSummary } from "../domain/project.ts"
 import { WorkflowRunState, type WorkflowRunStatus } from "../domain/runtime-state.ts"
 import { SecretSummary } from "../domain/secrets.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
@@ -21,6 +22,7 @@ import { GitHubBindingStore } from "../github/binding-store.ts"
 import { GitHubIntegration } from "../github/integration.ts"
 import { GitHubRunLinkStore } from "../github/run-link-store.ts"
 import { GitHubSourceSnapshots } from "../github/source-snapshots.ts"
+import { GitHubTriggerDeliveryStore } from "../github/trigger-delivery-store.ts"
 import { EngineServiceConfig, GitHubAppConfig, GitHubTriggerConfig, StorageRuntimeConfig } from "../runtime/config.ts"
 import { makeServiceEngineLayer } from "../runtime/layers.ts"
 import { sqlClientLayer } from "../runtime/storage.ts"
@@ -39,6 +41,7 @@ export const makeServiceLayer = () =>
     const engineLayer = makeServiceEngineLayer()
     const bindingStoreLayer = GitHubBindingStore.postgresLayer.pipe(Layer.provideMerge(sqlClientLayer))
     const runLinkStoreLayer = GitHubRunLinkStore.postgresLayer.pipe(Layer.provideMerge(sqlClientLayer))
+    const triggerDeliveryLayer = GitHubTriggerDeliveryStore.postgresLayer.pipe(Layer.provideMerge(sqlClientLayer))
     const gitHubConfigLayer = GitHubAppConfig.layer
     const gitHubAuthLayer = GitHubAppAuth.layer.pipe(Layer.provideMerge(gitHubConfigLayer))
     const gitHubApiLayer = GitHubApiClient.layer.pipe(
@@ -61,6 +64,8 @@ export const makeServiceLayer = () =>
       Layer.provideMerge(bindingStoreLayer),
       Layer.provideMerge(gitHubApiLayer),
       Layer.provideMerge(gitHubChecksLayer),
+      Layer.provideMerge(runLinkStoreLayer),
+      Layer.provideMerge(triggerDeliveryLayer),
       Layer.provideMerge(snapshotLayer),
       Layer.provideMerge(DslMaterializer.layer),
       Layer.provideMerge(WorkflowModuleLoader.layer),
@@ -71,6 +76,7 @@ export const makeServiceLayer = () =>
       engineLayer,
       bindingStoreLayer,
       runLinkStoreLayer,
+      triggerDeliveryLayer,
       gitHubConfigLayer,
       gitHubAuthLayer,
       gitHubApiLayer,
@@ -116,8 +122,11 @@ export const startServiceServer = Effect.gen(function* () {
         POST: (request) => runJsonEffect(planWorkflow(engine, request), { schema: ExecutionPlan }),
       },
       "/api/runs": {
-        GET: () => runJsonEffect(engine.listRuns(), { schema: Schema.Array(WorkflowRunState) }),
+        GET: (request) => runJsonEffect(listRuns(engine, request), { schema: Schema.Array(WorkflowRunState) }),
         POST: (request) => runJsonEffect(submitRun(engine, request), { schema: WorkflowRunState }),
+      },
+      "/api/projects": {
+        GET: () => runJsonEffect(gitHubIntegration.listProjects(), { schema: Schema.Array(ProjectSummary) }),
       },
       "/api/secrets": {
         GET: (request) => runJsonEffect(listSecrets(secretStore, request), { schema: Schema.Array(SecretSummary) }),
@@ -211,6 +220,12 @@ const submitRun = (engine: EngineService, request: Request) =>
             ...(submission.options.inputValues === undefined ? {} : { inputValues: submission.options.inputValues }),
           },
     )
+  })
+
+const listRuns = (engine: EngineService, request: Request) =>
+  Effect.gen(function* () {
+    const projectId = new URL(request.url).searchParams.get("projectId")?.trim()
+    return yield* engine.listRuns(projectId === undefined || projectId.length === 0 ? undefined : projectId)
   })
 
 const setSecret = (secretStore: typeof SecretStore.Service, request: Request) =>

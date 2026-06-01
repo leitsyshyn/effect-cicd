@@ -7,6 +7,7 @@ import { GitHubBindingRejected } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { GitHubBindingCreateRequest, GitHubBindingSummary } from "../domain/github.ts"
 import { ArtifactRef, AttemptId, LogRef, RunId, UnitId } from "../domain/ids.ts"
+import { ProjectSummary } from "../domain/project.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
 import { DslMaterializer, WorkflowModuleLoader } from "../dsl/index.ts"
 import { type TestExecutorLayerOptions } from "../engine/executor.ts"
@@ -82,6 +83,11 @@ const branchFlag = Flag.string("branch").pipe(
   Flag.withDescription("Restrict the binding to a branch name"),
 )
 
+const projectFlag = Flag.string("project").pipe(
+  Flag.optional,
+  Flag.withDescription("Filter runs by project id"),
+)
+
 const workspaceSubdirFlag = Flag.string("workspace-subdir").pipe(
   Flag.optional,
   Flag.withDescription("Run the workflow inside a repository subdirectory"),
@@ -137,10 +143,10 @@ const runCommand = Command.make(
   }),
 ).pipe(Command.withDescription("Run a workflow module (default export or named export `workflow`)"))
 
-const runsListCommand = Command.make("list", {}, () =>
+const runsListCommand = Command.make("list", { project: projectFlag }, ({ project }) =>
   Effect.gen(function* () {
     const engine = yield* Engine
-    const runs = yield* engine.listRuns()
+    const runs = yield* engine.listRuns(Option.getOrUndefined(project))
 
     yield* printLines(renderRunsList(runs))
   }),
@@ -313,6 +319,20 @@ const bindingsListCommand = Command.make("list", {}, () =>
   }),
 ).pipe(Command.withDescription("List configured repository bindings"))
 
+const projectsListCommand = Command.make("list", {}, () =>
+  Effect.gen(function* () {
+    const gitHubIntegration = yield* GitHubIntegration
+    const projects = yield* gitHubIntegration.listProjects()
+
+    yield* printLines(renderProjectsList(projects))
+  }),
+).pipe(Command.withDescription("List configured repository projects"))
+
+const projectsCommand = Command.make("projects").pipe(
+  Command.withDescription("Inspect configured repository projects"),
+  Command.withSubcommands([projectsListCommand]),
+)
+
 const bindingsCommand = Command.make("bindings").pipe(
   Command.withDescription("Manage repository trigger bindings"),
   Command.withSubcommands([bindingsAddCommand, bindingsListCommand]),
@@ -370,7 +390,7 @@ const secretsCommand = Command.make("secrets").pipe(
 
 export const cli = Command.make("effect-cicd").pipe(
   Command.withDescription("Minimal Engine-backed CLI MVP"),
-  Command.withSubcommands([validateCommand, planCommand, runCommand, runsCommand, bindingsCommand, secretsCommand]),
+  Command.withSubcommands([validateCommand, planCommand, runCommand, runsCommand, bindingsCommand, projectsCommand, secretsCommand]),
 )
 
 export const cliProgram = Command.run(cli, { version: cliVersion })
@@ -439,6 +459,7 @@ const renderRunSummary = (
   workspacePath: string,
 ) => [
   `run: ${run.runId}`,
+  `project: ${run.projectId}`,
   `status: ${run.status}`,
   `workspace: ${workspacePath}`,
   `inputs: ${formatResolvedValues(run.inputs ?? [])}`,
@@ -460,12 +481,13 @@ const renderRunsList = (runs: ReadonlyArray<WorkflowRunState>) => [
     ? ["-"]
     : runs.map(
         (run) =>
-          `${run.runId} workflow=${run.workflowId} status=${run.status} updatedAt=${run.updatedAt.toISOString()}`,
+          `${run.runId} project=${run.projectId} workflow=${run.workflowId} status=${run.status} updatedAt=${run.updatedAt.toISOString()}`,
       )),
 ]
 
 const renderRunState = (run: WorkflowRunState) => [
   `run: ${run.runId}`,
+  `project: ${run.projectId}`,
   `workflow: ${run.workflowId}`,
   `plan: ${run.planId}`,
   `status: ${run.status}`,
@@ -506,6 +528,7 @@ const renderSecretsList = (
 
 const renderBindingSummary = (binding: GitHubBindingSummary) => [
   `binding: ${binding.bindingId}`,
+  `project: ${binding.projectId}`,
   `provider: ${binding.provider}`,
   `installationId: ${binding.installationId ?? "-"}`,
   `repositoryId: ${binding.repositoryId ?? "-"}`,
@@ -516,6 +539,21 @@ const renderBindingSummary = (binding: GitHubBindingSummary) => [
   `workflowModulePath: ${binding.workflowModulePath}`,
   `workspaceSubdir: ${binding.workspaceSubdir ?? "-"}`,
   `enabled: ${binding.enabled}`,
+]
+
+const renderProjectsList = (projects: ReadonlyArray<ProjectSummary>) => [
+  "projects:",
+  ...(projects.length === 0
+    ? ["-"]
+    : projects.flatMap((project) => [
+        `project: ${project.projectId}`,
+        `provider: ${project.provider}`,
+        `repository: ${project.repositoryOwner ?? "-"}/${project.repositoryName ?? "-"}`,
+        `repositoryId: ${project.repositoryId ?? "-"}`,
+        `bindings: ${project.bindingCount}`,
+        `runs: ${project.runCount}`,
+        `latestRunAt: ${formatDate(project.latestRunAt)}`,
+      ])),
 ]
 
 const renderEventList = (runId: string, events: ReadonlyArray<{ readonly _tag: string; readonly sequence: number }>) => [

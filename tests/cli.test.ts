@@ -7,7 +7,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import { cli, cliVersion, makeCliLayer } from "../src/cli/index.ts"
 import { ArtifactRef } from "../src/domain/ids.ts"
 import { WorkflowId, UnitId } from "../src/domain/ids.ts"
-import { PlanId, RunId } from "../src/domain/ids.ts"
+import { PlanId, ProjectId, RunId } from "../src/domain/ids.ts"
 import { ContainerCommandDescriptor, ExecutionPlan, PlanUnit } from "../src/domain/execution-plan.ts"
 import { GitHubBindingSummary } from "../src/domain/github.ts"
 import {
@@ -260,6 +260,44 @@ describe("CLI", () => {
     }),
   )
 
+  it.effect("runs list forwards project filters through Engine.listRuns", () =>
+    Effect.gen(function* () {
+      let seenProjectId: string | undefined
+
+      const output = yield* runCli(
+        ["runs", "list", "--project", "project:sample"],
+        Layer.mergeAll(
+          WorkflowModuleLoader.layer,
+          DslMaterializer.layer,
+          Layer.succeed(Engine, {
+            validate: () => Effect.die("unused"),
+            plan: () => Effect.die("unused"),
+            startRun: () => Effect.die("unused"),
+            submitRun: () => Effect.die("unused"),
+            cancelRun: () => Effect.die("unused"),
+            retryRun: () => Effect.die("unused"),
+            listRuns: (projectId?: string) =>
+              Effect.sync(() => {
+                seenProjectId = projectId
+                return [sampleRunState()]
+              }),
+            inspectRun: () => Effect.die("unused"),
+            streamRuns: () => Stream.empty,
+            streamRun: () => Stream.empty,
+            readRunEvents: () => Effect.die("unused"),
+            readArtifacts: () => Effect.die("unused"),
+            readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
+            readLogs: () => Effect.die("unused"),
+            readLogPayload: () => Effect.die("unused"),
+          }),
+        ),
+      )
+
+      expect(seenProjectId).toBe("project:sample")
+      expect(output).toContain("project=project:sample")
+    }),
+  )
+
   it.effect("runs artifact prints persisted artifact payloads through Engine", () =>
     Effect.gen(function* () {
       const output = yield* runCli(
@@ -346,6 +384,7 @@ describe("CLI", () => {
               return sampleBindingSummary()
             }),
           listBindings: () => Effect.die("unused"),
+          listProjects: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
         }),
@@ -367,6 +406,7 @@ describe("CLI", () => {
         Layer.succeed(GitHubIntegration, {
           addBinding: () => Effect.die("unused"),
           listBindings: () => Effect.succeed([sampleBindingSummary()]),
+          listProjects: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
         }),
@@ -521,6 +561,7 @@ const samplePlan = () =>
 const sampleRunState = () =>
   new WorkflowRunState({
     runId: RunId.make("run:sample"),
+    projectId: ProjectId.make("project:sample"),
     workflowId: WorkflowId.make("workflow:sample"),
     planId: PlanId.make("plan:workflow:sample"),
     execution: new RunExecutionContext({
@@ -542,6 +583,7 @@ const sampleRunState = () =>
 const sampleBindingSummary = () =>
   new GitHubBindingSummary({
     bindingId: "binding:github:demo" as any,
+    projectId: ProjectId.make("project:github:repo:2002"),
     provider: "github",
     installationId: 1001,
     repositoryId: 2002,

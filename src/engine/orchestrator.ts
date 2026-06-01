@@ -36,7 +36,7 @@ import {
   type WorkflowEvent,
 } from "../domain/events.ts"
 import { ExecutionPlan, PlanRetryPolicy, PlanTimeoutPolicy, PlanUnit } from "../domain/execution-plan.ts"
-import { AttemptId, EventId, RunId, UnitId } from "../domain/ids.ts"
+import { AttemptId, EventId, ProjectId, RunId, UnitId } from "../domain/ids.ts"
 import { ProducedReport, ReportSummary } from "../domain/reports.ts"
 import { isSecretRef } from "../domain/secrets.ts"
 import {
@@ -189,10 +189,9 @@ export class Orchestrator extends Context.Service<
           Effect.gen(function* () {
             yield* stateStore.createRun(run)
             yield* appendEvent(run.runId, (base) => new RunCreated(base))
-            yield* appendEvent(run.runId, (base) => new RunStarted(base))
           }),
         )
-        yield* publishRunUpdate(run, "RunStarted")
+        yield* publishRunUpdate(run, "RunCreated")
 
         return run
       })
@@ -646,13 +645,14 @@ export class Orchestrator extends Context.Service<
 
       const startRun = Effect.fn("Orchestrator.startRun")(function* (plan: ExecutionPlan, options?: RunStartOptions) {
         const run = yield* createRun(plan, options)
-        return yield* advanceWithRun(run)
+        return yield* activateRun(run).pipe(Effect.flatMap(advanceWithRun))
       })
 
       const inspectRun = Effect.fn("Orchestrator.inspectRun")((runId: RunId) => stateStore.getRun(runId))
 
       const advanceRun = Effect.fn("Orchestrator.advanceRun")(function* (runId: RunId) {
-        const run = yield* stateStore.getRun(runId)
+        const currentRun = yield* stateStore.getRun(runId)
+        const run = currentRun.status === "queued" ? yield* activateRun(currentRun) : currentRun
         if (isTerminalRun(run)) {
           return run
         }
@@ -697,6 +697,11 @@ export class Orchestrator extends Context.Service<
         const recovered = new Array<WorkflowRunState>()
 
         for (const run of runs) {
+          if (run.status === "queued") {
+            recovered.push(run)
+            continue
+          }
+
           if (run.status === "canceling") {
             recovered.push(yield* finalizeCancellationState(run, "Cancellation requested before restart completed"))
             continue
@@ -726,7 +731,7 @@ export class Orchestrator extends Context.Service<
         const resumed = new Array<WorkflowRunState>()
 
         for (const run of runs) {
-          resumed.push(isTerminalRun(run) ? run : yield* advanceWithRun(run))
+          resumed.push(isTerminalRun(run) ? run : yield* (run.status === "queued" ? activateRun(run) : Effect.succeed(run)).pipe(Effect.flatMap(advanceWithRun)))
         }
 
         return resumed
@@ -741,6 +746,32 @@ export class Orchestrator extends Context.Service<
         finalizeCancellation,
         recoverIncompleteRuns,
         resumeIncompleteRuns,
+      }
+
+      function activateRun(queuedRun: WorkflowRunState) {
+        return Effect.gen(function* () {
+          if (queuedRun.status !== "queued") {
+            return queuedRun
+          }
+
+          const startedAt = yield* nowDate
+          const runningRun = new WorkflowRunState({
+            ...queuedRun,
+            status: "running",
+            updatedAt: startedAt,
+            startedAt,
+          })
+
+          yield* storageTransactor.run(
+            Effect.gen(function* () {
+              yield* persistRun(runningRun)
+              yield* appendEvent(runningRun.runId, (base) => new RunStarted(base))
+            }),
+          )
+          yield* publishRunUpdate(runningRun, "RunStarted")
+
+          return runningRun
+        })
       }
     }),
   )
@@ -774,6 +805,7 @@ const createInitialRun = (
 
   return new WorkflowRunState({
     runId,
+    projectId: projectIdForPlan(plan),
     workflowId: plan.workflowId,
     planId: plan.planId,
     execution: new RunExecutionContext({
@@ -782,12 +814,11 @@ const createInitialRun = (
       submittedAt: createdAt,
       retriedFromRunId,
     }),
-    status: "running",
+    status: "queued",
     units,
     progress: summarizeProgress(units),
     createdAt,
     updatedAt: createdAt,
-    startedAt: createdAt,
     inputs: [...inputs],
     outputs: resolveWorkflowOutputs(plan, inputs, units),
     reports: [],
@@ -981,9 +1012,11 @@ const redactText = (text: string, redactionValues: ReadonlyArray<string>) => {
   return redacted
 }
 
-const projectIdForRun = (run: WorkflowRunState) => {
-  const candidate = run.execution.plan.metadata.projectId
-  return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : run.workflowId.toString()
+const projectIdForRun = (run: WorkflowRunState) => run.projectId
+
+const projectIdForPlan = (plan: ExecutionPlan) => {
+  const candidate = plan.metadata.projectId
+  return ProjectId.make(typeof candidate === "string" && candidate.trim().length > 0 ? candidate : plan.workflowId.toString())
 }
 
 const resolveWorkflowInputs = (plan: ExecutionPlan, options?: RunStartOptions) =>

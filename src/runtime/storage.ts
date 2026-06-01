@@ -282,6 +282,62 @@ export const storageMigrationLayer = PgMigrator.layer({
       yield* sql`ALTER TABLE secrets ADD PRIMARY KEY (project_id, secret_key)`
       yield* sql`CREATE INDEX IF NOT EXISTS secrets_updated_at_idx ON secrets (project_id, updated_at DESC, secret_key ASC)`
     }),
+    "0005_project_queueing": Effect.gen(function* () {
+      const sql = yield* SqlClient
+
+      yield* sql`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS project_id text`
+      yield* sql`UPDATE workflow_runs
+        SET project_id = COALESCE(state_json->>'projectId', workflow_id)
+        WHERE project_id IS NULL`
+      yield* sql`ALTER TABLE workflow_runs ALTER COLUMN project_id SET NOT NULL`
+      yield* sql`CREATE INDEX IF NOT EXISTS workflow_runs_project_idx ON workflow_runs (project_id, updated_at DESC, run_id ASC)`
+      yield* sql`CREATE INDEX IF NOT EXISTS workflow_runs_project_status_idx ON workflow_runs (project_id, status, created_at ASC, run_id ASC)`
+
+      yield* sql`ALTER TABLE github_bindings ADD COLUMN IF NOT EXISTS project_id text`
+      yield* sql`UPDATE github_bindings
+        SET project_id = COALESCE(
+          binding_json->>'projectId',
+          CASE
+            WHEN repository_id IS NOT NULL THEN 'project:github:repo:' || repository_id::text
+            ELSE 'project:github:' || lower(repo_owner) || '/' || lower(repo_name)
+          END
+        )
+        WHERE project_id IS NULL`
+      yield* sql`ALTER TABLE github_bindings ALTER COLUMN project_id SET NOT NULL`
+      yield* sql`CREATE INDEX IF NOT EXISTS github_bindings_project_idx ON github_bindings (project_id, updated_at DESC, binding_id ASC)`
+
+      yield* sql`ALTER TABLE github_run_links ADD COLUMN IF NOT EXISTS project_id text`
+      yield* sql`UPDATE github_run_links
+        SET project_id = COALESCE(link_json->>'projectId', 'project:github:repo:' || repository_id::text)
+        WHERE project_id IS NULL`
+      yield* sql`ALTER TABLE github_run_links ALTER COLUMN project_id SET NOT NULL`
+      yield* sql`CREATE INDEX IF NOT EXISTS github_run_links_project_idx ON github_run_links (project_id, updated_at DESC, run_id ASC)`
+
+      yield* sql`CREATE TABLE IF NOT EXISTS github_trigger_deliveries (
+        idempotency_key text PRIMARY KEY,
+        binding_id text NOT NULL,
+        project_id text NOT NULL,
+        provider text NOT NULL,
+        event text NOT NULL,
+        repository_id bigint NOT NULL,
+        repo_owner text NOT NULL,
+        repo_name text NOT NULL,
+        git_ref text NOT NULL,
+        commit_sha text NOT NULL,
+        delivery_id text,
+        run_id text NOT NULL,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL,
+        delivery_json jsonb NOT NULL
+      )`
+
+      yield* sql`CREATE INDEX IF NOT EXISTS github_trigger_deliveries_binding_idx
+        ON github_trigger_deliveries (binding_id, created_at DESC, idempotency_key ASC)`
+      yield* sql`CREATE INDEX IF NOT EXISTS github_trigger_deliveries_project_idx
+        ON github_trigger_deliveries (project_id, created_at DESC, idempotency_key ASC)`
+      yield* sql`CREATE INDEX IF NOT EXISTS github_trigger_deliveries_delivery_id_idx
+        ON github_trigger_deliveries (delivery_id, binding_id, created_at DESC, idempotency_key ASC)`
+    }),
   }),
 })
 

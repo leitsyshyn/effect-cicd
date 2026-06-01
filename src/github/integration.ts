@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { resolve as resolvePath } from "node:path"
 
-import { Effect, Layer, Redacted, Schema } from "effect"
+import { Effect, Fiber, Layer, Redacted, Schema } from "effect"
 import * as Context from "effect/Context"
 
 import {
@@ -20,8 +20,10 @@ import {
   GitHubPushWebhookPayload,
   GitHubTriggeredRun,
   GitHubTriggerResponse,
+  GitHubTriggerDelivery,
 } from "../domain/github.ts"
 import { BindingId } from "../domain/ids.ts"
+import { ProjectSummary, deriveGitHubProjectId } from "../domain/project.ts"
 import { NormalizedWorkflowDefinition, SourceMetadata } from "../domain/workflow-definition.ts"
 import { DslMaterializer, WorkflowModuleLoader } from "../dsl/index.ts"
 import { Engine } from "../engine/interface.ts"
@@ -29,7 +31,9 @@ import { GitHubAppConfig } from "../runtime/config.ts"
 import { GitHubApiClient } from "./api-client.ts"
 import { GitHubBindingStore } from "./binding-store.ts"
 import { GitHubCheckRuns } from "./check-runs.ts"
+import { GitHubRunLinkStore } from "./run-link-store.ts"
 import { GitHubSourceSnapshots } from "./source-snapshots.ts"
+import { GitHubTriggerDeliveryStore } from "./trigger-delivery-store.ts"
 
 export interface GitHubTriggerRequest {
   readonly event: string | null
@@ -43,6 +47,7 @@ export class GitHubIntegration extends Context.Service<
   {
     readonly addBinding: (request: GitHubBindingCreateRequest) => Effect.Effect<GitHubBindingSummary, DomainError>
     readonly listBindings: () => Effect.Effect<ReadonlyArray<GitHubBindingSummary>, DomainError>
+    readonly listProjects: () => Effect.Effect<ReadonlyArray<ProjectSummary>, DomainError>
     readonly handleWebhook: (request: GitHubTriggerRequest) => Effect.Effect<GitHubTriggerResponse, DomainError>
     readonly triggerPush: (request: GitHubTriggerRequest) => Effect.Effect<GitHubTriggerResponse, DomainError>
   }
@@ -58,6 +63,9 @@ export class GitHubIntegration extends Context.Service<
       const materializer = yield* DslMaterializer
       const engine = yield* Engine
       const appConfig = yield* GitHubAppConfig
+      const runLinkStore = yield* GitHubRunLinkStore
+      const triggerDeliveryStore = yield* GitHubTriggerDeliveryStore
+      const inflightTriggers = new Map<string, Fiber.Fiber<GitHubTriggeredRun, DomainError>>()
 
       const addBinding = Effect.fn("GitHubIntegration.addBinding")(
         function* (request: GitHubBindingCreateRequest) {
@@ -76,9 +84,11 @@ export class GitHubIntegration extends Context.Service<
             ),
           )
           const now = new Date()
+          const projectId = deriveGitHubProjectId(repository.id, repository.owner, repository.name)
 
           const binding = new GitHubBinding({
             bindingId: BindingId.make(`binding:github:${crypto.randomUUID()}`),
+            projectId,
             provider: "github",
             installationId: request.installationId,
             repositoryId: repository.id,
@@ -104,6 +114,8 @@ export class GitHubIntegration extends Context.Service<
         return bindings.map(toBindingSummary)
       })
 
+      const listProjects = Effect.fn("GitHubIntegration.listProjects")(() => bindingStore.listProjects())
+
       const handleWebhook = Effect.fn("GitHubIntegration.handleWebhook")(
         function* ({ event, signature, rawBody, deliveryId }: GitHubTriggerRequest) {
           yield* verifyWebhookRequest(appConfig, rawBody, signature)
@@ -117,10 +129,13 @@ export class GitHubIntegration extends Context.Service<
                 deliveryId ?? null,
                 bindingStore,
                 gitHubChecks,
+                runLinkStore,
                 sourceSnapshots,
                 loader,
                 materializer,
                 engine,
+                triggerDeliveryStore,
+                inflightTriggers,
               )
             }
             case "installation": {
@@ -165,7 +180,7 @@ export class GitHubIntegration extends Context.Service<
 
       const triggerPush = Effect.fn("GitHubIntegration.triggerPush")((request: GitHubTriggerRequest) => handleWebhook(request))
 
-      return { addBinding, listBindings, handleWebhook, triggerPush }
+      return { addBinding, listBindings, listProjects, handleWebhook, triggerPush }
     }),
   )
 }
@@ -175,10 +190,13 @@ const handlePushEvent = (
   deliveryId: string | null,
   bindingStore: typeof GitHubBindingStore.Service,
   gitHubChecks: typeof GitHubCheckRuns.Service,
+  runLinkStore: typeof GitHubRunLinkStore.Service,
   sourceSnapshots: typeof GitHubSourceSnapshots.Service,
   loader: typeof WorkflowModuleLoader.Service,
   materializer: typeof DslMaterializer.Service,
   engine: typeof Engine.Service,
+  triggerDeliveryStore: typeof GitHubTriggerDeliveryStore.Service,
+  inflightTriggers: Map<string, Fiber.Fiber<GitHubTriggeredRun, DomainError>>,
 ) =>
   Effect.gen(function* () {
     const repository = payload.repository.full_name
@@ -231,8 +249,20 @@ const handlePushEvent = (
     }
 
     const triggeredRuns = yield* Effect.forEach(matchedBindings, (binding) =>
-      triggerBinding(binding, payload, deliveryId, gitHubChecks, sourceSnapshots, loader, materializer, engine),
-    )
+      triggerBinding(
+        binding,
+        payload,
+        deliveryId,
+        gitHubChecks,
+        runLinkStore,
+        sourceSnapshots,
+        loader,
+        materializer,
+        engine,
+        triggerDeliveryStore,
+        inflightTriggers,
+      ),
+    ).pipe(Effect.map((runs) => runs as ReadonlyArray<GitHubTriggeredRun>))
 
     return new GitHubTriggerResponse({
       event: "push",
@@ -250,10 +280,13 @@ const triggerBinding = (
   payload: GitHubPushWebhookPayload,
   deliveryId: string | null,
   gitHubChecks: typeof GitHubCheckRuns.Service,
+  runLinkStore: typeof GitHubRunLinkStore.Service,
   sourceSnapshots: typeof GitHubSourceSnapshots.Service,
   loader: typeof WorkflowModuleLoader.Service,
   materializer: typeof DslMaterializer.Service,
   engine: typeof Engine.Service,
+  triggerDeliveryStore: typeof GitHubTriggerDeliveryStore.Service,
+  inflightTriggers: Map<string, Fiber.Fiber<GitHubTriggeredRun, DomainError>>,
 ) =>
   Effect.gen(function* () {
     if (binding.installationId === undefined || binding.repositoryId === undefined) {
@@ -262,6 +295,51 @@ const triggerBinding = (
       })
     }
 
+    const idempotencyKey = gitHubIdempotencyKey(binding, payload, deliveryId)
+    const existingDelivery = yield* triggerDeliveryStore.get(idempotencyKey)
+    if (existingDelivery !== undefined) {
+      return yield* hydrateTriggeredRun(existingDelivery.runId, true, engine, runLinkStore)
+    }
+
+    const inflight = inflightTriggers.get(idempotencyKey)
+    if (inflight !== undefined && inflight.pollUnsafe() === undefined) {
+      const triggered = yield* Fiber.join(inflight)
+      return new GitHubTriggeredRun({ ...triggered, deduped: true })
+    }
+
+    const fiber = yield* executeTriggeredBinding(
+      binding,
+      payload,
+      deliveryId,
+      gitHubChecks,
+      sourceSnapshots,
+      loader,
+      materializer,
+      engine,
+      triggerDeliveryStore,
+      idempotencyKey,
+    ).pipe(Effect.forkChild({ startImmediately: true }))
+    inflightTriggers.set(idempotencyKey, fiber)
+    fiber.addObserver(() => {
+      inflightTriggers.delete(idempotencyKey)
+    })
+
+    return yield* Fiber.join(fiber)
+  })
+
+const executeTriggeredBinding = (
+  binding: GitHubBinding,
+  payload: GitHubPushWebhookPayload,
+  deliveryId: string | null,
+  gitHubChecks: typeof GitHubCheckRuns.Service,
+  sourceSnapshots: typeof GitHubSourceSnapshots.Service,
+  loader: typeof WorkflowModuleLoader.Service,
+  materializer: typeof DslMaterializer.Service,
+  engine: typeof Engine.Service,
+  triggerDeliveryStore: typeof GitHubTriggerDeliveryStore.Service,
+  idempotencyKey: string,
+) =>
+  Effect.gen(function* () {
     const snapshot = yield* sourceSnapshots.acquire(binding, payload.ref, payload.after)
     const workflowModulePath = resolvePath(snapshot.snapshotPath, binding.workflowModulePath)
     const repository = payload.repository.full_name
@@ -294,10 +372,32 @@ const triggerBinding = (
     const enrichedDefinition = annotateDefinition(definition, binding, payload, deliveryId, snapshot)
     const plan = yield* engine.plan(enrichedDefinition)
     const run = yield* engine.submitRun(plan, { workspacePath: snapshot.workspacePath })
+    const now = new Date()
+
+    yield* triggerDeliveryStore.create(
+      new GitHubTriggerDelivery({
+        idempotencyKey,
+        bindingId: binding.bindingId,
+        projectId: binding.projectId,
+        provider: binding.provider,
+        event: "push",
+        repositoryId: binding.repositoryId!,
+        repositoryOwner: binding.repositoryOwner,
+        repositoryName: binding.repositoryName,
+        ref: payload.ref,
+        commitSha: payload.after,
+        deliveryId: deliveryId ?? undefined,
+        runId: run.runId,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    )
+
     const checkRunId = yield* gitHubChecks.registerRun(run, {
       bindingId: binding.bindingId,
-      installationId: binding.installationId,
-      repositoryId: binding.repositoryId,
+      projectId: binding.projectId,
+      installationId: binding.installationId!,
+      repositoryId: binding.repositoryId!,
       repositoryOwner: binding.repositoryOwner,
       repositoryName: binding.repositoryName,
       workflowModulePath: binding.workflowModulePath,
@@ -309,10 +409,12 @@ const triggerBinding = (
 
     return new GitHubTriggeredRun({
       bindingId: binding.bindingId,
+      projectId: binding.projectId,
       runId: run.runId,
       workflowId: run.workflowId,
       workflowName: run.execution.plan.workflowName,
       checkRunId,
+      deduped: false,
       snapshotPath: snapshot.snapshotPath,
       workspacePath: snapshot.workspacePath,
     })
@@ -323,7 +425,7 @@ const annotateDefinition = (
   binding: GitHubBinding,
   payload: GitHubPushWebhookPayload,
   deliveryId: string | null,
-  snapshot: { readonly snapshotPath: string; readonly workspacePath: string },
+  snapshot: { readonly projectId: string; readonly snapshotPath: string; readonly workspacePath: string },
 ) =>
   new NormalizedWorkflowDefinition({
     ...definition,
@@ -331,16 +433,27 @@ const annotateDefinition = (
       ...definition.metadata,
       trigger: {
         provider: "github",
+        projectId: binding.projectId,
         bindingId: binding.bindingId,
         installationId: binding.installationId,
         repositoryId: binding.repositoryId,
+        repositoryOwner: binding.repositoryOwner,
+        repositoryName: binding.repositoryName,
         repository: payload.repository.full_name,
         ref: payload.ref,
         branch: branchNameFromRef(payload.ref),
         commitSha: payload.after,
         deliveryId: deliveryId ?? undefined,
       },
+      project: {
+        provider: binding.provider,
+        projectId: binding.projectId,
+        repositoryId: binding.repositoryId,
+        repositoryOwner: binding.repositoryOwner,
+        repositoryName: binding.repositoryName,
+      },
       sourceSnapshot: {
+        projectId: snapshot.projectId,
         cloneUrl: binding.cloneUrl,
         sourceKind: binding.sourceKind,
         workflowModulePath: binding.workflowModulePath,
@@ -365,6 +478,7 @@ const mergeSourceMetadata = (
 const toBindingSummary = (binding: GitHubBinding) =>
   new GitHubBindingSummary({
     bindingId: binding.bindingId,
+    projectId: binding.projectId,
     provider: binding.provider,
     installationId: binding.installationId,
     repositoryId: binding.repositoryId,
@@ -378,6 +492,38 @@ const toBindingSummary = (binding: GitHubBinding) =>
     createdAt: binding.createdAt,
     updatedAt: binding.updatedAt,
   })
+
+const gitHubIdempotencyKey = (binding: GitHubBinding, payload: GitHubPushWebhookPayload, deliveryId: string | null) =>
+  deliveryId === null || deliveryId.trim().length === 0
+    ? `github:${binding.bindingId}:push:${payload.repository.id}:${payload.ref}:${payload.after}`
+    : `github:${binding.bindingId}:delivery:${deliveryId}`
+
+const hydrateTriggeredRun = (
+  runId: string,
+  deduped: boolean,
+  engine: typeof Engine.Service,
+  runLinkStore: typeof GitHubRunLinkStore.Service,
+) =>
+  Effect.gen(function* () {
+    const [run, link] = yield* Effect.all([engine.inspectRun(runId as any), runLinkStore.get(runId as any)])
+    const metadata = run.execution.plan.metadata as Record<string, unknown>
+    const sourceSnapshot = asRecord(metadata.sourceSnapshot)
+
+    return new GitHubTriggeredRun({
+      bindingId: link?.bindingId ?? BindingId.make(String(asRecord(metadata.trigger)?.bindingId ?? "binding:unknown")),
+      projectId: run.projectId,
+      runId: run.runId,
+      workflowId: run.workflowId,
+      workflowName: run.execution.plan.workflowName,
+      checkRunId: link?.checkRunId,
+      deduped,
+      snapshotPath: String(sourceSnapshot?.snapshotPath ?? run.execution.options.workspacePath ?? "-"),
+      workspacePath: String(sourceSnapshot?.workspacePath ?? run.execution.options.workspacePath ?? "-"),
+    })
+  })
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined
 
 const parseRepository = (repository: string) => {
   const trimmed = repository.trim()

@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 
 import { ExecutionPlan } from "../domain/execution-plan.ts"
+import { ProjectSummary } from "../domain/project.ts"
 import { RunId } from "../domain/ids.ts"
 import { RunExecutionOptions } from "../domain/runtime-state.ts"
 import { SecretSummary } from "../domain/secrets.ts"
@@ -27,3 +28,4 @@ export class SecretSetRequest extends Schema.Class<SecretSetRequest>("SecretSetR
 }) {}
 
 export { SecretSummary }
+export { ProjectSummary }

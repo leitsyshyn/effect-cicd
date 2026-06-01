@@ -9,6 +9,7 @@ import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { WorkflowEvent } from "../domain/events.ts"
 import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubTriggerResponse } from "../domain/github.ts"
 import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
+import { ProjectSummary } from "../domain/project.ts"
 import { RunExecutionOptions, WorkflowRunState, WorkflowRunStatus } from "../domain/runtime-state.ts"
 import { SecretSummary } from "../domain/secrets.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
@@ -94,8 +95,14 @@ export const engineServiceClientLayer = Layer.effect(
       ),
     )
 
-    const listRuns = Effect.fn("EngineServiceClient.listRuns")(() =>
-      requestJson(http, HttpClientRequest.get("/api/runs"), Schema.Array(WorkflowRunState)),
+    const listRuns = Effect.fn("EngineServiceClient.listRuns")((projectId?: string) =>
+      requestJson(
+        http,
+        HttpClientRequest.get(
+          projectId === undefined ? "/api/runs" : `/api/runs?projectId=${encodeURIComponent(projectId)}`,
+        ),
+        Schema.Array(WorkflowRunState),
+      ),
     )
 
     const readRunEvents = Effect.fn("EngineServiceClient.readRunEvents")((runId: RunId) =>
@@ -169,6 +176,10 @@ export const gitHubIntegrationClientLayer = Layer.effect(
       requestJson(http, HttpClientRequest.get("/api/bindings"), Schema.Array(GitHubBindingSummary)),
     )
 
+    const listProjects = Effect.fn("GitHubIntegrationClient.listProjects")(() =>
+      requestJson(http, HttpClientRequest.get("/api/projects"), Schema.Array(ProjectSummary)),
+    )
+
     const handleWebhook = Effect.fn("GitHubIntegrationClient.handleWebhook")((request: GitHubTriggerRequest) =>
       requestJson(
         http,
@@ -188,6 +199,7 @@ export const gitHubIntegrationClientLayer = Layer.effect(
     return {
       addBinding,
       listBindings,
+      listProjects,
       handleWebhook,
       triggerPush,
     }

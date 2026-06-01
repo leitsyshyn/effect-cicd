@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { GitHubBindingCreateRequest, GitHubPushWebhookPayload, GitHubRepositorySnapshot } from "../src/domain/github.ts"
+import { deriveGitHubProjectId } from "../src/domain/project.ts"
 import { WorkflowRunState } from "../src/domain/runtime-state.ts"
 import { DslMaterializer, WorkflowModuleLoader } from "../src/dsl/index.ts"
 import { Engine } from "../src/engine/interface.ts"
@@ -15,6 +16,7 @@ import { GitHubCheckRuns } from "../src/github/check-runs.ts"
 import { GitHubIntegration } from "../src/github/integration.ts"
 import { GitHubRunLinkStore } from "../src/github/run-link-store.ts"
 import { GitHubSourceSnapshots } from "../src/github/source-snapshots.ts"
+import { GitHubTriggerDeliveryStore } from "../src/github/trigger-delivery-store.ts"
 import { GitHubAppConfig } from "../src/runtime/config.ts"
 import { makeInMemoryServiceEngineLayer } from "../src/runtime/layers.ts"
 
@@ -37,13 +39,17 @@ describe("GitHub integration", () => {
           }),
         )
         const bindings = yield* service.listBindings()
+        const projects = yield* service.listProjects()
 
         expect(created.repository).toBe("acme/widgets")
+        expect(created.projectId).toBe(deriveGitHubProjectId(2002, "acme", "widgets"))
         expect(created.installationId).toBe(1001)
         expect(created.repositoryId).toBe(2002)
         expect(created.sourceKind).toBe("github-archive")
         expect(bindings).toHaveLength(1)
         expect(bindings[0]?.bindingId).toBe(created.bindingId)
+        expect(projects).toHaveLength(1)
+        expect(projects[0]?.projectId).toBe(created.projectId)
       }).pipe(Effect.provide(gitHubIntegrationLayer(fixture, mock)), Effect.ensuring(cleanupFixture(fixture)))
     }),
   )
@@ -117,7 +123,7 @@ describe("GitHub integration", () => {
         expect(response.matchedBindings).toBe(1)
         expect(response.triggeredRuns).toHaveLength(1)
         expect(response.triggeredRuns[0]?.checkRunId).toBe(9001)
-        expect(mock.checkRuns[0]?.status).toBe("in_progress")
+        expect(mock.checkRuns[0]?.status).toBe("queued")
 
         const run = yield* waitForTerminalRun(engine, runId!)
         yield* checks.syncRun(run.runId)
@@ -130,12 +136,55 @@ describe("GitHub integration", () => {
       }).pipe(Effect.provide(gitHubIntegrationLayer(fixture, mock)), Effect.ensuring(cleanupFixture(fixture)))
     }),
   )
+
+  it.effect("dedupes duplicate webhook deliveries for the same binding", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeWorkflowSnapshotFixture()
+      const mock = makeGitHubApiMock()
+
+      yield* Effect.gen(function* () {
+        const service = yield* GitHubIntegration
+        const engine = yield* Engine
+
+        yield* service.addBinding(
+          new GitHubBindingCreateRequest({
+            repository: "acme/widgets",
+            installationId: 1001,
+            branch: "main",
+            workflowModulePath: "workflow.ts",
+          }),
+        )
+
+        const rawBody = JSON.stringify(samplePushPayload())
+        const first = yield* service.handleWebhook({
+          event: "push",
+          signature: signWebhook(rawBody),
+          deliveryId: "delivery-dedupe",
+          rawBody,
+        })
+        const second = yield* service.handleWebhook({
+          event: "push",
+          signature: signWebhook(rawBody),
+          deliveryId: "delivery-dedupe",
+          rawBody,
+        })
+        const runs = yield* engine.listRuns()
+
+        expect(first.triggeredRuns).toHaveLength(1)
+        expect(second.triggeredRuns).toHaveLength(1)
+        expect(second.triggeredRuns[0]?.deduped).toBe(true)
+        expect(second.triggeredRuns[0]?.runId).toBe(first.triggeredRuns[0]?.runId)
+        expect(runs).toHaveLength(1)
+      }).pipe(Effect.provide(gitHubIntegrationLayer(fixture, mock)), Effect.ensuring(cleanupFixture(fixture)))
+    }),
+  )
 })
 
 const gitHubIntegrationLayer = (fixture: WorkflowFixture, mock: GitHubApiMock) => {
   const engineLayer = makeInMemoryServiceEngineLayer()
   const bindingStoreLayer = GitHubBindingStore.memoryLayer
   const runLinkStoreLayer = GitHubRunLinkStore.memoryLayer
+  const triggerDeliveryLayer = GitHubTriggerDeliveryStore.memoryLayer
   const configLayer = Layer.succeed(GitHubAppConfig, {
     appId: "123",
     privateKey: Redacted.make("test-key"),
@@ -166,6 +215,7 @@ const gitHubIntegrationLayer = (fixture: WorkflowFixture, mock: GitHubApiMock) =
     acquire: (_binding, ref, commitSha) =>
       Effect.succeed(
         new GitHubRepositorySnapshot({
+          projectId: deriveGitHubProjectId(2002, "acme", "widgets"),
           repository: "acme/widgets",
           ref,
           commitSha,
@@ -189,6 +239,8 @@ const gitHubIntegrationLayer = (fixture: WorkflowFixture, mock: GitHubApiMock) =
     Layer.provideMerge(WorkflowModuleLoader.layer),
     Layer.provideMerge(engineLayer),
     Layer.provideMerge(configLayer),
+    Layer.provideMerge(runLinkStoreLayer),
+    Layer.provideMerge(triggerDeliveryLayer),
   )
 
   return Layer.mergeAll(
@@ -201,6 +253,7 @@ const gitHubIntegrationLayer = (fixture: WorkflowFixture, mock: GitHubApiMock) =
     DslMaterializer.layer,
     WorkflowModuleLoader.layer,
     checkRunsLayer,
+    triggerDeliveryLayer,
     gitHubLayer,
   )
 }

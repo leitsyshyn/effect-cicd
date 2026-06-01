@@ -1,11 +1,12 @@
 import { Schema } from "effect"
 
-import { BindingId, RunId, WorkflowId } from "./ids.ts"
+import { BindingId, ProjectId, RunId, WorkflowId } from "./ids.ts"
 
 const GitHubNumericId = Schema.Int
 
 export class GitHubBinding extends Schema.Class<GitHubBinding>("GitHubBinding")({
   bindingId: BindingId,
+  projectId: ProjectId,
   provider: Schema.Literals(["github"]),
   installationId: Schema.optional(GitHubNumericId),
   repositoryId: Schema.optional(GitHubNumericId),
@@ -32,6 +33,7 @@ export class GitHubBindingCreateRequest extends Schema.Class<GitHubBindingCreate
 
 export class GitHubBindingSummary extends Schema.Class<GitHubBindingSummary>("GitHubBindingSummary")({
   bindingId: BindingId,
+  projectId: ProjectId,
   provider: Schema.Literals(["github"]),
   installationId: Schema.optional(GitHubNumericId),
   repositoryId: Schema.optional(GitHubNumericId),
@@ -48,10 +50,12 @@ export class GitHubBindingSummary extends Schema.Class<GitHubBindingSummary>("Gi
 
 export class GitHubTriggeredRun extends Schema.Class<GitHubTriggeredRun>("GitHubTriggeredRun")({
   bindingId: BindingId,
+  projectId: ProjectId,
   runId: RunId,
   workflowId: WorkflowId,
   workflowName: Schema.String,
   checkRunId: Schema.optional(GitHubNumericId),
+  deduped: Schema.optional(Schema.Boolean),
   snapshotPath: Schema.String,
   workspacePath: Schema.String,
 }) {}
@@ -69,6 +73,7 @@ export class GitHubTriggerResponse extends Schema.Class<GitHubTriggerResponse>("
 }) {}
 
 export class GitHubRepositorySnapshot extends Schema.Class<GitHubRepositorySnapshot>("GitHubRepositorySnapshot")({
+  projectId: ProjectId,
   repository: Schema.String,
   ref: Schema.String,
   commitSha: Schema.String,
@@ -121,6 +126,7 @@ export class GitHubInstallationRepositoriesWebhookPayload extends Schema.Class<G
 export class GitHubRunLink extends Schema.Class<GitHubRunLink>("GitHubRunLink")({
   runId: RunId,
   bindingId: BindingId,
+  projectId: ProjectId,
   provider: Schema.Literals(["github"]),
   installationId: GitHubNumericId,
   repositoryId: GitHubNumericId,
@@ -132,6 +138,23 @@ export class GitHubRunLink extends Schema.Class<GitHubRunLink>("GitHubRunLink")(
   commitSha: Schema.String,
   deliveryId: Schema.optional(Schema.String),
   checkRunId: Schema.optional(GitHubNumericId),
+  createdAt: Schema.Date,
+  updatedAt: Schema.Date,
+}) {}
+
+export class GitHubTriggerDelivery extends Schema.Class<GitHubTriggerDelivery>("GitHubTriggerDelivery")({
+  idempotencyKey: Schema.String,
+  bindingId: BindingId,
+  projectId: ProjectId,
+  provider: Schema.Literals(["github"]),
+  event: Schema.String,
+  repositoryId: GitHubNumericId,
+  repositoryOwner: Schema.String,
+  repositoryName: Schema.String,
+  ref: Schema.String,
+  commitSha: Schema.String,
+  deliveryId: Schema.optional(Schema.String),
+  runId: RunId,
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
 }) {}

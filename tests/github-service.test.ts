@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { GitHubPushWebhookPayload, GitHubRepositorySnapshot } from "../src/domain/github.ts"
+import { deriveGitHubProjectId } from "../src/domain/project.ts"
 import { WorkflowRunState } from "../src/domain/runtime-state.ts"
 import { DslMaterializer, WorkflowModuleLoader } from "../src/dsl/index.ts"
 import { GitHubApiClient, type GitHubCheckRunUpsert } from "../src/github/api-client.ts"
@@ -14,6 +15,7 @@ import { GitHubCheckRuns } from "../src/github/check-runs.ts"
 import { GitHubIntegration } from "../src/github/integration.ts"
 import { GitHubRunLinkStore } from "../src/github/run-link-store.ts"
 import { GitHubSourceSnapshots } from "../src/github/source-snapshots.ts"
+import { GitHubTriggerDeliveryStore } from "../src/github/trigger-delivery-store.ts"
 import { EngineServiceConfig, GitHubAppConfig, StorageRuntimeConfig } from "../src/runtime/config.ts"
 import { makeInMemoryServiceEngineLayer } from "../src/runtime/layers.ts"
 import { startServiceServer } from "../src/service/server.ts"
@@ -72,7 +74,7 @@ describe("GitHub service routes", () => {
         expect(run.status).toBe("succeeded")
         expect(run.execution.options.workspacePath).toBe(fixture.workspacePath)
         expect((run.execution.plan.metadata as Record<string, any>).trigger.commitSha).toBe(samplePushPayload().after)
-        expect(mock.checkRuns[0]?.status).toBe("in_progress")
+        expect(mock.checkRuns[0]?.status).toBe("queued")
         expect(mock.checkRuns.at(-1)?.status).toBe("completed")
         expect(mock.checkRuns.at(-1)?.conclusion).toBe("success")
       }).pipe(Effect.ensuring(stopServer(server)), Effect.ensuring(cleanupFixture(fixture)))
@@ -84,6 +86,7 @@ const serviceLayer = (baseUrl: string, port: number, fixture: WorkflowFixture, m
   const engineLayer = makeInMemoryServiceEngineLayer()
   const bindingStoreLayer = GitHubBindingStore.memoryLayer
   const runLinkStoreLayer = GitHubRunLinkStore.memoryLayer
+  const triggerDeliveryLayer = GitHubTriggerDeliveryStore.memoryLayer
   const configLayer = Layer.succeed(GitHubAppConfig, {
     appId: "123",
     privateKey: Redacted.make("test-key"),
@@ -114,6 +117,7 @@ const serviceLayer = (baseUrl: string, port: number, fixture: WorkflowFixture, m
     acquire: (_binding, ref, commitSha) =>
       Effect.succeed(
         new GitHubRepositorySnapshot({
+          projectId: deriveGitHubProjectId(2002, "acme", "widgets"),
           repository: "acme/widgets",
           ref,
           commitSha,
@@ -137,6 +141,8 @@ const serviceLayer = (baseUrl: string, port: number, fixture: WorkflowFixture, m
     Layer.provideMerge(WorkflowModuleLoader.layer),
     Layer.provideMerge(engineLayer),
     Layer.provideMerge(configLayer),
+    Layer.provideMerge(runLinkStoreLayer),
+    Layer.provideMerge(triggerDeliveryLayer),
   )
 
   return Layer.mergeAll(
@@ -147,6 +153,7 @@ const serviceLayer = (baseUrl: string, port: number, fixture: WorkflowFixture, m
     apiLayer,
     snapshotLayer,
     checksLayer,
+    triggerDeliveryLayer,
     DslMaterializer.layer,
     WorkflowModuleLoader.layer,
     gitHubLayer,

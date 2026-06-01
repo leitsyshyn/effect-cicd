@@ -6,6 +6,7 @@ import { join } from "node:path"
 
 import { GitHubBinding } from "../src/domain/github.ts"
 import { BindingId } from "../src/domain/ids.ts"
+import { deriveGitHubProjectId } from "../src/domain/project.ts"
 import { GitHubApiClient } from "../src/github/api-client.ts"
 import { GitHubSourceSnapshots } from "../src/github/source-snapshots.ts"
 import { GitHubTriggerConfig } from "../src/runtime/config.ts"
@@ -19,6 +20,7 @@ describe("GitHub source snapshots", () => {
 
         const binding = new GitHubBinding({
           bindingId: BindingId.make("binding:github:snapshot"),
+          projectId: deriveGitHubProjectId(2002, "acme", "widgets"),
           provider: "github",
           installationId: 1001,
           repositoryId: 2002,
@@ -53,6 +55,68 @@ describe("GitHub source snapshots", () => {
             Layer.provideMerge(
               Layer.succeed(GitHubTriggerConfig, {
                 workspaceRoot: fixture.workspaceRoot,
+                snapshotRetentionPerProject: 5,
+              }),
+            ),
+          ),
+        ),
+        Effect.ensuring(cleanupArchiveFixture(fixture)),
+      )
+    }),
+  )
+
+  it.live("isolates snapshot paths by project identity", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeArchiveFixture()
+      yield* Effect.gen(function* () {
+        const snapshots = yield* GitHubSourceSnapshots
+
+        const firstBinding = new GitHubBinding({
+          bindingId: BindingId.make("binding:github:first"),
+          projectId: deriveGitHubProjectId(2002, "acme", "widgets"),
+          provider: "github",
+          installationId: 1001,
+          repositoryId: 2002,
+          repositoryOwner: "acme",
+          repositoryName: "widgets",
+          cloneUrl: "https://github.com/acme/widgets.git",
+          sourceKind: "github-archive",
+          branch: "main",
+          workflowModulePath: "workflow.ts",
+          enabled: true,
+          createdAt: new Date(0),
+          updatedAt: new Date(0),
+        })
+        const secondBinding = new GitHubBinding({
+          ...firstBinding,
+          bindingId: BindingId.make("binding:github:second"),
+          projectId: deriveGitHubProjectId(3003, "acme", "widgets-fork"),
+          repositoryId: 3003,
+          repositoryName: "widgets-fork",
+          cloneUrl: "https://github.com/acme/widgets-fork.git",
+        })
+
+        const first = yield* snapshots.acquire(firstBinding, "refs/heads/main", fixture.commitSha)
+        const second = yield* snapshots.acquire(secondBinding, "refs/heads/main", fixture.commitSha)
+
+        expect(first.snapshotPath).not.toBe(second.snapshotPath)
+        expect(first.snapshotPath).toContain("github")
+        expect(first.snapshotPath).toContain("project_github_repo_2002")
+        expect(second.snapshotPath).toContain("project_github_repo_3003")
+      }).pipe(
+        Effect.provide(
+          GitHubSourceSnapshots.layer.pipe(
+            Layer.provideMerge(
+              Layer.succeed(GitHubApiClient, {
+                getRepository: () => Effect.die("unused"),
+                downloadRepositoryArchive: () => Effect.succeed(fixture.archive),
+                upsertCheckRun: () => Effect.die("unused"),
+              }),
+            ),
+            Layer.provideMerge(
+              Layer.succeed(GitHubTriggerConfig, {
+                workspaceRoot: fixture.workspaceRoot,
+                snapshotRetentionPerProject: 5,
               }),
             ),
           ),

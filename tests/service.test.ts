@@ -4,7 +4,7 @@ import { FetchHttpClient } from "effect/unstable/http"
 
 import { ArtifactMetadata, RegisteredArtifact } from "../src/domain/artifacts.ts"
 import { ExecutionPlan, ContainerCommandDescriptor, PlanUnit } from "../src/domain/execution-plan.ts"
-import { RunId, UnitId, WorkflowId, PlanId, ArtifactRef, AttemptId, LogRef } from "../src/domain/ids.ts"
+import { RunId, UnitId, WorkflowId, PlanId, ArtifactRef, AttemptId, LogRef, ProjectId } from "../src/domain/ids.ts"
 import { ProducedReport } from "../src/domain/reports.ts"
 import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState } from "../src/domain/runtime-state.ts"
 import {
@@ -75,6 +75,7 @@ describe("service boundary", () => {
           Layer.succeed(GitHubIntegration, {
             addBinding: () => Effect.die("unused"),
             listBindings: () => Effect.succeed([]),
+            listProjects: () => Effect.succeed([]),
             handleWebhook: () => Effect.die("unused"),
             triggerPush: () => Effect.die("unused"),
           }),
@@ -148,6 +149,7 @@ describe("service boundary", () => {
         Layer.succeed(GitHubIntegration, {
           addBinding: () => Effect.die("unused"),
           listBindings: () => Effect.succeed([]),
+          listProjects: () => Effect.succeed([]),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
         }),
@@ -172,7 +174,7 @@ describe("service boundary", () => {
         ),
       )
 
-      expect(result.submitted.status).toBe("running")
+      expect(result.submitted.status).toBe("queued")
       expect(result.completed.status).toBe("succeeded")
       expect(result.events.map((event) => event._tag)).toContain("RunSucceeded")
 
@@ -191,6 +193,7 @@ describe("service boundary", () => {
         Layer.succeed(GitHubIntegration, {
           addBinding: () => Effect.die("unused"),
           listBindings: () => Effect.succeed([]),
+          listProjects: () => Effect.succeed([]),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
         }),
@@ -242,6 +245,7 @@ describe("service boundary", () => {
         Layer.succeed(GitHubIntegration, {
           addBinding: () => Effect.die("unused"),
           listBindings: () => Effect.succeed([]),
+          listProjects: () => Effect.succeed([]),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
         }),
@@ -319,6 +323,7 @@ describe("service boundary", () => {
         Layer.succeed(GitHubIntegration, {
           addBinding: () => Effect.die("unused"),
           listBindings: () => Effect.succeed([]),
+          listProjects: () => Effect.succeed([]),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
         }),
@@ -550,6 +555,7 @@ const sampleReportPayload = (workflowId: string, unitId: string, name: string) =
 const sampleRunState = () =>
   new WorkflowRunState({
     runId: RunId.make("run:service:test"),
+    projectId: ProjectId.make("project:service:test"),
     workflowId: WorkflowId.make("workflow:service:test"),
     planId: PlanId.make("plan:workflow:service:test"),
     execution: new RunExecutionContext({

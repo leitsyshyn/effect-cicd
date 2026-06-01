@@ -2,7 +2,8 @@ import { Schema } from "effect"
 
 import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { WorkflowEvent } from "../domain/events.ts"
-import { GitHubBinding, GitHubRunLink } from "../domain/github.ts"
+import { GitHubBinding, GitHubRunLink, GitHubTriggerDelivery } from "../domain/github.ts"
+import { deriveGitHubProjectId } from "../domain/project.ts"
 import { WorkflowRunState } from "../domain/runtime-state.ts"
 
 const WorkflowRunStateJson = Schema.toCodecJson(WorkflowRunState)
@@ -11,6 +12,7 @@ const ArtifactMetadataJson = Schema.toCodecJson(ArtifactMetadata)
 const LogMetadataJson = Schema.toCodecJson(LogMetadata)
 const GitHubBindingJson = Schema.toCodecJson(GitHubBinding)
 const GitHubRunLinkJson = Schema.toCodecJson(GitHubRunLink)
+const GitHubTriggerDeliveryJson = Schema.toCodecJson(GitHubTriggerDelivery)
 
 export const encodeWorkflowRunState = Schema.encodeSync(WorkflowRunStateJson)
 export const encodeWorkflowEvent = Schema.encodeSync(WorkflowEventJson)
@@ -18,6 +20,7 @@ export const encodeArtifactMetadata = Schema.encodeSync(ArtifactMetadataJson)
 export const encodeLogMetadata = Schema.encodeSync(LogMetadataJson)
 export const encodeGitHubBinding = Schema.encodeSync(GitHubBindingJson)
 export const encodeGitHubRunLink = Schema.encodeSync(GitHubRunLinkJson)
+export const encodeGitHubTriggerDelivery = Schema.encodeSync(GitHubTriggerDeliveryJson)
 
 export const decodeWorkflowRunState = (value: unknown) =>
   Schema.decodeUnknownSync(WorkflowRunStateJson)(upgradeLegacyWorkflowRunStateJson(normalizeJson(value)))
@@ -32,7 +35,11 @@ export const decodeLogMetadata = (value: unknown) => Schema.decodeUnknownSync(Lo
 export const decodeGitHubBinding = (value: unknown) =>
   Schema.decodeUnknownSync(GitHubBindingJson)(upgradeLegacyGitHubBindingJson(normalizeJson(value)))
 
-export const decodeGitHubRunLink = (value: unknown) => Schema.decodeUnknownSync(GitHubRunLinkJson)(normalizeJson(value))
+export const decodeGitHubRunLink = (value: unknown) =>
+  Schema.decodeUnknownSync(GitHubRunLinkJson)(upgradeLegacyGitHubRunLinkJson(normalizeJson(value)))
+
+export const decodeGitHubTriggerDelivery = (value: unknown) =>
+  Schema.decodeUnknownSync(GitHubTriggerDeliveryJson)(normalizeJson(value))
 
 const normalizeJson = (value: unknown): unknown => {
   if (typeof value !== "string") {
@@ -47,20 +54,33 @@ const upgradeLegacyWorkflowRunStateJson = (value: unknown): unknown => {
     return value
   }
 
-  if ("execution" in value) {
-    return value
-  }
-
   const record = value as {
     readonly workflowId: string
     readonly planId: string
     readonly createdAt?: string
+    readonly status?: string
+    readonly projectId?: string
+    readonly execution?: { readonly plan?: { readonly metadata?: Record<string, unknown> } }
     readonly units?: ReadonlyArray<{
       readonly unitId: string
       readonly dependencies?: ReadonlyArray<string>
       readonly artifacts?: ReadonlyArray<unknown>
       readonly logs?: ReadonlyArray<unknown>
     }>
+  }
+
+  const projectId =
+    record.projectId ??
+    (typeof record.execution?.plan?.metadata?.projectId === "string" && record.execution.plan.metadata.projectId.trim().length > 0
+      ? record.execution.plan.metadata.projectId
+      : record.workflowId)
+
+  if ("execution" in value) {
+    return {
+      ...record,
+      projectId,
+      status: record.status === "created" ? "queued" : record.status,
+    }
   }
 
   const units = (record.units ?? []).map((unit) => ({
@@ -88,6 +108,8 @@ const upgradeLegacyWorkflowRunStateJson = (value: unknown): unknown => {
 
   return {
     ...record,
+    projectId,
+    status: record.status === "created" || record.status === undefined ? "queued" : record.status,
     execution: {
       plan: {
         planId: record.planId,
@@ -114,6 +136,34 @@ const upgradeLegacyGitHubBindingJson = (value: unknown): unknown => {
 
   return {
     ...record,
+    projectId:
+      typeof record.projectId === "string" && record.projectId.trim().length > 0
+        ? record.projectId
+        : deriveGitHubProjectId(
+            typeof record.repositoryId === "number" ? record.repositoryId : undefined,
+            String(record.repositoryOwner ?? record.repoOwner ?? "unknown"),
+            String(record.repositoryName ?? record.repoName ?? "unknown"),
+          ),
     sourceKind: record.sourceKind ?? "github-archive",
+  }
+}
+
+const upgradeLegacyGitHubRunLinkJson = (value: unknown): unknown => {
+  if (typeof value !== "object" || value === null || !("runId" in value)) {
+    return value
+  }
+
+  const record = value as Record<string, unknown>
+
+  return {
+    ...record,
+    projectId:
+      typeof record.projectId === "string" && record.projectId.trim().length > 0
+        ? record.projectId
+        : deriveGitHubProjectId(
+            typeof record.repositoryId === "number" ? record.repositoryId : undefined,
+            String(record.repositoryOwner ?? "unknown"),
+            String(record.repositoryName ?? "unknown"),
+          ),
   }
 }
