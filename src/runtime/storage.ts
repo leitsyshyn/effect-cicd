@@ -229,6 +229,39 @@ export const storageMigrationLayer = PgMigrator.layer({
       yield* sql`CREATE INDEX IF NOT EXISTS github_bindings_repo_idx
         ON github_bindings (repo_owner, repo_name, enabled, updated_at DESC, binding_id ASC)`
     }),
+    "0003_github_app_loop": Effect.gen(function* () {
+      const sql = yield* SqlClient
+
+      yield* sql`ALTER TABLE github_bindings ADD COLUMN IF NOT EXISTS installation_id bigint`
+      yield* sql`ALTER TABLE github_bindings ADD COLUMN IF NOT EXISTS repository_id bigint`
+      yield* sql`ALTER TABLE github_bindings ADD COLUMN IF NOT EXISTS source_kind text`
+      yield* sql`UPDATE github_bindings SET source_kind = 'github-archive' WHERE source_kind IS NULL`
+      yield* sql`ALTER TABLE github_bindings ALTER COLUMN source_kind SET DEFAULT 'github-archive'`
+
+      yield* sql`CREATE TABLE IF NOT EXISTS github_run_links (
+        run_id text PRIMARY KEY,
+        binding_id text NOT NULL,
+        installation_id bigint NOT NULL,
+        repository_id bigint NOT NULL,
+        repo_owner text NOT NULL,
+        repo_name text NOT NULL,
+        workflow_module_path text NOT NULL,
+        git_ref text NOT NULL,
+        branch text,
+        commit_sha text NOT NULL,
+        delivery_id text,
+        check_run_id bigint,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL,
+        link_json jsonb NOT NULL
+      )`
+
+      yield* sql`CREATE INDEX IF NOT EXISTS github_run_links_binding_idx
+        ON github_run_links (binding_id, updated_at DESC, run_id ASC)`
+
+      yield* sql`CREATE INDEX IF NOT EXISTS github_run_links_installation_repo_idx
+        ON github_run_links (installation_id, repository_id, updated_at DESC, run_id ASC)`
+    }),
   }),
 })
 

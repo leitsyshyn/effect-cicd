@@ -167,12 +167,13 @@ export const gitHubIntegrationClientLayer = Layer.effect(
       requestJson(http, HttpClientRequest.get("/api/bindings"), Schema.Array(GitHubBindingSummary)),
     )
 
-    const triggerPush = Effect.fn("GitHubIntegrationClient.triggerPush")((request: GitHubTriggerRequest) =>
+    const handleWebhook = Effect.fn("GitHubIntegrationClient.handleWebhook")((request: GitHubTriggerRequest) =>
       requestJson(
         http,
-        HttpClientRequest.post("/api/triggers/github").pipe(
+        HttpClientRequest.post("/api/github/webhooks").pipe(
           HttpClientRequest.setHeader("content-type", "application/json"),
           HttpClientRequest.setHeader("x-github-event", request.event ?? "push"),
+          HttpClientRequest.setHeader("x-github-delivery", request.deliveryId ?? ""),
           HttpClientRequest.setHeader("x-hub-signature-256", request.signature ?? ""),
           HttpClientRequest.bodyText(request.rawBody),
         ),
@@ -180,9 +181,12 @@ export const gitHubIntegrationClientLayer = Layer.effect(
       ),
     )
 
+    const triggerPush = Effect.fn("GitHubIntegrationClient.triggerPush")((request: GitHubTriggerRequest) => handleWebhook(request))
+
     return {
       addBinding,
       listBindings,
+      handleWebhook,
       triggerPush,
     }
   }),

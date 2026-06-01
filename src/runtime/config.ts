@@ -165,6 +165,44 @@ export class GitHubTriggerConfig extends Context.Service<
   )
 }
 
+export class GitHubAppConfig extends Context.Service<
+  GitHubAppConfig,
+  {
+    readonly appId: string | undefined
+    readonly privateKey: Redacted.Redacted | undefined
+    readonly webhookSecret: Redacted.Redacted | undefined
+    readonly clientId: string | undefined
+    readonly clientSecret: Redacted.Redacted | undefined
+    readonly publicBaseUrl: string | undefined
+    readonly apiBaseUrl: string
+  }
+>()("@effect-cicd/runtime/GitHubAppConfig") {
+  static readonly layer = Layer.effect(
+    GitHubAppConfig,
+    Effect.gen(function* () {
+      const appId = yield* Config.option(Config.string("GITHUB_APP_ID"))
+      const privateKey = yield* Config.option(Config.redacted("GITHUB_APP_PRIVATE_KEY"))
+      const webhookSecret = yield* Config.option(Config.redacted("GITHUB_WEBHOOK_SECRET"))
+      const clientId = yield* Config.option(Config.string("GITHUB_CLIENT_ID"))
+      const clientSecret = yield* Config.option(Config.redacted("GITHUB_CLIENT_SECRET"))
+      const publicBaseUrl = yield* Config.option(Config.string("PUBLIC_BASE_URL"))
+      const apiBaseUrl = yield* Config.string("GITHUB_API_BASE_URL").pipe(
+        Config.orElse(() => Config.succeed("https://api.github.com")),
+      )
+
+      return {
+        appId: optionValue(appId),
+        privateKey: optionValue(privateKey),
+        webhookSecret: optionValue(webhookSecret),
+        clientId: optionValue(clientId),
+        clientSecret: optionValue(clientSecret),
+        publicBaseUrl: optionValue(publicBaseUrl),
+        apiBaseUrl,
+      }
+    }),
+  )
+}
+
 const optionValue = <A>(option: { readonly _tag: "Some"; readonly value: A } | { readonly _tag: "None" }) =>
   option._tag === "Some" ? option.value : undefined
 

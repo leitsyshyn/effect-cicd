@@ -3,6 +3,7 @@ import { Argument, Command, Flag } from "effect/unstable/cli"
 import { dirname, resolve as resolvePath } from "node:path"
 
 import { ArtifactMetadata, LogMetadata, RegisteredArtifact, RegisteredLog } from "../domain/artifacts.ts"
+import { GitHubBindingRejected } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { GitHubBindingCreateRequest, GitHubBindingSummary } from "../domain/github.ts"
 import { ArtifactRef, AttemptId, LogRef, RunId, UnitId } from "../domain/ids.ts"
@@ -58,9 +59,9 @@ const workspaceFlag = Flag.string("workspace").pipe(
   Flag.withDescription("Workspace directory mounted into execution containers"),
 )
 
-const cloneUrlFlag = Flag.string("clone-url").pipe(
-  Flag.optional,
-  Flag.withDescription("Override the repository clone URL"),
+const installationIdFlag = Flag.string("installation-id").pipe(
+  Flag.withAlias("i"),
+  Flag.withDescription("GitHub App installation id for the bound repository"),
 )
 
 const branchFlag = Flag.string("branch").pipe(
@@ -71,16 +72,6 @@ const branchFlag = Flag.string("branch").pipe(
 const workspaceSubdirFlag = Flag.string("workspace-subdir").pipe(
   Flag.optional,
   Flag.withDescription("Run the workflow inside a repository subdirectory"),
-)
-
-const webhookSecretFlag = Flag.string("webhook-secret").pipe(
-  Flag.optional,
-  Flag.withDescription("Verify GitHub webhook signatures with this secret"),
-)
-
-const accessTokenFlag = Flag.string("access-token").pipe(
-  Flag.optional,
-  Flag.withDescription("Use this GitHub token when cloning private repositories"),
 )
 
 const validateCommand = Command.make(
@@ -266,24 +257,20 @@ const bindingsAddGitHubCommand = Command.make(
   {
     repository: Argument.string("repository"),
     workflowModulePath: Argument.string("workflow-module-path"),
-    cloneUrl: cloneUrlFlag,
+    installationId: installationIdFlag,
     branch: branchFlag,
     workspaceSubdir: workspaceSubdirFlag,
-    webhookSecret: webhookSecretFlag,
-    accessToken: accessTokenFlag,
   },
-  ({ repository, workflowModulePath, cloneUrl, branch, workspaceSubdir, webhookSecret, accessToken }) =>
+  ({ repository, workflowModulePath, installationId, branch, workspaceSubdir }) =>
     Effect.gen(function* () {
       const gitHubIntegration = yield* GitHubIntegration
       const binding = yield* gitHubIntegration.addBinding(
         new GitHubBindingCreateRequest({
           repository,
+          installationId: yield* parseInstallationId(installationId),
           workflowModulePath,
-          cloneUrl: Option.getOrUndefined(cloneUrl),
           branch: Option.getOrUndefined(branch),
           workspaceSubdir: Option.getOrUndefined(workspaceSubdir),
-          webhookSecret: Option.getOrUndefined(webhookSecret),
-          accessToken: Option.getOrUndefined(accessToken),
         }),
       )
 
@@ -428,14 +415,15 @@ const renderBindingsList = (bindings: ReadonlyArray<GitHubBindingSummary>) => [
 const renderBindingSummary = (binding: GitHubBindingSummary) => [
   `binding: ${binding.bindingId}`,
   `provider: ${binding.provider}`,
+  `installationId: ${binding.installationId ?? "-"}`,
+  `repositoryId: ${binding.repositoryId ?? "-"}`,
   `repository: ${binding.repository}`,
   `cloneUrl: ${binding.cloneUrl}`,
+  `sourceKind: ${binding.sourceKind}`,
   `branch: ${binding.branch ?? "*"}`,
   `workflowModulePath: ${binding.workflowModulePath}`,
   `workspaceSubdir: ${binding.workspaceSubdir ?? "-"}`,
   `enabled: ${binding.enabled}`,
-  `webhookSecret: ${binding.hasWebhookSecret ? "configured" : "-"}`,
-  `accessMode: ${binding.accessMode}`,
 ]
 
 const renderEventList = (runId: string, events: ReadonlyArray<{ readonly _tag: string; readonly sequence: number }>) => [
@@ -495,6 +483,19 @@ const mergeExecutorOptions = (options: TestExecutorLayerOptions): TestExecutorLa
     },
   }
 }
+
+const parseInstallationId = (value: string | undefined) =>
+  Effect.sync(() => Number(value)).pipe(
+    Effect.flatMap((parsed) =>
+      Number.isInteger(parsed) && parsed > 0
+        ? Effect.succeed(parsed)
+        : Effect.fail(
+            new GitHubBindingRejected({
+              message: `installation id must be a positive integer: ${value ?? ""}`,
+            }),
+          ),
+    ),
+  )
 
 const sampleExecutorResultsByUnitId = (): NonNullable<TestExecutorLayerOptions["resultsByUnitId"]> => ({
   "unit:build": executorResult("workflow:sample", "unit:build", "dist", "build-output", "build stdout"),

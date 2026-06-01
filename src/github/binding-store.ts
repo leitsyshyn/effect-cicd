@@ -12,7 +12,9 @@ export class GitHubBindingStore extends Context.Service<
   {
     readonly create: (binding: GitHubBinding) => Effect.Effect<void, StoreUnavailable>
     readonly list: () => Effect.Effect<ReadonlyArray<GitHubBinding>, StoreUnavailable>
-    readonly listEnabledForRepository: (
+    readonly listEnabledForPush: (
+      installationId: number,
+      repositoryId: number,
       repositoryOwner: string,
       repositoryName: string,
     ) => Effect.Effect<ReadonlyArray<GitHubBinding>, StoreUnavailable>
@@ -28,17 +30,24 @@ export class GitHubBindingStore extends Context.Service<
 
     const list = () => Effect.sync(() => [...bindings.values()].sort(compareBindings))
 
-    const listEnabledForRepository = (repositoryOwner: string, repositoryName: string) =>
+    const listEnabledForPush = (installationId: number, repositoryId: number, repositoryOwner: string, repositoryName: string) =>
       Effect.sync(() =>
         [...bindings.values()]
           .filter(
             (binding) =>
-              binding.enabled && binding.repositoryOwner === repositoryOwner && binding.repositoryName === repositoryName,
+              binding.enabled &&
+              ((binding.installationId !== undefined &&
+                binding.repositoryId !== undefined &&
+                binding.installationId === installationId &&
+                binding.repositoryId === repositoryId) ||
+                (binding.installationId === undefined &&
+                  binding.repositoryOwner === repositoryOwner &&
+                  binding.repositoryName === repositoryName)),
           )
           .sort(compareBindings),
       )
 
-    return { create, list, listEnabledForRepository }
+    return { create, list, listEnabledForPush }
   })
 
   static readonly postgresLayer = Layer.effect(
@@ -55,13 +64,14 @@ export class GitHubBindingStore extends Context.Service<
             provider,
             repo_owner,
             repo_name,
+            installation_id,
+            repository_id,
             clone_url,
+            source_kind,
             branch,
             workflow_module_path,
             workspace_subdir,
             enabled,
-            webhook_secret,
-            access_token,
             created_at,
             updated_at,
             binding_json
@@ -70,13 +80,16 @@ export class GitHubBindingStore extends Context.Service<
             ${binding.provider},
             ${binding.repositoryOwner},
             ${binding.repositoryName},
+            ${binding.installationId ?? null},
+            ${binding.repositoryId ?? null},
             ${binding.cloneUrl},
+            ${binding.sourceKind},
             ${binding.branch ?? null},
             ${binding.workflowModulePath},
             ${binding.workspaceSubdir ?? null},
             ${binding.enabled},
-            ${binding.webhookSecret ?? null},
-            ${binding.accessToken ?? null},
+            null,
+            null,
             ${binding.createdAt},
             ${binding.updatedAt},
             ${bindingJson}::jsonb
@@ -94,14 +107,20 @@ export class GitHubBindingStore extends Context.Service<
         return rows.map((row) => decodeGitHubBinding(row.binding_json))
       })
 
-      const listEnabledForRepository = Effect.fn("GitHubBindingStore.listEnabledForRepository")(
-        function* (repositoryOwner: string, repositoryName: string) {
+      const listEnabledForPush = Effect.fn("GitHubBindingStore.listEnabledForPush")(
+        function* (installationId: number, repositoryId: number, repositoryOwner: string, repositoryName: string) {
           const rows = yield* catchSql("list matching GitHub bindings", sql<{ readonly binding_json: unknown }>`
             SELECT binding_json
             FROM github_bindings
-            WHERE repo_owner = ${repositoryOwner}
-              AND repo_name = ${repositoryName}
-              AND enabled = true
+            WHERE enabled = true
+              AND (
+                (installation_id = ${installationId} AND repository_id = ${repositoryId})
+                OR (
+                  installation_id IS NULL
+                  AND repo_owner = ${repositoryOwner}
+                  AND repo_name = ${repositoryName}
+                )
+              )
             ORDER BY updated_at DESC, binding_id ASC
           `)
 
@@ -109,7 +128,7 @@ export class GitHubBindingStore extends Context.Service<
         },
       )
 
-      return { create, list, listEnabledForRepository }
+      return { create, list, listEnabledForPush }
     }),
   )
 }

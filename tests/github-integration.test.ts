@@ -1,126 +1,167 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Redacted } from "effect"
 import { createHmac } from "node:crypto"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { GitHubBindingCreateRequest, GitHubPushWebhookPayload, GitHubRepositorySnapshot } from "../src/domain/github.ts"
+import { WorkflowRunState } from "../src/domain/runtime-state.ts"
 import { DslMaterializer, WorkflowModuleLoader } from "../src/dsl/index.ts"
 import { Engine } from "../src/engine/interface.ts"
-import { WorkflowRunState } from "../src/domain/runtime-state.ts"
+import { GitHubApiClient, type GitHubCheckRunUpsert } from "../src/github/api-client.ts"
 import { GitHubBindingStore } from "../src/github/binding-store.ts"
+import { GitHubCheckRuns } from "../src/github/check-runs.ts"
 import { GitHubIntegration } from "../src/github/integration.ts"
+import { GitHubRunLinkStore } from "../src/github/run-link-store.ts"
 import { GitHubSourceSnapshots } from "../src/github/source-snapshots.ts"
+import { GitHubAppConfig } from "../src/runtime/config.ts"
 import { makeInMemoryServiceEngineLayer } from "../src/runtime/layers.ts"
 
 describe("GitHub integration", () => {
-  it.effect("creates and lists persisted bindings", () =>
+  it.effect("creates and lists persisted GitHub App bindings", () =>
     Effect.gen(function* () {
       const fixture = yield* makeWorkflowSnapshotFixture()
+      const mock = makeGitHubApiMock()
+
       yield* Effect.gen(function* () {
         const service = yield* GitHubIntegration
 
         const created = yield* service.addBinding(
           new GitHubBindingCreateRequest({
             repository: "acme/widgets",
+            installationId: 1001,
             branch: "main",
             workflowModulePath: "workflow.ts",
             workspaceSubdir: "packages/app",
-            webhookSecret: "top-secret",
           }),
         )
         const bindings = yield* service.listBindings()
 
         expect(created.repository).toBe("acme/widgets")
-        expect(created.branch).toBe("main")
-        expect(created.workflowModulePath).toBe("workflow.ts")
-        expect(created.workspaceSubdir).toBe("packages/app")
-        expect(created.hasWebhookSecret).toBe(true)
+        expect(created.installationId).toBe(1001)
+        expect(created.repositoryId).toBe(2002)
+        expect(created.sourceKind).toBe("github-archive")
         expect(bindings).toHaveLength(1)
         expect(bindings[0]?.bindingId).toBe(created.bindingId)
-      }).pipe(Effect.provide(gitHubIntegrationLayer(fixture)), Effect.ensuring(cleanupFixture(fixture)))
+      }).pipe(Effect.provide(gitHubIntegrationLayer(fixture, mock)), Effect.ensuring(cleanupFixture(fixture)))
     }),
   )
 
-  it.effect("rejects unsigned pushes when the binding requires a webhook secret", () =>
+  it.effect("rejects unsigned webhook pushes when the app secret is configured", () =>
     Effect.gen(function* () {
       const fixture = yield* makeWorkflowSnapshotFixture()
+      const mock = makeGitHubApiMock()
+
       yield* Effect.gen(function* () {
         const service = yield* GitHubIntegration
 
         yield* service.addBinding(
           new GitHubBindingCreateRequest({
             repository: "acme/widgets",
+            installationId: 1001,
             branch: "main",
             workflowModulePath: "workflow.ts",
-            webhookSecret: "top-secret",
           }),
         )
 
         const result = yield* service
-          .triggerPush({
+          .handleWebhook({
             event: "push",
             signature: null,
             rawBody: JSON.stringify(samplePushPayload()),
-            payload: samplePushPayload(),
           })
           .pipe(Effect.exit)
 
         expect(result._tag).toBe("Failure")
-      }).pipe(Effect.provide(gitHubIntegrationLayer(fixture)), Effect.ensuring(cleanupFixture(fixture)))
+      }).pipe(Effect.provide(gitHubIntegrationLayer(fixture, mock)), Effect.ensuring(cleanupFixture(fixture)))
     }),
   )
 
-  it.effect("resolves bindings, verifies signatures, and submits a run", () =>
+  it.effect("verifies signatures, submits a run, and syncs check-run lifecycle", () =>
     Effect.gen(function* () {
       const fixture = yield* makeWorkflowSnapshotFixture()
+      const mock = makeGitHubApiMock()
+
       yield* Effect.gen(function* () {
         const service = yield* GitHubIntegration
         const engine = yield* Engine
+        const checks = yield* GitHubCheckRuns
 
         yield* service.addBinding(
           new GitHubBindingCreateRequest({
             repository: "acme/widgets",
+            installationId: 1001,
             branch: "main",
             workflowModulePath: "workflow.ts",
-            webhookSecret: "top-secret",
           }),
         )
         yield* service.addBinding(
           new GitHubBindingCreateRequest({
             repository: "acme/widgets",
+            installationId: 1001,
             branch: "release",
             workflowModulePath: "workflow.ts",
           }),
         )
 
         const rawBody = JSON.stringify(samplePushPayload())
-        const response = yield* service.triggerPush({
+        const response = yield* service.handleWebhook({
           event: "push",
-          signature: `sha256=${createHmac("sha256", "top-secret").update(rawBody).digest("hex")}`,
+          signature: signWebhook(rawBody),
+          deliveryId: "delivery-1",
           rawBody,
-          payload: samplePushPayload(),
         })
         const runId = response.triggeredRuns[0]?.runId
 
         expect(response.matchedBindings).toBe(1)
         expect(response.triggeredRuns).toHaveLength(1)
-        expect(runId).toBeDefined()
+        expect(response.triggeredRuns[0]?.checkRunId).toBe(9001)
+        expect(mock.checkRuns[0]?.status).toBe("in_progress")
 
         const run = yield* waitForTerminalRun(engine, runId!)
+        yield* checks.syncRun(run.runId)
 
         expect(run.status).toBe("succeeded")
         expect(run.execution.options.workspacePath).toBe(fixture.workspacePath)
         expect((run.execution.plan.metadata as Record<string, any>).trigger.commitSha).toBe(samplePushPayload().after)
-      }).pipe(Effect.provide(gitHubIntegrationLayer(fixture)), Effect.ensuring(cleanupFixture(fixture)))
+        expect(mock.checkRuns.at(-1)?.status).toBe("completed")
+        expect(mock.checkRuns.at(-1)?.conclusion).toBe("success")
+      }).pipe(Effect.provide(gitHubIntegrationLayer(fixture, mock)), Effect.ensuring(cleanupFixture(fixture)))
     }),
   )
 })
 
-const gitHubIntegrationLayer = (fixture: WorkflowFixture) => {
+const gitHubIntegrationLayer = (fixture: WorkflowFixture, mock: GitHubApiMock) => {
   const engineLayer = makeInMemoryServiceEngineLayer()
   const bindingStoreLayer = GitHubBindingStore.memoryLayer
+  const runLinkStoreLayer = GitHubRunLinkStore.memoryLayer
+  const configLayer = Layer.succeed(GitHubAppConfig, {
+    appId: "123",
+    privateKey: Redacted.make("test-key"),
+    webhookSecret: Redacted.make("top-secret"),
+    clientId: undefined,
+    clientSecret: undefined,
+    publicBaseUrl: "https://ci.example.test",
+    apiBaseUrl: "https://api.github.test",
+  })
+  const apiLayer = Layer.succeed(GitHubApiClient, {
+    getRepository: (_installationId, repositoryOwner, repositoryName) =>
+      Effect.succeed({
+        id: 2002,
+        owner: repositoryOwner,
+        name: repositoryName,
+        fullName: `${repositoryOwner}/${repositoryName}`,
+        cloneUrl: `https://github.com/${repositoryOwner}/${repositoryName}.git`,
+        defaultBranch: "main",
+      }),
+    downloadRepositoryArchive: () => Effect.die("unused"),
+    upsertCheckRun: (request) =>
+      Effect.sync(() => {
+        mock.checkRuns.push(request)
+        return request.checkRunId ?? 9001
+      }),
+  })
   const snapshotLayer = Layer.succeed(GitHubSourceSnapshots, {
     acquire: (_binding, ref, commitSha) =>
       Effect.succeed(
@@ -133,23 +174,42 @@ const gitHubIntegrationLayer = (fixture: WorkflowFixture) => {
         }),
       ),
   })
-  const gitHubLayer = GitHubIntegration.layer.pipe(
+  const checkRunsLayer = GitHubCheckRuns.layer.pipe(
     Layer.provideMerge(engineLayer),
+    Layer.provideMerge(runLinkStoreLayer),
+    Layer.provideMerge(apiLayer),
+    Layer.provideMerge(configLayer),
+  )
+  const gitHubLayer = GitHubIntegration.layer.pipe(
     Layer.provideMerge(bindingStoreLayer),
+    Layer.provideMerge(apiLayer),
+    Layer.provideMerge(checkRunsLayer),
     Layer.provideMerge(snapshotLayer),
     Layer.provideMerge(DslMaterializer.layer),
     Layer.provideMerge(WorkflowModuleLoader.layer),
+    Layer.provideMerge(engineLayer),
+    Layer.provideMerge(configLayer),
   )
 
   return Layer.mergeAll(
     engineLayer,
     bindingStoreLayer,
+    runLinkStoreLayer,
+    configLayer,
+    apiLayer,
     snapshotLayer,
     DslMaterializer.layer,
     WorkflowModuleLoader.layer,
+    checkRunsLayer,
     gitHubLayer,
   )
 }
+
+interface GitHubApiMock {
+  readonly checkRuns: Array<GitHubCheckRunUpsert>
+}
+
+const makeGitHubApiMock = (): GitHubApiMock => ({ checkRuns: [] })
 
 interface WorkflowFixture {
   readonly snapshotPath: string
@@ -174,13 +234,17 @@ const samplePushPayload = () =>
   new GitHubPushWebhookPayload({
     ref: "refs/heads/main",
     after: "0123456789abcdef0123456789abcdef01234567",
+    installation: { id: 1001 },
     repository: {
+      id: 2002,
       name: "widgets",
       full_name: "acme/widgets",
       clone_url: "https://github.com/acme/widgets.git",
       owner: { login: "acme" },
     },
   })
+
+const signWebhook = (rawBody: string) => `sha256=${createHmac("sha256", "top-secret").update(rawBody).digest("hex")}`
 
 const waitForTerminalRun = (engine: typeof Engine.Service, runId: string): Effect.Effect<WorkflowRunState, unknown, never> =>
   engine.inspectRun(runId as any).pipe(

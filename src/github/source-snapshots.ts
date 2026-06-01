@@ -6,6 +6,7 @@ import { mkdir, rename, rm, stat } from "node:fs/promises"
 import { SourceAcquisitionFailed } from "../domain/errors.ts"
 import { GitHubBinding, GitHubRepositorySnapshot } from "../domain/github.ts"
 import { GitHubTriggerConfig } from "../runtime/config.ts"
+import { GitHubApiClient } from "./api-client.ts"
 
 export class GitHubSourceSnapshots extends Context.Service<
   GitHubSourceSnapshots,
@@ -21,6 +22,7 @@ export class GitHubSourceSnapshots extends Context.Service<
     GitHubSourceSnapshots,
     Effect.gen(function* () {
       const config = yield* GitHubTriggerConfig
+      const gitHubApi = yield* GitHubApiClient
 
       const acquire = Effect.fn("GitHubSourceSnapshots.acquire")(
         function* (binding: GitHubBinding, ref: string, commitSha: string) {
@@ -35,7 +37,7 @@ export class GitHubSourceSnapshots extends Context.Service<
             binding.workspaceSubdir === undefined ? snapshotPath : resolvePath(snapshotPath, binding.workspaceSubdir)
 
           if (!(yield* pathExists(snapshotPath))) {
-            yield* materializeSnapshot(binding, repository, ref, commitSha, snapshotPath)
+            yield* materializeSnapshot(gitHubApi, binding, repository, ref, commitSha, snapshotPath)
           }
 
           if (!(yield* pathExists(workspacePath))) {
@@ -63,26 +65,53 @@ export class GitHubSourceSnapshots extends Context.Service<
   )
 }
 
-const materializeSnapshot = (binding: GitHubBinding, repository: string, ref: string, commitSha: string, snapshotPath: string) =>
+const materializeSnapshot = (
+  gitHubApi: typeof GitHubApiClient.Service,
+  binding: GitHubBinding,
+  repository: string,
+  ref: string,
+  commitSha: string,
+  snapshotPath: string,
+) =>
   Effect.tryPromise({
     try: async () => {
-      const tempPath = `${snapshotPath}.tmp-${crypto.randomUUID()}`
+      if (binding.installationId === undefined) {
+        throw new Error(`GitHub binding ${binding.bindingId} is missing installationId`)
+      }
+
+      const tempRoot = `${snapshotPath}.tmp-${crypto.randomUUID()}`
+      const extractPath = resolvePath(tempRoot, "snapshot")
+      const archivePath = resolvePath(tempRoot, "archive.tar.gz")
 
       await mkdir(dirname(snapshotPath), { recursive: true })
-      await rm(tempPath, { recursive: true, force: true })
+      await rm(tempRoot, { recursive: true, force: true })
 
       try {
-        const branch = branchNameFromRef(ref)
-        if (branch === undefined) {
-          throw new Error(`Unsupported Git ref for snapshot acquisition: ${ref}`)
-        }
+        const archive = await Effect.runPromise(
+          gitHubApi.downloadRepositoryArchive(
+            binding.installationId,
+            binding.repositoryOwner,
+            binding.repositoryName,
+            commitSha,
+          ),
+        )
 
-        await runGit(cloneCommand(binding, branch, tempPath))
-        await runGit(["git", "-C", tempPath, "checkout", "--detach", commitSha])
-        await rename(tempPath, snapshotPath)
+        await mkdir(extractPath, { recursive: true })
+        await Bun.write(archivePath, archive)
+        await runTarExtraction(archivePath, extractPath)
+
+        try {
+          await rename(extractPath, snapshotPath)
+        } catch (error) {
+          if (!(await pathExists(snapshotPath))) {
+            throw error
+          }
+        }
       } catch (error) {
-        await rm(tempPath, { recursive: true, force: true })
+        await rm(tempRoot, { recursive: true, force: true })
         throw error
+      } finally {
+        await rm(tempRoot, { recursive: true, force: true })
       }
     },
     catch: (error) =>
@@ -91,40 +120,17 @@ const materializeSnapshot = (binding: GitHubBinding, repository: string, ref: st
         ref,
         commitSha,
         bindingId: binding.bindingId,
-        message: toErrorMessage(error),
+          message: toErrorMessage(error),
       }),
   })
 
-const cloneCommand = (binding: GitHubBinding, branch: string, targetPath: string) => [
-  "git",
-  ...gitAuthArgs(binding.accessToken),
-  "clone",
-  "--no-checkout",
-  "--depth",
-  "1",
-  "--branch",
-  branch,
-  binding.cloneUrl,
-  targetPath,
-]
-
-const gitAuthArgs = (accessToken: string | undefined) => {
-  if (accessToken === undefined) {
-    return []
-  }
-
-  const basicAuth = Buffer.from(`x-access-token:${accessToken}`).toString("base64")
-  return ["-c", `http.extraHeader=Authorization: Basic ${basicAuth}`]
-}
-
-const runGit = async (cmd: ReadonlyArray<string>) => {
+const runTarExtraction = async (archivePath: string, targetPath: string) => {
   const process = Bun.spawn({
-    cmd: [...cmd],
+    cmd: ["tar", "-xzf", archivePath, "-C", targetPath, "--strip-components", "1"],
     stdout: "pipe",
     stderr: "pipe",
     env: {
       ...processEnv,
-      GIT_TERMINAL_PROMPT: "0",
     },
   })
 
@@ -135,11 +141,9 @@ const runGit = async (cmd: ReadonlyArray<string>) => {
   ])
 
   if (exitCode !== 0) {
-    throw new Error(stderr.trim().length > 0 ? stderr.trim() : stdout.trim() || `git exited with code ${exitCode}`)
+    throw new Error(stderr.trim().length > 0 ? stderr.trim() : stdout.trim() || `tar exited with code ${exitCode}`)
   }
 }
-
-const branchNameFromRef = (ref: string) => (ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : undefined)
 
 const pathExists = (path: string) =>
   Effect.promise(() =>

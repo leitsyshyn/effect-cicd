@@ -1,22 +1,26 @@
-import { Console, Effect, Layer, Schema, Stream } from "effect"
+import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import { Sse } from "effect/unstable/encoding"
 
 import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { DomainError } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { WorkflowEvent } from "../domain/events.ts"
-import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubPushWebhookPayload, GitHubTriggerResponse } from "../domain/github.ts"
+import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubTriggerResponse } from "../domain/github.ts"
 import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
 import { WorkflowRunState, type WorkflowRunStatus } from "../domain/runtime-state.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
 import { Engine } from "../engine/interface.ts"
 import { RunController } from "../engine/run-controller.ts"
 import { RunUpdate } from "../engine/run-updates.ts"
+import { GitHubApiClient } from "../github/api-client.ts"
+import { GitHubAppAuth } from "../github/app-auth.ts"
+import { GitHubCheckRuns } from "../github/check-runs.ts"
 import { DslMaterializer, WorkflowModuleLoader } from "../dsl/index.ts"
 import { GitHubBindingStore } from "../github/binding-store.ts"
 import { GitHubIntegration } from "../github/integration.ts"
+import { GitHubRunLinkStore } from "../github/run-link-store.ts"
 import { GitHubSourceSnapshots } from "../github/source-snapshots.ts"
-import { EngineServiceConfig, GitHubTriggerConfig, StorageRuntimeConfig } from "../runtime/config.ts"
+import { EngineServiceConfig, GitHubAppConfig, GitHubTriggerConfig, StorageRuntimeConfig } from "../runtime/config.ts"
 import { makeServiceEngineLayer } from "../runtime/layers.ts"
 import { sqlClientLayer } from "../runtime/storage.ts"
 import { RunActionRequest, RunSubmissionRequest, ServiceErrorResponse } from "./contracts.ts"
@@ -32,21 +36,45 @@ export const makeServiceLayer = () =>
   {
     const engineLayer = makeServiceEngineLayer()
     const bindingStoreLayer = GitHubBindingStore.postgresLayer.pipe(Layer.provideMerge(sqlClientLayer))
+    const runLinkStoreLayer = GitHubRunLinkStore.postgresLayer.pipe(Layer.provideMerge(sqlClientLayer))
+    const gitHubConfigLayer = GitHubAppConfig.layer
+    const gitHubAuthLayer = GitHubAppAuth.layer.pipe(Layer.provideMerge(gitHubConfigLayer))
+    const gitHubApiLayer = GitHubApiClient.layer.pipe(
+      Layer.provideMerge(gitHubConfigLayer),
+      Layer.provideMerge(gitHubAuthLayer),
+    )
     const triggerConfigLayer = GitHubTriggerConfig.layer
-    const snapshotLayer = GitHubSourceSnapshots.layer.pipe(Layer.provideMerge(triggerConfigLayer))
+    const snapshotLayer = GitHubSourceSnapshots.layer.pipe(
+      Layer.provideMerge(triggerConfigLayer),
+      Layer.provideMerge(gitHubApiLayer),
+    )
+    const gitHubChecksLayer = GitHubCheckRuns.layer.pipe(
+      Layer.provideMerge(engineLayer),
+      Layer.provideMerge(runLinkStoreLayer),
+      Layer.provideMerge(gitHubApiLayer),
+      Layer.provideMerge(gitHubConfigLayer),
+    )
     const gitHubLayer = GitHubIntegration.layer.pipe(
       Layer.provideMerge(engineLayer),
       Layer.provideMerge(bindingStoreLayer),
+      Layer.provideMerge(gitHubApiLayer),
+      Layer.provideMerge(gitHubChecksLayer),
       Layer.provideMerge(snapshotLayer),
       Layer.provideMerge(DslMaterializer.layer),
       Layer.provideMerge(WorkflowModuleLoader.layer),
+      Layer.provideMerge(gitHubConfigLayer),
     )
 
     return Layer.mergeAll(
       engineLayer,
       bindingStoreLayer,
+      runLinkStoreLayer,
+      gitHubConfigLayer,
+      gitHubAuthLayer,
+      gitHubApiLayer,
       triggerConfigLayer,
       snapshotLayer,
+      gitHubChecksLayer,
       DslMaterializer.layer,
       WorkflowModuleLoader.layer,
       gitHubLayer,
@@ -60,11 +88,17 @@ export const startServiceServer = Effect.gen(function* () {
   const serviceConfig = yield* EngineServiceConfig
   const engine = yield* Engine
   const runController = yield* RunController
+  const gitHubChecks = yield* Effect.serviceOption(GitHubCheckRuns)
   const gitHubIntegration = yield* GitHubIntegration
 
   if (runtimeConfig.runRecoveryOnStartup) {
     yield* runController.recoverOnStartup()
   }
+
+  yield* Option.match(gitHubChecks, {
+    onNone: () => Effect.void,
+    onSome: (service) => service.watchRunUpdates.pipe(Effect.forkDetach({ startImmediately: true }), Effect.asVoid),
+  })
 
   const server = Bun.serve({
     port: serviceConfig.port,
@@ -88,8 +122,11 @@ export const startServiceServer = Effect.gen(function* () {
       "/api/bindings/github": {
         POST: (request) => runJsonEffect(createGitHubBinding(gitHubIntegration, request), { schema: GitHubBindingSummary, status: 201 }),
       },
+      "/api/github/webhooks": {
+        POST: (request) => runJsonEffect(handleGitHubWebhook(gitHubIntegration, request), { schema: GitHubTriggerResponse, status: 202 }),
+      },
       "/api/triggers/github": {
-        POST: (request) => runJsonEffect(triggerGitHubPush(gitHubIntegration, request), { schema: GitHubTriggerResponse, status: 202 }),
+        POST: (request) => runJsonEffect(handleGitHubWebhook(gitHubIntegration, request), { schema: GitHubTriggerResponse, status: 202 }),
       },
       "/api/runs/stream": {
         GET: () => runStreamEffect(engine.streamRuns()),
@@ -168,16 +205,15 @@ const createGitHubBinding = (gitHubIntegration: typeof GitHubIntegration.Service
     return yield* gitHubIntegration.addBinding(binding)
   })
 
-const triggerGitHubPush = (gitHubIntegration: typeof GitHubIntegration.Service, request: Request) =>
+const handleGitHubWebhook = (gitHubIntegration: typeof GitHubIntegration.Service, request: Request) =>
   Effect.gen(function* () {
     const rawBody = yield* readRequestText(request)
-    const payload = yield* decodeJsonText(rawBody, GitHubPushWebhookPayload)
 
-    return yield* gitHubIntegration.triggerPush({
+    return yield* gitHubIntegration.handleWebhook({
       event: request.headers.get("x-github-event"),
       signature: request.headers.get("x-hub-signature-256"),
+      deliveryId: request.headers.get("x-github-delivery"),
       rawBody,
-      payload,
     })
   })
 
@@ -339,6 +375,12 @@ const statusForError = (error: DomainError) => {
       return 401
     case "GitHubBindingRejected":
       return 400
+    case "GitHubConfigMissing":
+      return 503
+    case "GitHubAuthFailed":
+      return 502
+    case "GitHubApiFailed":
+      return 502
     default:
       return 500
   }

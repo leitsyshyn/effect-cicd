@@ -252,23 +252,27 @@ describe("CLI", () => {
     Effect.gen(function* () {
       let seenRepository: string | undefined
       let seenWorkflowModulePath: string | undefined
+      let seenInstallationId: number | undefined
 
       const output = yield* runCli(
-        ["bindings", "add", "github", "acme/widgets", ".effect/workflow.ts", "--branch", "main"],
+        ["bindings", "add", "github", "acme/widgets", ".effect/workflow.ts", "--installation-id", "1001", "--branch", "main"],
         Layer.succeed(GitHubIntegration, {
           addBinding: (request) =>
             Effect.sync(() => {
               seenRepository = request.repository
               seenWorkflowModulePath = request.workflowModulePath
+              seenInstallationId = request.installationId
               return sampleBindingSummary()
             }),
           listBindings: () => Effect.die("unused"),
+          handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
         }),
       )
 
       expect(seenRepository).toBe("acme/widgets")
       expect(seenWorkflowModulePath).toBe(".effect/workflow.ts")
+      expect(seenInstallationId).toBe(1001)
       expect(output).toContain("binding: binding:github:demo")
       expect(output).toContain("repository: acme/widgets")
       expect(output).toContain("branch: main")
@@ -282,6 +286,7 @@ describe("CLI", () => {
         Layer.succeed(GitHubIntegration, {
           addBinding: () => Effect.die("unused"),
           listBindings: () => Effect.succeed([sampleBindingSummary()]),
+          handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
         }),
       )
@@ -399,13 +404,14 @@ const sampleBindingSummary = () =>
   new GitHubBindingSummary({
     bindingId: "binding:github:demo" as any,
     provider: "github",
+    installationId: 1001,
+    repositoryId: 2002,
     repository: "acme/widgets",
     cloneUrl: "https://github.com/acme/widgets.git",
+    sourceKind: "github-archive",
     branch: "main",
     workflowModulePath: ".effect/workflow.ts",
     enabled: true,
-    hasWebhookSecret: false,
-    accessMode: "anonymous",
     createdAt: new Date(0),
     updatedAt: new Date(0),
   })

@@ -75,6 +75,23 @@ export class GitHubWebhookUnauthorized extends Schema.TaggedErrorClass<GitHubWeb
   },
 ) {}
 
+export class GitHubConfigMissing extends Schema.TaggedErrorClass<GitHubConfigMissing>()("GitHubConfigMissing", {
+  setting: Schema.String,
+  message: Schema.String,
+}) {}
+
+export class GitHubAuthFailed extends Schema.TaggedErrorClass<GitHubAuthFailed>()("GitHubAuthFailed", {
+  operation: Schema.String,
+  installationId: Schema.optional(Schema.Int),
+  message: Schema.String,
+}) {}
+
+export class GitHubApiFailed extends Schema.TaggedErrorClass<GitHubApiFailed>()("GitHubApiFailed", {
+  operation: Schema.String,
+  statusCode: Schema.optional(Schema.Int),
+  message: Schema.String,
+}) {}
+
 export class SourceAcquisitionFailed extends Schema.TaggedErrorClass<SourceAcquisitionFailed>()("SourceAcquisitionFailed", {
   repository: Schema.String,
   ref: Schema.String,
@@ -97,6 +114,9 @@ export const DomainError = Schema.Union([
   ExecutorFailed,
   GitHubBindingRejected,
   GitHubWebhookUnauthorized,
+  GitHubConfigMissing,
+  GitHubAuthFailed,
+  GitHubApiFailed,
   SourceAcquisitionFailed,
 ])
 export type DomainError = typeof DomainError.Type

@@ -6,22 +6,26 @@ import { join } from "node:path"
 
 import { GitHubBinding } from "../src/domain/github.ts"
 import { BindingId } from "../src/domain/ids.ts"
+import { GitHubApiClient } from "../src/github/api-client.ts"
 import { GitHubSourceSnapshots } from "../src/github/source-snapshots.ts"
 import { GitHubTriggerConfig } from "../src/runtime/config.ts"
 
 describe("GitHub source snapshots", () => {
-  it.live("clones and reuses a commit-specific snapshot", () =>
+  it.live("extracts and reuses a commit-specific tarball snapshot", () =>
     Effect.gen(function* () {
-      const fixture = yield* makeGitRepositoryFixture()
+      const fixture = yield* makeArchiveFixture()
       yield* Effect.gen(function* () {
         const snapshots = yield* GitHubSourceSnapshots
 
         const binding = new GitHubBinding({
           bindingId: BindingId.make("binding:github:snapshot"),
           provider: "github",
+          installationId: 1001,
+          repositoryId: 2002,
           repositoryOwner: "acme",
           repositoryName: "widgets",
-          cloneUrl: fixture.repositoryPath,
+          cloneUrl: "https://github.com/acme/widgets.git",
+          sourceKind: "github-archive",
           branch: "main",
           workflowModulePath: "workflow.ts",
           enabled: true,
@@ -39,48 +43,58 @@ describe("GitHub source snapshots", () => {
       }).pipe(
         Effect.provide(
           GitHubSourceSnapshots.layer.pipe(
-            Layer.provide(
+            Layer.provideMerge(
+              Layer.succeed(GitHubApiClient, {
+                getRepository: () => Effect.die("unused"),
+                downloadRepositoryArchive: () => Effect.succeed(fixture.archive),
+                upsertCheckRun: () => Effect.die("unused"),
+              }),
+            ),
+            Layer.provideMerge(
               Layer.succeed(GitHubTriggerConfig, {
                 workspaceRoot: fixture.workspaceRoot,
               }),
             ),
           ),
         ),
-        Effect.ensuring(cleanupGitRepositoryFixture(fixture)),
+        Effect.ensuring(cleanupArchiveFixture(fixture)),
       )
     }),
   )
 })
 
-interface GitRepositoryFixture {
-  readonly repositoryPath: string
+interface ArchiveFixture {
   readonly workspaceRoot: string
+  readonly archive: Uint8Array
   readonly commitSha: string
+  readonly root: string
 }
 
-const makeGitRepositoryFixture = () =>
+const makeArchiveFixture = () =>
   Effect.promise(async () => {
-    const root = await mkdtemp(join(tmpdir(), "effect-cicd-git-source-"))
-    const repositoryPath = join(root, "repository")
+    const root = await mkdtemp(join(tmpdir(), "effect-cicd-github-archive-"))
+    const archiveSource = join(root, "archive-source")
+    const snapshotRoot = join(archiveSource, "acme-widgets-sha")
+    const archivePath = join(root, "snapshot.tar.gz")
     const workspaceRoot = join(root, "cache")
 
-    await mkdir(repositoryPath, { recursive: true })
-    await Bun.write(join(repositoryPath, "workflow.ts"), workflowModuleText())
-    await runGit(["git", "init", "-b", "main"], repositoryPath)
-    await runGit(["git", "config", "user.email", "tests@example.com"], repositoryPath)
-    await runGit(["git", "config", "user.name", "Tests"], repositoryPath)
-    await runGit(["git", "add", "workflow.ts"], repositoryPath)
-    await runGit(["git", "commit", "-m", "initial"], repositoryPath)
-    const commitSha = await runGit(["git", "rev-parse", "HEAD"], repositoryPath)
+    await mkdir(snapshotRoot, { recursive: true })
+    await Bun.write(join(snapshotRoot, "workflow.ts"), workflowModuleText())
+    await runTar(["tar", "-czf", archivePath, "-C", archiveSource, "acme-widgets-sha"])
 
-    return { repositoryPath, workspaceRoot, commitSha: commitSha.trim() }
+    return {
+      workspaceRoot,
+      archive: new Uint8Array(await Bun.file(archivePath).arrayBuffer()),
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
+      root,
+    }
   })
 
-const cleanupGitRepositoryFixture = (fixture: GitRepositoryFixture) =>
-  Effect.promise(() => rm(join(fixture.repositoryPath, ".."), { recursive: true, force: true }).catch(() => undefined))
+const cleanupArchiveFixture = (fixture: ArchiveFixture) =>
+  Effect.promise(() => rm(fixture.root, { recursive: true, force: true }).catch(() => undefined))
 
-const runGit = async (cmd: ReadonlyArray<string>, cwd: string) => {
-  const process = Bun.spawn({ cmd: [...cmd], cwd, stdout: "pipe", stderr: "pipe" })
+const runTar = async (cmd: ReadonlyArray<string>) => {
+  const process = Bun.spawn({ cmd: [...cmd], stdout: "pipe", stderr: "pipe" })
   const [exitCode, stdout, stderr] = await Promise.all([
     process.exited,
     new Response(process.stdout).text(),
@@ -88,10 +102,8 @@ const runGit = async (cmd: ReadonlyArray<string>, cwd: string) => {
   ])
 
   if (exitCode !== 0) {
-    throw new Error(stderr.trim().length > 0 ? stderr.trim() : stdout.trim() || `git exited with code ${exitCode}`)
+    throw new Error(stderr.trim().length > 0 ? stderr.trim() : stdout.trim() || `tar exited with code ${exitCode}`)
   }
-
-  return stdout
 }
 
 const workflowModuleText = () => `

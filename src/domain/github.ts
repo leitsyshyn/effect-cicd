@@ -2,44 +2,46 @@ import { Schema } from "effect"
 
 import { BindingId, RunId, WorkflowId } from "./ids.ts"
 
+const GitHubNumericId = Schema.Int
+
 export class GitHubBinding extends Schema.Class<GitHubBinding>("GitHubBinding")({
   bindingId: BindingId,
   provider: Schema.Literals(["github"]),
+  installationId: Schema.optional(GitHubNumericId),
+  repositoryId: Schema.optional(GitHubNumericId),
   repositoryOwner: Schema.String,
   repositoryName: Schema.String,
   cloneUrl: Schema.String,
+  sourceKind: Schema.Literals(["github-archive"]),
   branch: Schema.optional(Schema.String),
   workflowModulePath: Schema.String,
   workspaceSubdir: Schema.optional(Schema.String),
   enabled: Schema.Boolean,
-  webhookSecret: Schema.optional(Schema.String),
-  accessToken: Schema.optional(Schema.String),
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
 }) {}
 
 export class GitHubBindingCreateRequest extends Schema.Class<GitHubBindingCreateRequest>("GitHubBindingCreateRequest")({
   repository: Schema.String,
-  cloneUrl: Schema.optional(Schema.String),
+  installationId: GitHubNumericId,
   branch: Schema.optional(Schema.String),
   workflowModulePath: Schema.String,
   workspaceSubdir: Schema.optional(Schema.String),
   enabled: Schema.optional(Schema.Boolean),
-  webhookSecret: Schema.optional(Schema.String),
-  accessToken: Schema.optional(Schema.String),
 }) {}
 
 export class GitHubBindingSummary extends Schema.Class<GitHubBindingSummary>("GitHubBindingSummary")({
   bindingId: BindingId,
   provider: Schema.Literals(["github"]),
+  installationId: Schema.optional(GitHubNumericId),
+  repositoryId: Schema.optional(GitHubNumericId),
   repository: Schema.String,
   cloneUrl: Schema.String,
+  sourceKind: Schema.Literals(["github-archive"]),
   branch: Schema.optional(Schema.String),
   workflowModulePath: Schema.String,
   workspaceSubdir: Schema.optional(Schema.String),
   enabled: Schema.Boolean,
-  hasWebhookSecret: Schema.Boolean,
-  accessMode: Schema.Literals(["anonymous", "token"]),
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
 }) {}
@@ -49,13 +51,16 @@ export class GitHubTriggeredRun extends Schema.Class<GitHubTriggeredRun>("GitHub
   runId: RunId,
   workflowId: WorkflowId,
   workflowName: Schema.String,
+  checkRunId: Schema.optional(GitHubNumericId),
   snapshotPath: Schema.String,
   workspacePath: Schema.String,
 }) {}
 
 export class GitHubTriggerResponse extends Schema.Class<GitHubTriggerResponse>("GitHubTriggerResponse")({
   event: Schema.String,
-  repository: Schema.String,
+  action: Schema.optional(Schema.String),
+  installationId: Schema.optional(GitHubNumericId),
+  repository: Schema.optional(Schema.String),
   ref: Schema.optional(Schema.String),
   commitSha: Schema.optional(Schema.String),
   matchedBindings: Schema.Int,
@@ -76,6 +81,7 @@ export class GitHubRepositoryOwnerPayload extends Schema.Class<GitHubRepositoryO
 }) {}
 
 export class GitHubRepositoryPayload extends Schema.Class<GitHubRepositoryPayload>("GitHubRepositoryPayload")({
+  id: GitHubNumericId,
   name: Schema.String,
   full_name: Schema.String,
   clone_url: Schema.String,
@@ -83,15 +89,56 @@ export class GitHubRepositoryPayload extends Schema.Class<GitHubRepositoryPayloa
   owner: GitHubRepositoryOwnerPayload,
 }) {}
 
+export class GitHubInstallationPayload extends Schema.Class<GitHubInstallationPayload>("GitHubInstallationPayload")({
+  id: GitHubNumericId,
+}) {}
+
 export class GitHubPushWebhookPayload extends Schema.Class<GitHubPushWebhookPayload>("GitHubPushWebhookPayload")({
   ref: Schema.String,
   after: Schema.String,
   deleted: Schema.optional(Schema.Boolean),
+  installation: GitHubInstallationPayload,
   repository: GitHubRepositoryPayload,
+}) {}
+
+export class GitHubInstallationWebhookPayload extends Schema.Class<GitHubInstallationWebhookPayload>(
+  "GitHubInstallationWebhookPayload",
+)({
+  action: Schema.String,
+  installation: GitHubInstallationPayload,
+  repositories: Schema.optional(Schema.Array(GitHubRepositoryPayload)),
+}) {}
+
+export class GitHubInstallationRepositoriesWebhookPayload extends Schema.Class<GitHubInstallationRepositoriesWebhookPayload>(
+  "GitHubInstallationRepositoriesWebhookPayload",
+)({
+  action: Schema.String,
+  installation: GitHubInstallationPayload,
+  repositories_added: Schema.optional(Schema.Array(GitHubRepositoryPayload)),
+  repositories_removed: Schema.optional(Schema.Array(GitHubRepositoryPayload)),
+}) {}
+
+export class GitHubRunLink extends Schema.Class<GitHubRunLink>("GitHubRunLink")({
+  runId: RunId,
+  bindingId: BindingId,
+  provider: Schema.Literals(["github"]),
+  installationId: GitHubNumericId,
+  repositoryId: GitHubNumericId,
+  repositoryOwner: Schema.String,
+  repositoryName: Schema.String,
+  workflowModulePath: Schema.String,
+  ref: Schema.String,
+  branch: Schema.optional(Schema.String),
+  commitSha: Schema.String,
+  deliveryId: Schema.optional(Schema.String),
+  checkRunId: Schema.optional(GitHubNumericId),
+  createdAt: Schema.Date,
+  updatedAt: Schema.Date,
 }) {}
 
 export interface GitHubWebhookEnvelope {
   readonly event: string | null
   readonly signature: string | null
+  readonly deliveryId: string | null
   readonly body: string
 }

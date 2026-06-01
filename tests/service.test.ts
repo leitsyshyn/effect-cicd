@@ -60,6 +60,7 @@ describe("service boundary", () => {
           Layer.succeed(GitHubIntegration, {
             addBinding: () => Effect.die("unused"),
             listBindings: () => Effect.succeed([]),
+            handleWebhook: () => Effect.die("unused"),
             triggerPush: () => Effect.die("unused"),
           }),
         ),
@@ -131,6 +132,7 @@ describe("service boundary", () => {
         Layer.succeed(GitHubIntegration, {
           addBinding: () => Effect.die("unused"),
           listBindings: () => Effect.succeed([]),
+          handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
         }),
       )

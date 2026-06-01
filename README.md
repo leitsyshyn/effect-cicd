@@ -164,65 +164,163 @@ Retry a terminal run as a new run:
 ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs retry <runId>
 ```
 
-## GitHub Push Triggers
+## GitHub App CI Loop
 
-Register a GitHub binding:
+The service now uses a GitHub App for auth, webhook verification, repository snapshot download, and Checks API updates.
+
+### 1. Create the GitHub App
+
+In GitHub:
+
+1. Go to `Settings -> Developer settings -> GitHub Apps -> New GitHub App`.
+2. Set `Webhook URL` to `https://<public-host>/api/github/webhooks`.
+3. Set `Webhook secret` to the value you will use for `GITHUB_WEBHOOK_SECRET`.
+4. Repository permissions:
+5. `Contents: Read-only`
+6. `Metadata: Read-only`
+7. `Checks: Read and write`
+8. Subscribe to webhook events:
+9. `push`
+10. `installation`
+11. `installation_repositories`
+12. Create the app.
+13. Generate and download a private key.
+14. Copy the App ID from the app page.
+
+### 2. Configure the service
+
+Set these environment variables before starting the engine service:
 
 ```bash
-ENGINE_BASE_URL=http://127.0.0.1:3000 bun run cli bindings add github acme/widgets workflow.ts --clone-url /absolute/path/to/local-or-bare-repo --branch main
+export GITHUB_APP_ID=1234567
+export GITHUB_APP_PRIVATE_KEY="$(bun -e 'const text = await Bun.file("path/to/github-app.private-key.pem").text(); console.write(text.replace(/\n/g, "\\n"))')"
+export GITHUB_WEBHOOK_SECRET=replace-me
+export PUBLIC_BASE_URL=https://ci.example.com
 ```
 
-Optional binding flags:
+Optional:
 
-- `--workspace-subdir <path>` run the workflow from a repository subdirectory inside the acquired snapshot
-- `--webhook-secret <secret>` require a valid `X-Hub-Signature-256` signature for this binding
-- `--access-token <token>` use a GitHub token for private repository clone access
-- `--clone-url <url>` override the default `https://github.com/<owner>/<repo>.git`
+- `GITHUB_API_BASE_URL` for GHES or non-default API hosts later
+- `GITHUB_WORKSPACE_ROOT` to override the snapshot cache root
+- `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are reserved for later OAuth-style flows and are not required for push-triggered CI
 
-List configured bindings:
+Start infra and the service:
+
+```bash
+bun run infra:up
+bun run server
+```
+
+### 3. Expose local webhooks during development
+
+One simple option is `cloudflared`:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:3000
+```
+
+Take the generated `https://...trycloudflare.com` URL and set the GitHub App webhook URL to:
+
+```text
+https://<cloudflared-host>/api/github/webhooks
+```
+
+`ngrok` or `smee` also work as long as they forward raw request bodies unchanged.
+
+### 4. Install the app on the repo or org
+
+1. Open the GitHub App page.
+2. Click `Install App`.
+3. Choose the target org or user.
+4. Install it on the specific repository or repositories you want to bind.
+5. Note the installation id from the install page URL or via the GitHub API if needed.
+
+### 5. Create a binding through the CLI
+
+The CLI remains a client of the service:
+
+```bash
+ENGINE_BASE_URL=http://127.0.0.1:3000 \
+bun run cli bindings add github acme/widgets .effect/workflow.ts \
+  --installation-id 12345678 \
+  --branch main \
+  --workspace-subdir packages/app
+```
+
+List bindings:
 
 ```bash
 ENGINE_BASE_URL=http://127.0.0.1:3000 bun run cli bindings list
 ```
 
-Simulate a GitHub push locally:
+### 6. What happens on a real push
+
+For an installed and bound repository, a GitHub `push` event now does this:
+
+1. `POST /api/github/webhooks`
+2. Verify `X-Hub-Signature-256` with `GITHUB_WEBHOOK_SECRET`
+3. Resolve the installation + repository binding
+4. Download the exact commit snapshot with an installation token using the GitHub archive API
+5. Load and materialize the workflow from that snapshot
+6. Submit the run to the persistent engine service
+7. Create/update one workflow-level GitHub Check Run for the engine run
+8. Persist the GitHub-to-run correlation for later updates and inspection
+
+### 7. Simulate a push locally
+
+Build a signed payload and send it to the real webhook endpoint:
 
 ```bash
-curl -X POST http://127.0.0.1:3000/api/triggers/github \
+BODY='{
+  "ref": "refs/heads/main",
+  "after": "0123456789abcdef0123456789abcdef01234567",
+  "installation": { "id": 12345678 },
+  "repository": {
+    "id": 987654321,
+    "name": "widgets",
+    "full_name": "acme/widgets",
+    "clone_url": "https://github.com/acme/widgets.git",
+    "owner": { "login": "acme" }
+  }
+}'
+
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" -hex | sed 's/^.* //')
+
+curl -X POST http://127.0.0.1:3000/api/github/webhooks \
   -H 'content-type: application/json' \
   -H 'x-github-event: push' \
-  -d '{
-    "ref": "refs/heads/main",
-    "after": "<commit-sha>",
-    "repository": {
-      "name": "widgets",
-      "full_name": "acme/widgets",
-      "clone_url": "https://github.com/acme/widgets.git",
-      "owner": { "login": "acme" }
-    }
-  }'
+  -H 'x-github-delivery: dev-delivery-1' \
+  -H "x-hub-signature-256: sha256=$SIG" \
+  -d "$BODY"
 ```
 
-If the binding has a webhook secret, add:
+There is still a compatibility route at `POST /api/triggers/github`, but the real GitHub App route is `POST /api/github/webhooks`.
 
-```text
-X-Hub-Signature-256: sha256=<hmac-of-raw-json-body>
-```
-
-Inspect the resulting run later:
+### 8. Inspect resulting runs
 
 ```bash
 ENGINE_BASE_URL=http://127.0.0.1:3000 bun run cli runs list
 ENGINE_BASE_URL=http://127.0.0.1:3000 bun run cli runs show <runId>
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run cli runs events <runId>
 ```
 
-Snapshot acquisition behavior:
+If `PUBLIC_BASE_URL` is configured, the GitHub Check Run `details_url` points to `/runs/<runId>` under that base URL.
 
-- The service acquires a git snapshot for the pushed commit SHA under `GITHUB_WORKSPACE_ROOT`.
-- If `GITHUB_WORKSPACE_ROOT` is unset, the default root is `.effect-cicd/github` under the service working directory.
-- Snapshot directories are commit-specific and deterministic: `<workspace-root>/<owner>/<repo>/<commit-sha>`.
-- Existing snapshot directories are reused when the same commit is triggered again.
-- The current prototype does not implement eviction or garbage collection for cached snapshots.
+### 9. Snapshot behavior
+
+- Snapshots are exact commit archives, not branch-head lookups.
+- The default cache root is `.effect-cicd/github` under the service working directory.
+- Snapshot directories are deterministic: `<workspace-root>/<owner>/<repo>/<commit-sha>`.
+- Existing snapshots for the same commit are reused.
+- The current prototype does not implement snapshot eviction or garbage collection yet.
+
+### 10. Current limitations
+
+- GitHub only. No multi-provider SCM abstraction yet.
+- Push only. PR review, merge queue, and deployment-oriented GitHub features are intentionally out of scope.
+- One workflow-level Check Run per engine run. Per-unit checks are not implemented.
+- Installation and repository webhook events are acknowledged but not yet used to mutate bindings automatically.
+- Snapshot retention is cache-only with no cleanup worker yet.
 
 ## Dashboard MVP
 
@@ -296,6 +394,7 @@ For the demo workflow, `runs artifact <artifactRef>` should print JSON like:
 - `POST /api/workflows/validate`
 - `POST /api/workflows/plan`
 - `POST /api/bindings/github`
+- `POST /api/github/webhooks`
 - `POST /api/triggers/github`
 - `POST /api/runs`
 - `POST /api/runs/:runId/cancel`
