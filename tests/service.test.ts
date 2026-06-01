@@ -49,6 +49,8 @@ describe("service boundary", () => {
                 validated = true
               }),
             plan: () => Effect.succeed(samplePlan()),
+            startDefinition: () => Effect.succeed(sampleRunState()),
+            submitDefinition: () => Effect.succeed(sampleRunState()),
             startRun: () => Effect.succeed(sampleRunState()),
             submitRun: () => Effect.succeed(sampleRunState()),
             cancelRun: () => Effect.succeed(sampleRunState()),
@@ -183,6 +185,45 @@ describe("service boundary", () => {
       expect(result.submitted.status).toBe("queued")
       expect(result.completed.status).toBe("succeeded")
       expect(result.events.map((event) => event._tag)).toContain("RunSucceeded")
+
+      yield* stopServer(server)
+    }),
+  )
+
+  it.live("service client can submit a normalized workflow definition directly", () =>
+    Effect.gen(function* () {
+      const port = randomPort()
+      const baseUrl = `http://127.0.0.1:${port}`
+      const serviceLayer = Layer.mergeAll(
+        makeInMemoryServiceEngineLayer(),
+        Layer.succeed(EngineServiceConfig, { baseUrl, port }),
+        Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
+        Layer.succeed(GitHubIntegration, {
+          addBinding: () => Effect.die("unused"),
+          listBindings: () => Effect.succeed([]),
+          listProjects: () => Effect.succeed([]),
+          handleWebhook: () => Effect.die("unused"),
+          triggerPush: () => Effect.die("unused"),
+        }),
+        SecretStore.memoryLayer,
+      )
+
+      const server = yield* withServer(serviceLayer)
+
+      const run = yield* Effect.gen(function* () {
+        const engine = yield* Engine
+        return yield* engine.startDefinition(sampleDefinition())
+      }).pipe(
+        Effect.provide(
+          engineServiceClientLayer.pipe(
+            Layer.provideMerge(FetchHttpClient.layer),
+            Layer.provideMerge(Layer.succeed(EngineServiceConfig, { baseUrl, port })),
+          ),
+        ),
+      )
+
+      expect(run.status).toBe("succeeded")
+      expect(run.workflowId).toBe(sampleDefinition().workflowId)
 
       yield* stopServer(server)
     }),

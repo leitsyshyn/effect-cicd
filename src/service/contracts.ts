@@ -5,9 +5,15 @@ import { ProjectSummary } from "../domain/project.ts"
 import { RunId } from "../domain/ids.ts"
 import { RunExecutionOptions } from "../domain/runtime-state.ts"
 import { SecretSummary } from "../domain/secrets.ts"
+import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
 
 export class RunSubmissionRequest extends Schema.Class<RunSubmissionRequest>("RunSubmissionRequest")({
   plan: ExecutionPlan,
+  options: Schema.optional(RunExecutionOptions),
+}) {}
+
+export class WorkflowRunSubmissionRequest extends Schema.Class<WorkflowRunSubmissionRequest>("WorkflowRunSubmissionRequest")({
+  definition: NormalizedWorkflowDefinition,
   options: Schema.optional(RunExecutionOptions),
 }) {}
 

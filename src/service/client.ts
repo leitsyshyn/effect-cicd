@@ -18,7 +18,7 @@ import { type RunStartOptions } from "../engine/orchestrator.ts"
 import { RunUpdate } from "../engine/run-updates.ts"
 import { GitHubIntegration, type GitHubTriggerRequest } from "../github/integration.ts"
 import { EngineServiceConfig } from "../runtime/config.ts"
-import { RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse } from "./contracts.ts"
+import { RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse, WorkflowRunSubmissionRequest } from "./contracts.ts"
 import { decodeJson, encodeJson } from "./schema-json.ts"
 import * as Context from "effect/Context"
 
@@ -42,6 +42,24 @@ export const engineServiceClientLayer = Layer.effect(
         HttpClientRequest.bodyJsonUnsafe(encodeJson(NormalizedWorkflowDefinition, definition)),
       )
       return yield* requestJson(http, request, ExecutionPlan)
+    })
+
+    const submitDefinition = Effect.fn("EngineServiceClient.submitDefinition")((definition: NormalizedWorkflowDefinition, options?: RunStartOptions) => {
+      const request = HttpClientRequest.post("/api/workflows/runs").pipe(
+        HttpClientRequest.bodyJsonUnsafe(
+          encodeJson(
+            WorkflowRunSubmissionRequest,
+            new WorkflowRunSubmissionRequest({
+              definition,
+              options:
+                options === undefined
+                  ? undefined
+                  : new RunExecutionOptions({ workspacePath: options.workspacePath, inputValues: options.inputValues }),
+            }),
+          ),
+        ),
+      )
+      return requestJson(http, request, WorkflowRunState)
     })
 
     const submitRun = Effect.fn("EngineServiceClient.submitRun")(function* (executionPlan: ExecutionPlan, options?: RunStartOptions) {
@@ -68,6 +86,11 @@ export const engineServiceClientLayer = Layer.effect(
 
     const startRun = Effect.fn("EngineServiceClient.startRun")(function* (executionPlan: ExecutionPlan, options?: RunStartOptions) {
       const run = yield* submitRun(executionPlan, options)
+      return yield* waitForTerminalRun(inspectRun, run.runId)
+    })
+
+    const startDefinition = Effect.fn("EngineServiceClient.startDefinition")(function* (definition: NormalizedWorkflowDefinition, options?: RunStartOptions) {
+      const run = yield* submitDefinition(definition, options)
       return yield* waitForTerminalRun(inspectRun, run.runId)
     })
 
@@ -147,11 +170,13 @@ export const engineServiceClientLayer = Layer.effect(
 
     const streamRun = (runId: RunId) => requestStream(http, HttpClientRequest.get(`/api/runs/${encodeURIComponent(runId)}/stream`))
 
-    return {
-      validate,
-      plan,
-      startRun,
-      submitRun,
+      return {
+        validate,
+        plan,
+        startDefinition,
+        submitDefinition,
+        startRun,
+        submitRun,
       cancelRun,
       retryRun,
       listRuns,

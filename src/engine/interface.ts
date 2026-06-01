@@ -23,6 +23,8 @@ export class Engine extends Context.Service<
   {
     readonly validate: (definition: NormalizedWorkflowDefinition) => Effect.Effect<void, DomainError>
     readonly plan: (definition: NormalizedWorkflowDefinition) => Effect.Effect<ExecutionPlan, DomainError>
+    readonly startDefinition: (definition: NormalizedWorkflowDefinition, options?: RunStartOptions) => Effect.Effect<WorkflowRunState, DomainError>
+    readonly submitDefinition: (definition: NormalizedWorkflowDefinition, options?: RunStartOptions) => Effect.Effect<WorkflowRunState, DomainError>
     readonly startRun: (plan: ExecutionPlan, options?: RunStartOptions) => Effect.Effect<WorkflowRunState, DomainError>
     readonly submitRun: (plan: ExecutionPlan, options?: RunStartOptions) => Effect.Effect<WorkflowRunState, DomainError>
     readonly cancelRun: (runId: RunId, reason?: string) => Effect.Effect<WorkflowRunState, DomainError>
@@ -57,6 +59,14 @@ export class Engine extends Context.Service<
       const validate = Effect.fn("Engine.validate")((definition: NormalizedWorkflowDefinition) => planner.validate(definition))
 
       const plan = Effect.fn("Engine.plan")((definition: NormalizedWorkflowDefinition) => planner.plan(definition))
+
+      const startDefinition = Effect.fn("Engine.startDefinition")((definition: NormalizedWorkflowDefinition, options?: RunStartOptions) =>
+        plan(definition).pipe(Effect.flatMap((executionPlan) => orchestrator.startRun(executionPlan, options))),
+      )
+
+      const submitDefinition = Effect.fn("Engine.submitDefinition")((definition: NormalizedWorkflowDefinition, options?: RunStartOptions) =>
+        plan(definition).pipe(Effect.flatMap((executionPlan) => runController.submitRun(executionPlan, options))),
+      )
 
       const startRun = Effect.fn("Engine.startRun")((executionPlan: ExecutionPlan, options?: RunStartOptions) =>
         orchestrator.startRun(executionPlan, options),
@@ -133,6 +143,8 @@ export class Engine extends Context.Service<
       return {
         validate,
         plan,
+        startDefinition,
+        submitDefinition,
         startRun,
         submitRun,
         cancelRun,

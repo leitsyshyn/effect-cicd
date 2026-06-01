@@ -154,8 +154,7 @@ const runCommand = Command.make(
     const resolvedWorkspace = yield* resolveWorkspacePath(workflowModule, workspace)
     const inputValues = yield* parseInputValues(inputs)
     const definition = yield* loadAndMaterializeWorkflow(workflowModule, Option.getOrUndefined(exportName))
-    const plan = yield* engine.plan(definition)
-    const run = yield* engine.startRun(plan, {
+    const run = yield* engine.startDefinition(definition, {
       workspacePath: resolvedWorkspace,
       ...(inputValues === undefined ? {} : { inputValues }),
     })

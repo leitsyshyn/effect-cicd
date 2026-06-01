@@ -190,6 +190,24 @@ ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts run ./path/to/workflow.ts
 
 Service/API submission with workflow inputs:
 
+Preferred self-hosted path, where the service owns planning before execution:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/workflows/runs \
+  -H 'content-type: application/json' \
+  -d '{
+    "definition": {"...":"normalized workflow definition omitted for brevity"},
+    "options": {
+      "workspacePath": "/absolute/workspace/path",
+      "inputValues": {
+        "release": "1.2.3"
+      }
+    }
+  }'
+```
+
+Lower-level execution path, when the caller already has an `ExecutionPlan`:
+
 ```bash
 curl -X POST http://127.0.0.1:3000/api/runs \
   -H 'content-type: application/json' \

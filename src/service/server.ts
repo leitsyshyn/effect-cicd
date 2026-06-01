@@ -33,7 +33,7 @@ import { appVersion } from "../runtime/version.ts"
 import { SecretStore } from "../secrets/store.ts"
 import { ArtifactGc } from "../engine/stores/artifact-gc.ts"
 import { ArtifactStore } from "../engine/stores/artifact-store.ts"
-import { RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse } from "./contracts.ts"
+import { RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse, WorkflowRunSubmissionRequest } from "./contracts.ts"
 import { decodeJson, encodeJson } from "./schema-json.ts"
 
 type EngineService = typeof Engine.Service
@@ -148,6 +148,9 @@ export const startServiceServer = Effect.gen(function* () {
       },
       "/api/workflows/plan": {
         POST: (request) => runJsonEffect(planWorkflow(engine, request), { schema: ExecutionPlan }),
+      },
+      "/api/workflows/runs": {
+        POST: (request) => runJsonEffect(submitWorkflowRun(engine, request), { schema: WorkflowRunState }),
       },
       "/api/runs": {
         GET: (request) => runJsonEffect(listRuns(engine, request), { schema: Schema.Array(WorkflowRunState) }),
@@ -304,6 +307,20 @@ const submitRun = (engine: EngineService, request: Request) =>
     const submission = yield* parseRequestBody(request, RunSubmissionRequest)
     return yield* engine.submitRun(
       submission.plan,
+      submission.options === undefined
+        ? undefined
+        : {
+            ...(submission.options.workspacePath === undefined ? {} : { workspacePath: submission.options.workspacePath }),
+            ...(submission.options.inputValues === undefined ? {} : { inputValues: submission.options.inputValues }),
+          },
+    )
+  })
+
+const submitWorkflowRun = (engine: EngineService, request: Request) =>
+  Effect.gen(function* () {
+    const submission = yield* parseRequestBody(request, WorkflowRunSubmissionRequest)
+    return yield* engine.submitDefinition(
+      submission.definition,
       submission.options === undefined
         ? undefined
         : {

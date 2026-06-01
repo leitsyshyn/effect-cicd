@@ -95,6 +95,8 @@ describe("CLI", () => {
                 called = true
               }),
             plan: () => Effect.die("unused"),
+            startDefinition: () => Effect.die("unused"),
+            submitDefinition: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
             submitRun: () => Effect.die("unused"),
             cancelRun: () => Effect.die("unused"),
@@ -152,6 +154,8 @@ describe("CLI", () => {
                 validatedWorkflowId = definition.workflowId
               }),
             plan: () => Effect.die("unused"),
+            startDefinition: () => Effect.die("unused"),
+            submitDefinition: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
             submitRun: () => Effect.die("unused"),
             cancelRun: () => Effect.die("unused"),
@@ -201,11 +205,13 @@ describe("CLI", () => {
           Layer.succeed(Engine, {
             validate: () => Effect.die("unused"),
             plan: () => Effect.succeed(samplePlan()),
-            startRun: (_plan, options) =>
+            startDefinition: (_definition, options) =>
               Effect.sync(() => {
                 capturedWorkspace = options?.workspacePath
                 return sampleRunState()
               }),
+            submitDefinition: () => Effect.die("unused"),
+            startRun: () => Effect.die("unused"),
             submitRun: () => Effect.die("unused"),
             cancelRun: () => Effect.die("unused"),
             retryRun: () => Effect.die("unused"),
@@ -246,11 +252,13 @@ describe("CLI", () => {
           Layer.succeed(Engine, {
             validate: () => Effect.die("unused"),
             plan: () => Effect.succeed(samplePlan()),
-            startRun: (_plan, options) =>
+            startDefinition: (_definition, options) =>
               Effect.sync(() => {
                 capturedInputs = options?.inputValues
                 return sampleRunState()
               }),
+            submitDefinition: () => Effect.die("unused"),
+            startRun: () => Effect.die("unused"),
             submitRun: () => Effect.die("unused"),
             cancelRun: () => Effect.die("unused"),
             retryRun: () => Effect.die("unused"),
@@ -288,6 +296,8 @@ describe("CLI", () => {
           Layer.succeed(Engine, {
             validate: () => Effect.die("unused"),
             plan: () => Effect.die("unused"),
+            startDefinition: () => Effect.die("unused"),
+            submitDefinition: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
             submitRun: () => Effect.die("unused"),
             cancelRun: () => Effect.die("unused"),
@@ -328,6 +338,8 @@ describe("CLI", () => {
           Layer.succeed(Engine, {
             validate: () => Effect.die("unused"),
             plan: () => Effect.die("unused"),
+            startDefinition: () => Effect.die("unused"),
+            submitDefinition: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
             submitRun: () => Effect.die("unused"),
             cancelRun: () => Effect.die("unused"),
@@ -365,6 +377,8 @@ describe("CLI", () => {
           Layer.succeed(Engine, {
             validate: () => Effect.die("unused"),
             plan: () => Effect.die("unused"),
+            startDefinition: () => Effect.die("unused"),
+            submitDefinition: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
             submitRun: () => Effect.die("unused"),
             cancelRun: (runId) =>
@@ -405,6 +419,8 @@ describe("CLI", () => {
           Layer.succeed(Engine, {
             validate: () => Effect.die("unused"),
             plan: () => Effect.die("unused"),
+            startDefinition: () => Effect.die("unused"),
+            submitDefinition: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
             submitRun: () => Effect.die("unused"),
             cancelRun: () => Effect.die("unused"),
@@ -455,6 +471,8 @@ describe("CLI", () => {
           Layer.succeed(Engine, {
             validate: () => Effect.die("unused"),
             plan: () => Effect.die("unused"),
+            startDefinition: () => Effect.die("unused"),
+            submitDefinition: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
             submitRun: () => Effect.die("unused"),
             cancelRun: () => Effect.die("unused"),
@@ -496,6 +514,8 @@ describe("CLI", () => {
           Layer.succeed(Engine, {
             validate: () => Effect.die("unused"),
             plan: () => Effect.die("unused"),
+            startDefinition: () => Effect.die("unused"),
+            submitDefinition: () => Effect.die("unused"),
             startRun: () => Effect.die("unused"),
             submitRun: () => Effect.die("unused"),
             cancelRun: () => Effect.die("unused"),
