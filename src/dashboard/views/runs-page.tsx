@@ -3,10 +3,8 @@ import { useEffect, useState } from "react"
 import type { createDashboardApi } from "../api.ts"
 import { EmptyState } from "../components/empty-state.tsx"
 import { InlineError } from "../components/inline-error.tsx"
-import { MetricCard } from "../components/metric-card.tsx"
 import { StatusBadge } from "../components/status-badge.tsx"
 import { Button } from "../components/ui/button.tsx"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card.tsx"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table.tsx"
 import { formatDateTime, formatDuration, truncateMiddle } from "../lib/format.ts"
 import { hrefForRun, type DashboardNavigate } from "../lib/routing.ts"
@@ -38,15 +36,13 @@ export function RunsPage(props: { readonly api: DashboardApi; readonly navigate:
   useEffect(() => {
     void load()
 
-    const source = new EventSource("/api/runs/stream")
-    const reload = () => {
-      void load()
-    }
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void props.api.listRuns().then(setRuns).catch(() => undefined)
+      }
+    }, 10_000)
 
-    source.addEventListener("run-update", reload)
-    source.onerror = () => undefined
-
-    return () => source.close()
+    return () => window.clearInterval(interval)
   }, [])
 
   const filteredRuns = runs.filter((run) => (filter === "all" ? true : filter === "running" ? run.controls.canCancel : run.status === filter))
@@ -56,36 +52,28 @@ export function RunsPage(props: { readonly api: DashboardApi; readonly navigate:
 
   return (
     <section className="grid gap-4">
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
-        <Card className="dashboard-panel lg:col-span-1">
-          <CardHeader className="gap-2">
-            <CardTitle className="text-[26px]">Runs</CardTitle>
-            <CardDescription>Durable workflow executions exposed through the Engine inspection contract.</CardDescription>
-          </CardHeader>
-        </Card>
-        <MetricCard label="Total runs" value={`${runs.length}`} detail="Persisted workflow history" />
-        <MetricCard label="Active" value={`${activeRuns}`} detail="Currently queued, running, or canceling" />
-        <MetricCard label="Needs attention" value={`${failedRuns}`} detail={latestRun === undefined ? "No runs yet" : `Latest ${latestRun.workflowName ?? latestRun.workflowId}`} />
-      </div>
-
-      <Card className="dashboard-panel overflow-hidden">
-        <CardHeader className="gap-4 border-b border-border/70 pb-4">
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <CardTitle className="text-[17px]">Run index</CardTitle>
-              <CardDescription>Filterable operational index with durable progress and failure context.</CardDescription>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              {statusFilters.map((status) => (
-                <Button key={status} variant={filter === status ? "default" : "outline"} size="sm" onClick={() => setFilter(status)}>
-                  {status}
-                </Button>
-              ))}
+      <div className="dashboard-section overflow-hidden">
+        <div className="flex flex-wrap items-end justify-between gap-4 border-b border-border px-4 py-4 sm:px-5">
+          <div className="grid gap-2">
+            <div className="text-[24px] font-semibold tracking-tight text-foreground">Runs</div>
+            <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+              <span>{runs.length} total</span>
+              <span>{activeRuns} active</span>
+              <span>{failedRuns} failed</span>
+              {latestRun === undefined ? null : <span>latest {latestRun.workflowName ?? latestRun.workflowId}</span>}
             </div>
           </div>
-        </CardHeader>
-        <CardContent className="p-0">
+
+          <div className="flex flex-wrap items-center gap-2">
+            {statusFilters.map((status) => (
+              <Button key={status} variant={filter === status ? "default" : "outline"} size="sm" onClick={() => setFilter(status)}>
+                {status}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        <div className="p-0">
           {error === undefined ? null : <div className="p-4"><InlineError message={error} /></div>}
           {loading ? (
             <div className="p-4"><EmptyState title="Loading runs" description="Fetching persisted runs from the Engine service." compact /></div>
@@ -106,7 +94,7 @@ export function RunsPage(props: { readonly api: DashboardApi; readonly navigate:
               </TableHeader>
               <TableBody>
                 {filteredRuns.map((run) => (
-                  <TableRow key={run.runId} className="cursor-pointer" onClick={() => props.navigate(hrefForRun(run.runId))}>
+                  <TableRow key={run.runId} className="cursor-pointer" onClick={() => props.navigate(hrefForRun(run.runId, undefined, "pipeline"))}>
                     <TableCell>
                       <div className="grid gap-1">
                         <div className="font-medium text-foreground">{run.workflowName ?? run.workflowId}</div>
@@ -124,8 +112,8 @@ export function RunsPage(props: { readonly api: DashboardApi; readonly navigate:
               </TableBody>
             </Table>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </section>
   )
 }

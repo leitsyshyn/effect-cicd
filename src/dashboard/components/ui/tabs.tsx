@@ -6,7 +6,7 @@ import { cn } from "../../lib/utils.ts"
 export const Tabs = TabsPrimitive.Root
 
 export function TabsList({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.List>) {
-  return <TabsPrimitive.List className={cn("inline-flex h-9 items-center rounded-sm bg-muted p-1 text-muted-foreground", className)} {...props} />
+  return <TabsPrimitive.List className={cn("inline-flex min-h-9 items-center rounded-sm border border-border bg-muted/40 p-0.5 text-muted-foreground", className)} {...props} />
 }
 
 export function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
@@ -22,5 +22,5 @@ export function TabsTrigger({ className, ...props }: React.ComponentProps<typeof
 }
 
 export function TabsContent({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.Content>) {
-  return <TabsPrimitive.Content className={cn("mt-4 outline-none", className)} {...props} />
+  return <TabsPrimitive.Content className={cn("mt-3 outline-none", className)} {...props} />
 }

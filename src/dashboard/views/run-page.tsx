@@ -1,19 +1,24 @@
-import { Activity, CircleAlert, Logs, PackageSearch } from "lucide-react"
 import { useEffect, useState } from "react"
 
 import type { createDashboardApi } from "../api.ts"
 import { EmptyState } from "../components/empty-state.tsx"
-import { MetricCard } from "../components/metric-card.tsx"
 import { RunHeader } from "../components/run-header.tsx"
 import { RunInspector } from "../components/run-inspector.tsx"
 import { RunOverview } from "../components/run-overview.tsx"
 import { RunPipelineView } from "../components/run-pipeline.tsx"
 import { RunTimeline } from "../components/run-timeline.tsx"
-import { formatDuration } from "../lib/format.ts"
-import { hrefForRun, type DashboardNavigate, type RunRoute } from "../lib/routing.ts"
+import { Button } from "../components/ui/button.tsx"
+import { hrefForRun, type DashboardNavigate, type RunPageView, type RunRoute } from "../lib/routing.ts"
 import type { RunDetailDto } from "../types.ts"
 
 type DashboardApi = ReturnType<typeof createDashboardApi>
+
+const pageTabs: ReadonlyArray<readonly [RunPageView, string]> = [
+  ["pipeline", "Pipeline"],
+  ["jobs", "Jobs"],
+  ["summary", "Overview"],
+  ["events", "Events"],
+]
 
 export function RunPage(props: { readonly api: DashboardApi; readonly navigate: DashboardNavigate; readonly route: RunRoute }) {
   const [detail, setDetail] = useState<RunDetailDto | null>(null)
@@ -28,31 +33,33 @@ export function RunPage(props: { readonly api: DashboardApi; readonly navigate: 
   const [actionNotice, setActionNotice] = useState<string>()
   const [actionError, setActionError] = useState<string>()
 
-  const load = async () => {
-    setLoading(true)
-    setError(undefined)
+  const load = async (background = false) => {
+    if (!background) {
+      setLoading(true)
+      setError(undefined)
+    }
 
     try {
       setDetail(await props.api.inspectRun(props.route.runId))
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
     } finally {
-      setLoading(false)
+      if (!background) {
+        setLoading(false)
+      }
     }
   }
 
   useEffect(() => {
     void load()
 
-    const source = new EventSource(`/api/runs/${encodeURIComponent(props.route.runId)}/stream`)
-    const reload = () => {
-      void load()
-    }
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void load(true)
+      }
+    }, 5_000)
 
-    source.addEventListener("run-update", reload)
-    source.onerror = () => undefined
-
-    return () => source.close()
+    return () => window.clearInterval(interval)
   }, [props.route.runId])
 
   useEffect(() => {
@@ -83,8 +90,10 @@ export function RunPage(props: { readonly api: DashboardApi; readonly navigate: 
     void loadPayload()
   }, [props.api, selectedArtifactRef, selectedLogRef])
 
+  const activeView: RunPageView = props.route.view ?? "pipeline"
   const selectedUnit = detail?.units.find((unit) => unit.unitId === props.route.selectedUnitId) ?? detail?.units[0]
-  const selectUnit = (unitId: string) => props.navigate(hrefForRun(props.route.runId, unitId), { replace: true })
+  const setView = (view: RunPageView) => props.navigate(hrefForRun(props.route.runId, selectedUnit?.unitId, view), { replace: true })
+  const selectUnit = (unitId: string) => props.navigate(hrefForRun(props.route.runId, unitId, activeView), { replace: true })
 
   const filteredEvents = selectedUnit === undefined ? [] : detail?.events.filter((event) => event.unitId === selectedUnit.unitId) ?? []
   const filteredLogs = selectedUnit === undefined ? [] : detail?.logs.filter((log) => log.unitId === selectedUnit.unitId) ?? []
@@ -99,7 +108,7 @@ export function RunPage(props: { readonly api: DashboardApi; readonly navigate: 
       const result = await effect()
 
       if (action === "retry" && typeof result === "object" && result !== null && "runId" in result && typeof result.runId === "string") {
-        props.navigate(hrefForRun(result.runId))
+        props.navigate(hrefForRun(result.runId, undefined, "pipeline"))
         return
       }
 
@@ -111,7 +120,7 @@ export function RunPage(props: { readonly api: DashboardApi; readonly navigate: 
         setActionNotice("Cancellation requested. Run state will update as the Engine persists the new status.")
       }
 
-      await load()
+      await load(true)
     } catch (caught) {
       setActionError(caught instanceof Error ? caught.message : String(caught))
     } finally {
@@ -140,41 +149,77 @@ export function RunPage(props: { readonly api: DashboardApi; readonly navigate: 
         onGc={() => void runAction("gc", () => props.api.gcRunArtifacts(detail.run.runId))}
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Progress" value={`${detail.run.progress.completedUnits}/${detail.run.progress.totalUnits}`} detail="Completed units / total units" accent={<Activity className="size-4 text-[var(--dashboard-highlight)]" />} />
-        <MetricCard label="Duration" value={formatDuration(detail.run.durationMs)} detail="Engine-timed run duration" accent={<CircleAlert className="size-4 text-[var(--dashboard-highlight)]" />} />
-        <MetricCard label="Logs" value={`${detail.logs.length}`} detail="Persisted log payloads" accent={<Logs className="size-4 text-[var(--dashboard-highlight)]" />} />
-        <MetricCard label="Artifacts" value={`${detail.artifacts.length}`} detail="Persisted artifact payloads" accent={<PackageSearch className="size-4 text-[var(--dashboard-highlight)]" />} />
+      <div className="dashboard-nav flex flex-wrap items-center gap-5">
+        {pageTabs.map(([value, label]) => (
+          <Button key={value} variant="ghost" size="sm" className={["dashboard-tab rounded-none px-0 pb-3 pt-0", activeView === value ? "" : "opacity-90"].join(" ")} onClick={() => setView(value)}>
+            {label}
+          </Button>
+        ))}
       </div>
 
-      <RunOverview detail={detail} />
-
-      <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1.55fr)_420px] xl:items-start">
+      {activeView === "pipeline" ? (
         <div className="grid gap-4">
           <RunPipelineView detail={detail} {...(selectedUnit?.unitId === undefined ? {} : { selectedUnitId: selectedUnit.unitId })} onSelectUnit={selectUnit} />
-          <RunTimeline events={detail.events} {...(selectedUnit?.unitId === undefined ? {} : { selectedUnitId: selectedUnit.unitId })} />
         </div>
+      ) : null}
 
-        <RunInspector
-          {...(selectedUnit === undefined ? {} : { unit: selectedUnit })}
-          logs={filteredLogs}
-          artifacts={filteredArtifacts}
-          events={filteredEvents}
-          selectedLogRef={selectedLogRef}
-          selectedArtifactRef={selectedArtifactRef}
-          payload={payload}
-          {...(payloadError === undefined ? {} : { payloadError })}
-          loadingPayload={loadingPayload}
-          onSelectLog={(logRef) => {
-            setSelectedArtifactRef(null)
-            setSelectedLogRef(logRef)
-          }}
-          onSelectArtifact={(artifactRef) => {
-            setSelectedLogRef(null)
-            setSelectedArtifactRef(artifactRef)
-          }}
-        />
-      </div>
+      {activeView === "jobs" ? (
+        <div className="grid min-h-0 gap-4 xl:grid-cols-[320px_minmax(0,1fr)] xl:items-start">
+          <section className="dashboard-section overflow-hidden">
+            <header className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">Jobs</header>
+            <div className="max-h-[72vh] overflow-auto">
+              {detail.stages.map((stage) => (
+                <div key={stage.id} className="border-b border-border last:border-b-0">
+                  <div className="bg-[#1a1624] px-4 py-2 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{stage.label}</div>
+                  <div>
+                    {stage.units.map((unit) => (
+                      <button
+                        key={unit.unitId}
+                        type="button"
+                        onClick={() => selectUnit(unit.unitId)}
+                        className={[
+                          "flex w-full items-center justify-between gap-3 border-b border-border px-4 py-3 text-left last:border-b-0",
+                          selectedUnit?.unitId === unit.unitId ? "bg-[#2a2436]" : "hover:bg-[#221d2d]",
+                        ].join(" ")}
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-foreground">{unit.name}</div>
+                          <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">{unit.unitId}</div>
+                        </div>
+                        <div className="shrink-0 text-xs text-muted-foreground">{unit.status}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <RunInspector
+            {...(selectedUnit === undefined ? {} : { unit: selectedUnit })}
+            logs={filteredLogs}
+            artifacts={filteredArtifacts}
+            events={filteredEvents}
+            selectedLogRef={selectedLogRef}
+            selectedArtifactRef={selectedArtifactRef}
+            payload={payload}
+            {...(payloadError === undefined ? {} : { payloadError })}
+            loadingPayload={loadingPayload}
+            onSelectLog={(logRef) => {
+              setSelectedArtifactRef(null)
+              setSelectedLogRef(logRef)
+            }}
+            onSelectArtifact={(artifactRef) => {
+              setSelectedLogRef(null)
+              setSelectedArtifactRef(artifactRef)
+            }}
+          />
+        </div>
+      ) : null}
+
+      {activeView === "summary" ? <RunOverview detail={detail} /> : null}
+
+      {activeView === "events" ? <RunTimeline events={detail.events} {...(selectedUnit?.unitId === undefined ? {} : { selectedUnitId: selectedUnit.unitId })} /> : null}
     </section>
   )
 }

@@ -22,18 +22,16 @@ export function PayloadBrowser(props: {
   }
 
   return (
-    <div className="grid h-full grid-rows-[auto_minmax(0,1fr)] gap-3">
-      <div className="grid max-h-[180px] gap-2 overflow-auto pr-1">
+    <div className="grid h-full min-h-0 gap-3 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="min-h-0 overflow-auto border border-border bg-[var(--dashboard-panel-strong)]">
         {props.items.map((item) => (
           <button
             key={item.ref}
             type="button"
             onClick={() => props.onSelect(item.ref)}
             className={[
-              "dashboard-panel w-full px-3 py-3 text-left transition duration-150",
-              props.selectedItem?.ref === item.ref
-                ? "border-[var(--dashboard-highlight)]/60 bg-[var(--dashboard-panel-strong)]"
-                : "hover:border-border hover:bg-[var(--dashboard-panel-strong)]/80",
+              "w-full border-b border-border px-3 py-3 text-left transition duration-150 last:border-b-0",
+              props.selectedItem?.ref === item.ref ? "bg-[#2a2436]" : "hover:bg-[#272133]",
             ].join(" ")}
           >
             <div className="flex items-start justify-between gap-3">
@@ -52,24 +50,12 @@ export function PayloadBrowser(props: {
         ))}
       </div>
 
-      <PayloadViewer
-        kind={props.kind}
-        item={props.selectedItem}
-        payload={props.payload}
-        {...(props.payloadError === undefined ? {} : { payloadError: props.payloadError })}
-        loadingPayload={props.loadingPayload}
-      />
+      <PayloadViewer kind={props.kind} item={props.selectedItem} payload={props.payload} {...(props.payloadError === undefined ? {} : { payloadError: props.payloadError })} loadingPayload={props.loadingPayload} />
     </div>
   )
 }
 
-function PayloadViewer(props: {
-  readonly kind: "log" | "artifact"
-  readonly item: PayloadMetadataDto | undefined
-  readonly payload: string
-  readonly payloadError?: string | undefined
-  readonly loadingPayload: boolean
-}) {
+function PayloadViewer(props: { readonly kind: "log" | "artifact"; readonly item: PayloadMetadataDto | undefined; readonly payload: string; readonly payloadError?: string | undefined; readonly loadingPayload: boolean }) {
   if (props.item === undefined) {
     return <EmptyState title={`No ${props.kind} selected`} description={`Select a ${props.kind} entry to inspect its payload`} compact />
   }
@@ -77,18 +63,15 @@ function PayloadViewer(props: {
   const lines = props.payload.length === 0 ? [] : props.payload.replace(/\n$/, "").split("\n")
 
   return (
-    <div className="dashboard-panel grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-[var(--dashboard-console)]">
-      <div className="flex items-center justify-between gap-3 border-b border-border/80 px-4 py-3">
+    <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden border border-border bg-[var(--dashboard-console)]">
+      <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
         <div className="min-w-0 grid gap-1">
           <div className="truncate font-mono text-[12px] text-zinc-100">{props.item.name}</div>
           <div className="truncate text-[11px] uppercase tracking-[0.18em] text-zinc-500">{props.item.category ?? props.kind}</div>
         </div>
         <div className="flex items-center gap-3">
           <StatusBadge status={props.item.status} />
-          <a
-            href={props.kind === "log" ? `/api/logs/${encodeURIComponent(props.item.ref)}` : `/api/artifacts/${encodeURIComponent(props.item.ref)}`}
-            className="inline-flex items-center gap-2 text-xs text-zinc-400 transition hover:text-zinc-100"
-          >
+          <a href={props.kind === "log" ? `/api/logs/${encodeURIComponent(props.item.ref)}` : `/api/artifacts/${encodeURIComponent(props.item.ref)}`} className="inline-flex items-center gap-2 text-xs text-zinc-400 transition hover:text-zinc-100">
             <Download className="size-3" />
             Raw
           </a>

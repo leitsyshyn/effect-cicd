@@ -20,8 +20,8 @@ export function RunHeader(props: {
   const workflowLabel = props.detail.run.workflowName ?? props.detail.run.workflowId
 
   return (
-    <div className="grid gap-4 border-b border-border/80 pb-4">
-      <div className="flex flex-wrap items-center gap-3 text-[12px] uppercase tracking-[0.22em] text-muted-foreground">
+    <div className="grid gap-3 border-b border-border pb-4">
+      <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
         <button type="button" onClick={() => props.navigate?.("/")} className="inline-flex items-center gap-2 transition hover:text-foreground">
           <ArrowLeft className="size-3.5" />
           Runs
@@ -33,19 +33,19 @@ export function RunHeader(props: {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="grid gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="dashboard-title text-[34px] leading-none">{workflowLabel}</h1>
+            <h1 className="dashboard-title text-[30px] leading-none">{workflowLabel}</h1>
             <StatusBadge status={props.detail.run.status} />
           </div>
 
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
             <span>Started {formatDateTime(props.detail.run.startedAt)}</span>
             <span>Finished {formatDateTime(props.detail.run.finishedAt)}</span>
             <span>Duration {formatDuration(props.detail.run.durationMs)}</span>
-            <span className="font-mono text-[11px]">{truncateMiddle(props.detail.run.runId, 72)}</span>
+            <span className="font-mono text-[12px]">{truncateMiddle(props.detail.run.runId, 72)}</span>
             {props.detail.source.retriedFromRunId === undefined ? null : (
               <button
                 type="button"
-                onClick={() => props.navigate?.(hrefForRun(props.detail.source.retriedFromRunId!))}
+                onClick={() => props.navigate?.(hrefForRun(props.detail.source.retriedFromRunId!, undefined, "pipeline"))}
                 className="text-[var(--dashboard-highlight)] transition hover:text-[var(--dashboard-highlight-strong)]"
               >
                 retried from {truncateMiddle(props.detail.source.retriedFromRunId, 36)}
