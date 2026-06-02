@@ -48,6 +48,7 @@ export class GitHubIntegration extends Context.Service<
     readonly addBinding: (request: GitHubBindingCreateRequest) => Effect.Effect<GitHubBindingSummary, DomainError>
     readonly listBindings: () => Effect.Effect<ReadonlyArray<GitHubBindingSummary>, DomainError>
     readonly listProjects: () => Effect.Effect<ReadonlyArray<ProjectSummary>, DomainError>
+    readonly acceptWebhook: (request: GitHubTriggerRequest) => Effect.Effect<GitHubTriggerResponse, DomainError>
     readonly handleWebhook: (request: GitHubTriggerRequest) => Effect.Effect<GitHubTriggerResponse, DomainError>
     readonly triggerPush: (request: GitHubTriggerRequest) => Effect.Effect<GitHubTriggerResponse, DomainError>
   }
@@ -116,17 +117,14 @@ export class GitHubIntegration extends Context.Service<
 
       const listProjects = Effect.fn("GitHubIntegration.listProjects")(() => bindingStore.listProjects())
 
-      const handleWebhook = Effect.fn("GitHubIntegration.handleWebhook")(
-        function* ({ event, signature, rawBody, deliveryId }: GitHubTriggerRequest) {
-          yield* verifyWebhookRequest(appConfig, rawBody, signature)
-
-          const payload = yield* parseWebhookBody(rawBody)
+      const processWebhook = Effect.fn("GitHubIntegration.processWebhook")(
+        function* (event: string | null, payload: unknown, deliveryId: string | null) {
           switch (event) {
             case "push": {
               const push = yield* decodeWebhookPayload<GitHubPushWebhookPayload>(GitHubPushWebhookPayload, payload)
               return yield* handlePushEvent(
                 push,
-                deliveryId ?? null,
+                deliveryId,
                 bindingStore,
                 gitHubChecks,
                 runLinkStore,
@@ -178,11 +176,94 @@ export class GitHubIntegration extends Context.Service<
         },
       )
 
+      const handleWebhook = Effect.fn("GitHubIntegration.handleWebhook")(
+        function* ({ event, signature, rawBody, deliveryId }: GitHubTriggerRequest) {
+          yield* verifyWebhookRequest(appConfig, rawBody, signature)
+
+          const payload = yield* parseWebhookBody(rawBody)
+          return yield* processWebhook(event, payload, deliveryId ?? null)
+        },
+      )
+
+      const acceptWebhook = Effect.fn("GitHubIntegration.acceptWebhook")(
+        function* ({ event, signature, rawBody, deliveryId }: GitHubTriggerRequest) {
+          yield* verifyWebhookRequest(appConfig, rawBody, signature)
+
+          const payload = yield* parseWebhookBody(rawBody)
+          return yield* acceptedWebhookResponse(event, payload)
+        },
+      )
+
       const triggerPush = Effect.fn("GitHubIntegration.triggerPush")((request: GitHubTriggerRequest) => handleWebhook(request))
 
-      return { addBinding, listBindings, listProjects, handleWebhook, triggerPush }
+      return { addBinding, listBindings, listProjects, acceptWebhook, handleWebhook, triggerPush }
     }),
   )
+}
+
+const acceptedWebhookResponse = (
+  event: string | null,
+  payload: unknown,
+): Effect.Effect<GitHubTriggerResponse, GitHubBindingRejected, never> => {
+  switch (event) {
+    case "push":
+      return decodeWebhookPayload<GitHubPushWebhookPayload>(GitHubPushWebhookPayload, payload).pipe(
+        Effect.map(
+          (push) =>
+            new GitHubTriggerResponse({
+              event: "push",
+              installationId: push.installation.id,
+              repository: push.repository.full_name,
+              ref: push.ref,
+              commitSha: push.after,
+              matchedBindings: 0,
+              triggeredRuns: [],
+              ignoredReason: "Webhook accepted for asynchronous processing",
+            }),
+        ),
+      )
+    case "installation":
+      return decodeWebhookPayload<GitHubInstallationWebhookPayload>(GitHubInstallationWebhookPayload, payload).pipe(
+        Effect.map(
+          (installation) =>
+            new GitHubTriggerResponse({
+              event,
+              action: installation.action,
+              installationId: installation.installation.id,
+              repository: installation.repositories?.[0]?.full_name,
+              matchedBindings: 0,
+              triggeredRuns: [],
+              ignoredReason: "Webhook accepted for asynchronous processing",
+            }),
+        ),
+      )
+    case "installation_repositories":
+      return decodeWebhookPayload<GitHubInstallationRepositoriesWebhookPayload>(GitHubInstallationRepositoriesWebhookPayload, payload).pipe(
+        Effect.map(
+          (installationRepositories) =>
+            new GitHubTriggerResponse({
+              event,
+              action: installationRepositories.action,
+              installationId: installationRepositories.installation.id,
+              repository:
+                installationRepositories.repositories_added?.[0]?.full_name ??
+                installationRepositories.repositories_removed?.[0]?.full_name,
+              matchedBindings: 0,
+              triggeredRuns: [],
+              ignoredReason: "Webhook accepted for asynchronous processing",
+            }),
+        ),
+      )
+    default:
+      return Effect.succeed(
+        new GitHubTriggerResponse({
+          event: event ?? "unknown",
+          matchedBindings: 0,
+          triggeredRuns: [],
+          ignoredReason: `Unsupported GitHub event: ${event ?? "missing"}`,
+        }),
+      )
+  }
 }
 
 const handlePushEvent = (

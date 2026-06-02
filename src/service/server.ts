@@ -125,6 +125,57 @@ export const startServiceServer = Effect.gen(function* () {
     onSome: (service) => service.start(),
   })
 
+  const pendingGitHubWebhooks = new Array<{
+    readonly event: string | null
+    readonly signature: string | null
+    readonly deliveryId: string | null
+    readonly rawBody: string
+  }>()
+  let processingGitHubWebhooks = false
+
+  const drainGitHubWebhooks = async () => {
+    if (processingGitHubWebhooks) {
+      return
+    }
+
+    processingGitHubWebhooks = true
+
+    try {
+      while (pendingGitHubWebhooks.length > 0) {
+        const next = pendingGitHubWebhooks.shift()!
+        try {
+          await Effect.runPromise(
+            gitHubIntegration.handleWebhook(next).pipe(
+              Effect.catch(() => Effect.succeed(undefined)),
+            ),
+          )
+        } catch {
+          continue
+        }
+      }
+    } finally {
+      processingGitHubWebhooks = false
+
+      if (pendingGitHubWebhooks.length > 0) {
+        queueMicrotask(() => {
+          void drainGitHubWebhooks()
+        })
+      }
+    }
+  }
+
+  const enqueueGitHubWebhook = (request: {
+    readonly event: string | null
+    readonly signature: string | null
+    readonly deliveryId: string | null
+    readonly rawBody: string
+  }) => {
+    pendingGitHubWebhooks.push(request)
+    queueMicrotask(() => {
+      void drainGitHubWebhooks()
+    })
+  }
+
   const server = Bun.serve({
     port: serviceConfig.port,
     routes: {
@@ -174,10 +225,12 @@ export const startServiceServer = Effect.gen(function* () {
         POST: (request) => runJsonEffect(createGitHubBinding(gitHubIntegration, request), { schema: GitHubBindingSummary, status: 201 }),
       },
       "/api/github/webhooks": {
-        POST: (request) => runJsonEffect(handleGitHubWebhook(gitHubIntegration, request), { schema: GitHubTriggerResponse, status: 202 }),
+        POST: (request) =>
+          runJsonEffect(handleGitHubWebhook(gitHubIntegration, request, enqueueGitHubWebhook), { schema: GitHubTriggerResponse, status: 202 }),
       },
       "/api/triggers/github": {
-        POST: (request) => runJsonEffect(handleGitHubWebhook(gitHubIntegration, request), { schema: GitHubTriggerResponse, status: 202 }),
+        POST: (request) =>
+          runJsonEffect(handleGitHubWebhook(gitHubIntegration, request, enqueueGitHubWebhook), { schema: GitHubTriggerResponse, status: 202 }),
       },
       "/api/runs/stream": {
         GET: () => runStreamEffect(engine.streamRuns()),
@@ -358,16 +411,32 @@ const createGitHubBinding = (gitHubIntegration: typeof GitHubIntegration.Service
     return yield* gitHubIntegration.addBinding(binding)
   })
 
-const handleGitHubWebhook = (gitHubIntegration: typeof GitHubIntegration.Service, request: Request) =>
+const handleGitHubWebhook = (
+  gitHubIntegration: typeof GitHubIntegration.Service,
+  request: Request,
+  enqueueGitHubWebhook: (request: {
+    readonly event: string | null
+    readonly signature: string | null
+    readonly deliveryId: string | null
+    readonly rawBody: string
+  }) => void,
+) =>
   Effect.gen(function* () {
     const rawBody = yield* readRequestText(request)
-
-    return yield* gitHubIntegration.handleWebhook({
+    const triggerRequest = {
       event: request.headers.get("x-github-event"),
       signature: request.headers.get("x-hub-signature-256"),
       deliveryId: request.headers.get("x-github-delivery"),
       rawBody,
+    }
+
+    const accepted = yield* gitHubIntegration.acceptWebhook(triggerRequest)
+
+    yield* Effect.sync(() => {
+      enqueueGitHubWebhook(triggerRequest)
     })
+
+    return accepted
   })
 
 const cancelRun = (engine: EngineService, request: Request, runId: RunId) =>

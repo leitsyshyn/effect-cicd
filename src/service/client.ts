@@ -241,12 +241,15 @@ export const gitHubIntegrationClientLayer = Layer.effect(
       ),
     )
 
+    const acceptWebhook = Effect.fn("GitHubIntegrationClient.acceptWebhook")((request: GitHubTriggerRequest) => handleWebhook(request))
+
     const triggerPush = Effect.fn("GitHubIntegrationClient.triggerPush")((request: GitHubTriggerRequest) => handleWebhook(request))
 
     return {
       addBinding,
       listBindings,
       listProjects,
+      acceptWebhook,
       handleWebhook,
       triggerPush,
     }

@@ -59,6 +59,7 @@ describe("artifact GC", () => {
           addBinding: () => Effect.die("unused"),
           listBindings: () => Effect.succeed([]),
           listProjects: () => Effect.succeed([]),
+          acceptWebhook: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
         }),
