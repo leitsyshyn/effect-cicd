@@ -5,6 +5,7 @@ import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { DomainError } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
+import { projectIdForRunSummary } from "../domain/project.ts"
 import { appVersion } from "../runtime/version.ts"
 import { WorkflowEvent } from "../domain/events.ts"
 import { ExecutionAttemptState, ExecutionUnitState, WorkflowRunState } from "../domain/runtime-state.ts"
@@ -80,7 +81,13 @@ export class Engine extends Context.Service<
 
       const retryRun = Effect.fn("Engine.retryRun")((runId: RunId, reason?: string) => runController.retryRun(runId, reason))
 
-      const listRuns = Effect.fn("Engine.listRuns")((projectId?: string) => stateStore.listRuns(projectId))
+      const listRuns = Effect.fn("Engine.listRuns")((projectId?: string) =>
+        stateStore.listRuns().pipe(
+          Effect.map((runs) =>
+            projectId === undefined ? runs : runs.filter((run) => projectIdForRunSummary(run) === projectId),
+          ),
+        ),
+      )
 
       const inspectRun = Effect.fn("Engine.inspectRun")((runId: RunId) => orchestrator.inspectRun(runId))
 

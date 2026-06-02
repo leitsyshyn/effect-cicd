@@ -233,6 +233,7 @@ export const storageMigrationLayer = PgMigrator.layer({
         status text NOT NULL,
         bucket text NOT NULL,
         object_key text NOT NULL,
+        content_type text,
         metadata_json jsonb NOT NULL
       )`
 
@@ -426,6 +427,11 @@ export const storageMigrationLayer = PgMigrator.layer({
           true
         )
         WHERE state_json->>'projectId' IS NULL`
+    }),
+    "0008_artifact_content_type": Effect.gen(function* () {
+      const sql = yield* SqlClient
+
+      yield* sql`ALTER TABLE artifact_metadata ADD COLUMN IF NOT EXISTS content_type text`
     }),
   }),
 })

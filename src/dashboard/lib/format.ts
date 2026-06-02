@@ -1,6 +1,13 @@
 import type { SourceLocationDto } from "../types.ts"
 
-export const formatDateTime = (value: string | undefined) => (value === undefined ? "-" : new Date(value).toLocaleString())
+export const formatDateTime = (value: string | null | undefined) => {
+  if (value === undefined || value === null) {
+    return "-"
+  }
+
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString()
+}
 
 export const formatDuration = (value: number | undefined) => {
   if (value === undefined) {

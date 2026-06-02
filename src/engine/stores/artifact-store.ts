@@ -250,6 +250,7 @@ export class ArtifactStore extends Context.Service<
             status,
             bucket,
             object_key,
+            content_type,
             expires_at,
             retention_days,
             metadata_json
@@ -263,6 +264,7 @@ export class ArtifactStore extends Context.Service<
             ${persistedMetadata.status},
             ${objectStorage.bucket},
             ${objectKey},
+            ${contentType ?? null},
             ${persistedMetadata.expiresAt ?? null},
             ${persistedMetadata.retentionDays ?? null},
             ${metadataJson}::jsonb
@@ -276,6 +278,7 @@ export class ArtifactStore extends Context.Service<
             status = EXCLUDED.status,
             bucket = EXCLUDED.bucket,
             object_key = EXCLUDED.object_key,
+            content_type = EXCLUDED.content_type,
             expires_at = EXCLUDED.expires_at,
             retention_days = EXCLUDED.retention_days,
             metadata_json = EXCLUDED.metadata_json

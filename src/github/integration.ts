@@ -516,6 +516,7 @@ const annotateDefinition = (
     ...definition,
     metadata: {
       ...definition.metadata,
+      projectId: binding.projectId,
       trigger: {
         provider: "github",
         event: "github.push",

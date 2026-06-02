@@ -5,11 +5,14 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { ExecutionPlan } from "../src/domain/execution-plan.ts"
 import { GitHubBindingCreateRequest, GitHubPushWebhookPayload, GitHubRepositorySnapshot } from "../src/domain/github.ts"
+import { PlanId, ProjectId, RunId, WorkflowId } from "../src/domain/ids.ts"
 import { deriveGitHubProjectId } from "../src/domain/project.ts"
-import { WorkflowRunState } from "../src/domain/runtime-state.ts"
+import { ProgressSummary, RunExecutionContext, RunExecutionOptions, WorkflowRunState } from "../src/domain/runtime-state.ts"
 import { DslMaterializer, WorkflowModuleLoader } from "../src/dsl/index.ts"
 import { Engine } from "../src/engine/interface.ts"
+import { StateStore } from "../src/engine/stores/state-store.ts"
 import { GitHubApiClient, type GitHubCheckRunUpsert } from "../src/github/api-client.ts"
 import { GitHubBindingStore } from "../src/github/binding-store.ts"
 import { GitHubCheckRuns } from "../src/github/check-runs.ts"
@@ -50,6 +53,32 @@ describe("GitHub integration", () => {
         expect(bindings[0]?.bindingId).toBe(created.bindingId)
         expect(projects).toHaveLength(1)
         expect(projects[0]?.projectId).toBe(created.projectId)
+        expect(projects[0]?.runCount).toBe(0)
+        expect(projects[0]?.latestRunAt).toBeUndefined()
+        expect(projects[0]?.latestRunStatus).toBeUndefined()
+      }).pipe(Effect.provide(gitHubIntegrationLayer(fixture, mock)), Effect.ensuring(cleanupFixture(fixture)))
+    }),
+  )
+
+  it.effect("lists local projects inferred from runs without bindings", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeWorkflowSnapshotFixture()
+      const mock = makeGitHubApiMock()
+
+      yield* Effect.gen(function* () {
+        const service = yield* GitHubIntegration
+        const stateStore = yield* StateStore
+
+        yield* stateStore.createRun(sampleRunState("workflow:local:demo"))
+
+        const projects = yield* service.listProjects()
+
+        expect(projects).toHaveLength(1)
+        expect(projects[0]?.projectId).toBe("workflow:local:demo")
+        expect(projects[0]?.provider).toBe("local")
+        expect(projects[0]?.bindingCount).toBe(0)
+        expect(projects[0]?.runCount).toBe(1)
+        expect(projects[0]?.latestRunStatus).toBe("succeeded")
       }).pipe(Effect.provide(gitHubIntegrationLayer(fixture, mock)), Effect.ensuring(cleanupFixture(fixture)))
     }),
   )
@@ -129,6 +158,7 @@ describe("GitHub integration", () => {
         yield* checks.syncRun(run.runId)
 
         expect(run.status).toBe("succeeded")
+        expect(run.projectId).toBe(deriveGitHubProjectId(2002, "acme", "widgets"))
         expect(run.execution.options.workspacePath).toBe(fixture.workspacePath)
         expect((run.execution.plan.metadata as Record<string, any>).trigger.commitSha).toBe(samplePushPayload().after)
         expect(mock.checkRuns.at(-1)?.status).toBe("completed")
@@ -215,7 +245,7 @@ describe("GitHub integration", () => {
 
 const gitHubIntegrationLayer = (fixture: WorkflowFixture, mock: GitHubApiMock) => {
   const engineLayer = makeInMemoryServiceEngineLayer()
-  const bindingStoreLayer = GitHubBindingStore.memoryLayer
+  const bindingStoreLayer = GitHubBindingStore.memoryLayer.pipe(Layer.provideMerge(engineLayer))
   const runLinkStoreLayer = GitHubRunLinkStore.memoryLayer
   const triggerDeliveryLayer = GitHubTriggerDeliveryStore.memoryLayer
   const configLayer = Layer.succeed(GitHubAppConfig, {
@@ -364,3 +394,39 @@ export default {
   ]
 }
 `
+
+const sampleRunState = (projectId: string) =>
+  new WorkflowRunState({
+    runId: RunId.make(`run:${projectId}`),
+    projectId: ProjectId.make(projectId),
+    workflowId: WorkflowId.make(`workflow:${projectId}`),
+    planId: PlanId.make(`plan:${projectId}`),
+    execution: new RunExecutionContext({
+      plan: new ExecutionPlan({
+        planId: PlanId.make(`plan:${projectId}`),
+        schemaVersion: "0.1.0",
+        workflowId: WorkflowId.make(`workflow:${projectId}`),
+        workflowName: projectId,
+        metadata: {},
+        units: [],
+        dependencies: [],
+        diagnostics: [],
+      }),
+      options: new RunExecutionOptions({ workspacePath: "/tmp/local" }),
+      submittedAt: new Date("2026-01-01T00:00:00.000Z"),
+    }),
+    status: "succeeded",
+    units: [],
+    progress: new ProgressSummary({
+      totalUnits: 0,
+      completedUnits: 0,
+      failedUnits: 0,
+      skippedUnits: 0,
+    }),
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:01:00.000Z"),
+    startedAt: new Date("2026-01-01T00:00:10.000Z"),
+    finishedAt: new Date("2026-01-01T00:01:00.000Z"),
+    artifacts: [],
+    logs: [],
+  })

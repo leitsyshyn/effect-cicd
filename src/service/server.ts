@@ -45,7 +45,7 @@ class RequestBodyInvalid extends Schema.TaggedErrorClass<RequestBodyInvalid>()("
 export const makeServiceLayer = () =>
   {
     const engineLayer = makeServiceEngineLayer()
-    const bindingStoreLayer = GitHubBindingStore.postgresLayer.pipe(Layer.provideMerge(sqlClientLayer))
+    const bindingStoreLayer = GitHubBindingStore.postgresLayer.pipe(Layer.provideMerge(sqlClientLayer), Layer.provideMerge(engineLayer))
     const runLinkStoreLayer = GitHubRunLinkStore.postgresLayer.pipe(Layer.provideMerge(sqlClientLayer))
     const triggerDeliveryLayer = GitHubTriggerDeliveryStore.postgresLayer.pipe(Layer.provideMerge(sqlClientLayer))
     const gitHubConfigLayer = GitHubAppConfig.layer

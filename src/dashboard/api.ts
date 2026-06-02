@@ -5,12 +5,13 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 export interface ProjectSummaryDto {
   readonly projectId: string
   readonly provider: string
-  readonly repositoryOwner?: string
-  readonly repositoryName?: string
+  readonly repositoryOwner?: string | null
+  readonly repositoryName?: string | null
   readonly repositoryId?: number
   readonly bindingCount: number
   readonly runCount: number
-  readonly latestRunAt?: string
+  readonly latestRunAt?: string | null
+  readonly latestRunStatus?: string | null
 }
 
 export interface GitHubBindingSummaryDto {
