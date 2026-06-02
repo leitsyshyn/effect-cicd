@@ -1,5 +1,6 @@
 import { Activity, RefreshCcw } from "lucide-react"
 import type { ReactNode } from "react"
+import { Link } from "react-router-dom"
 
 import { Badge } from "./ui/badge.tsx"
 import { Button } from "./ui/button.tsx"
@@ -16,9 +17,9 @@ export function AppShell(props: {
         <header className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 flex-wrap items-center gap-3">
-              <a href="/" className="text-sm font-semibold tracking-tight hover:text-foreground/90">
+              <Link to="/" className="text-sm font-semibold tracking-tight hover:text-foreground/90">
                 effect-cicd
-              </a>
+              </Link>
               <Badge variant="outline" className="gap-1.5 text-muted-foreground">
                 <Activity className="size-3" />
                 {props.serviceVersion === undefined ? "engine pending" : `engine ${props.serviceVersion}`}

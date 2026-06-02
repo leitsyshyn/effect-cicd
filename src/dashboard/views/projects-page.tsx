@@ -1,54 +1,28 @@
-import { useEffect, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { Link } from "react-router-dom"
 
-import type { ProjectSummaryDto, createDashboardApi } from "../api.ts"
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.tsx"
 import { Badge } from "../components/ui/badge.tsx"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card.tsx"
+import { dashboardQueries } from "../lib/dashboard-query.ts"
 import { formatDateTime } from "../lib/format.ts"
-import { hrefForProject, type DashboardNavigate } from "../lib/routing.ts"
+import { hrefForProject } from "../lib/routing.ts"
 
-type DashboardApi = ReturnType<typeof createDashboardApi>
+export function ProjectsPage() {
+  const projectsQuery = useQuery(dashboardQueries.projects())
+  const projects = projectsQuery.data ?? []
 
-export function ProjectsPage(props: { readonly api: DashboardApi; readonly navigate: DashboardNavigate }) {
-  const [projects, setProjects] = useState<ReadonlyArray<ProjectSummaryDto>>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string>()
-
-  useEffect(() => {
-    let cancelled = false
-
-    const load = async () => {
-      setLoading(true)
-      setError(undefined)
-
-      try {
-        const nextProjects = await props.api.listProjects()
-        if (!cancelled) {
-          setProjects(nextProjects)
-        }
-      } catch (caught) {
-        if (!cancelled) {
-          setError(caught instanceof Error ? caught.message : String(caught))
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false)
-        }
-      }
-    }
-
-    void load()
-
-    return () => {
-      cancelled = true
-    }
-  }, [props.api])
-
-  if (loading) {
+  if (projectsQuery.isPending) {
     return <p className="text-sm text-muted-foreground">Loading projects...</p>
   }
 
-  if (error !== undefined) {
-    return <p className="text-sm text-destructive">{error}</p>
+  if (projectsQuery.error !== null) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Failed to load projects</AlertTitle>
+        <AlertDescription>{projectsQuery.error.message}</AlertDescription>
+      </Alert>
+    )
   }
 
   if (projects.length === 0) {
@@ -68,11 +42,10 @@ export function ProjectsPage(props: { readonly api: DashboardApi; readonly navig
     <section className="grid gap-4">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {projects.map((project) => (
-          <button
+          <Link
             key={project.projectId}
-            type="button"
-            className="w-full text-left"
-            onClick={() => props.navigate(hrefForProject(project.projectId))}
+            to={hrefForProject(project.projectId)}
+            className="block w-full text-left"
           >
             <Card className="h-full transition-colors hover:bg-accent/40">
               <CardHeader>
@@ -87,7 +60,7 @@ export function ProjectsPage(props: { readonly api: DashboardApi; readonly navig
                 <p>Latest Run: {project.latestRunAt === undefined ? "-" : formatDateTime(project.latestRunAt)}</p>
               </CardContent>
             </Card>
-          </button>
+          </Link>
         ))}
       </div>
     </section>

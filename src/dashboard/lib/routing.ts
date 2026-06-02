@@ -1,3 +1,7 @@
+export type ProjectPageView = "runs" | "bindings" | "secrets"
+export type RunPageView = "workflow" | "timeline"
+export type JobPageView = "overview" | "logs" | "artifacts" | "timeline"
+
 export interface ProjectsRoute {
   readonly _tag: "ProjectsRoute"
 }
@@ -23,58 +27,6 @@ export interface JobRoute {
 }
 
 export type DashboardRoute = ProjectsRoute | ProjectRoute | RunRoute | JobRoute
-export type ProjectPageView = "runs" | "bindings" | "secrets"
-export type RunPageView = "workflow" | "timeline"
-export type JobPageView = "overview" | "logs" | "artifacts" | "timeline"
-
-export type DashboardNavigate = (href: string, options?: { readonly replace?: boolean }) => void
-
-export const parseDashboardRoute = (pathname: string, search: string): DashboardRoute => {
-  if (pathname === "/") {
-    return { _tag: "ProjectsRoute" }
-  }
-
-  const params = new URLSearchParams(search)
-  const segments = pathname.split("/").filter((segment) => segment.length > 0)
-
-  if (segments[0] === "projects" && segments.length === 2) {
-    const rawView = params.get("view")
-    const view = rawView === "runs" || rawView === "bindings" || rawView === "secrets" ? rawView : undefined
-
-    return {
-      _tag: "ProjectRoute",
-      projectId: decodeURIComponent(segments[1]),
-      ...(view === undefined ? {} : { view }),
-    }
-  }
-
-  if (segments[0] === "runs" && segments.length === 2) {
-    const rawView = params.get("view")
-    const view = rawView === "workflow" || rawView === "timeline" ? rawView : undefined
-
-    return {
-      _tag: "RunRoute",
-      runId: decodeURIComponent(segments[1]),
-      ...(view === undefined ? {} : { view }),
-    }
-  }
-
-  if (segments[0] === "runs" && segments[2] === "jobs" && segments.length === 4) {
-    const rawView = params.get("view")
-    const attempt = Number(params.get("attempt"))
-    const view = rawView === "overview" || rawView === "logs" || rawView === "artifacts" || rawView === "timeline" ? rawView : undefined
-
-    return {
-      _tag: "JobRoute",
-      runId: decodeURIComponent(segments[1]),
-      unitId: decodeURIComponent(segments[3]),
-      ...(view === undefined ? {} : { view }),
-      ...(Number.isInteger(attempt) && attempt > 0 ? { attempt } : {}),
-    }
-  }
-
-  return { _tag: "ProjectsRoute" }
-}
 
 export const hrefForProjects = () => "/"
 
@@ -116,4 +68,60 @@ export const hrefForJob = (runId: string, unitId: string, view?: JobPageView, at
   }
 
   return `${path}?${params.toString()}`
+}
+
+export const parseDashboardRoute = (pathname: string, search: string): DashboardRoute => {
+  if (pathname === "/") {
+    return { _tag: "ProjectsRoute" }
+  }
+
+  const params = new URLSearchParams(search)
+  const segments = pathname.split("/").filter((segment) => segment.length > 0)
+
+  if (segments[0] === "projects" && segments.length === 2) {
+    const view = parseProjectPageView(params.get("view"))
+    return {
+      _tag: "ProjectRoute",
+      projectId: decodeURIComponent(segments[1]!),
+      ...(view === undefined ? {} : { view }),
+    }
+  }
+
+  if (segments[0] === "runs" && segments.length === 2) {
+    const view = parseRunPageView(params.get("view"))
+    return {
+      _tag: "RunRoute",
+      runId: decodeURIComponent(segments[1]!),
+      ...(view === undefined ? {} : { view }),
+    }
+  }
+
+  if (segments[0] === "runs" && segments[2] === "jobs" && segments.length === 4) {
+    const view = parseJobPageView(params.get("view"))
+    const attempt = parseAttemptNumber(params.get("attempt"))
+
+    return {
+      _tag: "JobRoute",
+      runId: decodeURIComponent(segments[1]!),
+      unitId: decodeURIComponent(segments[3]!),
+      ...(view === undefined ? {} : { view }),
+      ...(attempt === undefined ? {} : { attempt }),
+    }
+  }
+
+  return { _tag: "ProjectsRoute" }
+}
+
+export const parseProjectPageView = (value: string | null): ProjectPageView | undefined =>
+  value === "runs" || value === "bindings" || value === "secrets" ? value : undefined
+
+export const parseRunPageView = (value: string | null): RunPageView | undefined =>
+  value === "workflow" || value === "timeline" ? value : undefined
+
+export const parseJobPageView = (value: string | null): JobPageView | undefined =>
+  value === "overview" || value === "logs" || value === "artifacts" || value === "timeline" ? value : undefined
+
+export const parseAttemptNumber = (value: string | null) => {
+  const attempt = Number(value)
+  return Number.isInteger(attempt) && attempt > 0 ? attempt : undefined
 }

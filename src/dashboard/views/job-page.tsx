@@ -1,219 +1,190 @@
+import { useQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
+import { Link, useSearchParams, useParams } from "react-router-dom"
 
-import type { ArtifactPayloadDto, createDashboardApi } from "../api.ts"
+import type { ArtifactPayloadDto } from "../api.ts"
 import { PayloadBrowser, type PayloadBrowserContent, type PayloadBrowserItem } from "../components/payload-browser.tsx"
 import { StatusBadge } from "../components/status-badge.tsx"
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.tsx"
 import { Badge } from "../components/ui/badge.tsx"
+import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "../components/ui/breadcrumb.tsx"
 import { Button } from "../components/ui/button.tsx"
+import { Field, FieldLabel } from "../components/ui/field.tsx"
 import { ScrollArea } from "../components/ui/scroll-area.tsx"
+import { Select, SelectItem } from "../components/ui/select.tsx"
 import { Separator } from "../components/ui/separator.tsx"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs.tsx"
+import { dashboardQueries } from "../lib/dashboard-query.ts"
 import { formatAge, formatBytes, formatDateTime, formatDuration, formatSourceLocation, formatValue, truncateMiddle } from "../lib/format.ts"
-import { hrefForJob, hrefForProject, hrefForProjects, hrefForRun, type DashboardNavigate, type JobPageView, type JobRoute } from "../lib/routing.ts"
-import type { PayloadMetadataDto, RunDetailDto, TimelineEventDto } from "../types.ts"
+import { hrefForProject, hrefForProjects, hrefForRun, parseAttemptNumber, parseJobPageView, type JobPageView } from "../lib/routing.ts"
+import type { PayloadMetadataDto, TimelineEventDto } from "../types.ts"
 
-type DashboardApi = ReturnType<typeof createDashboardApi>
+export function JobPage() {
+  const params = useParams<{ runId: string; unitId: string }>()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const runId = params.runId
+  const unitId = params.unitId
 
-export function JobPage(props: { readonly api: DashboardApi; readonly navigate: DashboardNavigate; readonly route: JobRoute }) {
-  const [detail, setDetail] = useState<RunDetailDto | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string>()
   const [showAllLogs, setShowAllLogs] = useState(false)
   const [showAllArtifacts, setShowAllArtifacts] = useState(false)
   const [selectedLogRef, setSelectedLogRef] = useState<string>()
   const [selectedArtifactRef, setSelectedArtifactRef] = useState<string>()
-  const [logPayload, setLogPayload] = useState("")
-  const [logError, setLogError] = useState<string>()
-  const [loadingLog, setLoadingLog] = useState(false)
-  const [artifactContent, setArtifactContent] = useState<PayloadBrowserContent>()
-  const [artifactError, setArtifactError] = useState<string>()
-  const [loadingArtifact, setLoadingArtifact] = useState(false)
 
-  const load = async (background = false) => {
-    if (!background) {
-      setLoading(true)
-      setError(undefined)
-    }
-
-    try {
-      setDetail(await props.api.inspectRun(props.route.runId))
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught))
-    } finally {
-      if (!background) {
-        setLoading(false)
-      }
-    }
+  if (runId === undefined || unitId === undefined) {
+    return null
   }
 
-  useEffect(() => {
-    void load()
-
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
-        void load(true)
-      }
-    }, 5_000)
-
-    return () => window.clearInterval(interval)
-  }, [props.route.runId])
-
-  const unit = detail?.units.find((entry) => entry.unitId === props.route.unitId)
+  const activeView: JobPageView = parseJobPageView(searchParams.get("view")) ?? "overview"
+  const routeAttempt = parseAttemptNumber(searchParams.get("attempt"))
+  const detailQuery = useQuery(dashboardQueries.runDetail(runId))
+  const detail = detailQuery.data
+  const unit = detail?.units.find((entry) => entry.unitId === unitId)
   const attempts = unit === undefined ? [] : [...unit.attempts].sort((left, right) => left.attemptNumber - right.attemptNumber)
-  const selectedAttempt = attempts.find((attempt) => attempt.attemptNumber === props.route.attempt) ?? attempts[attempts.length - 1]
-  const activeView: JobPageView = props.route.view ?? "overview"
-  const logs = detail?.logs.filter((log) => log.unitId === props.route.unitId) ?? []
-  const artifacts = detail?.artifacts.filter((artifact) => artifact.unitId === props.route.unitId) ?? []
+  const selectedAttempt = attempts.find((attempt) => attempt.attemptNumber === routeAttempt) ?? attempts[attempts.length - 1]
+  const logs = detail?.logs.filter((log) => log.unitId === unitId) ?? []
+  const artifacts = detail?.artifacts.filter((artifact) => artifact.unitId === unitId) ?? []
   const logScope = showAllLogs || selectedAttempt === undefined ? logs : logs.filter((log) => log.attemptId === selectedAttempt.attemptId)
   const artifactScope = showAllArtifacts || selectedAttempt === undefined ? artifacts : artifacts.filter((artifact) => artifact.attemptId === selectedAttempt.attemptId)
   const attemptNumbers = new Map(attempts.map((attempt) => [attempt.attemptId, attempt.attemptNumber] as const))
   const reportFormats = new Map((unit?.reports ?? []).map((report) => [report.artifactRef, report.format] as const))
   const selectedLog = logScope.find((log) => log.ref === selectedLogRef)
   const selectedArtifact = artifactScope.find((artifact) => artifact.ref === selectedArtifactRef)
-  const jobEvents = selectedAttempt === undefined || detail === null || unit === undefined
-    ? []
-    : detail.events.filter((event) => event.unitId === unit.unitId && event.attemptId === selectedAttempt.attemptId)
+  const jobEvents =
+    selectedAttempt === undefined || detail === null || detail === undefined || unit === undefined
+      ? []
+      : detail.events.filter((event) => event.unitId === unit.unitId && event.attemptId === selectedAttempt.attemptId)
+
+  const logPayloadQuery = useQuery({
+    ...dashboardQueries.logPayload(selectedLog?.ref ?? ""),
+    enabled: selectedLog !== undefined,
+  })
+
+  const artifactPayloadQuery = useQuery({
+    ...dashboardQueries.artifactPayload(selectedArtifact?.ref ?? ""),
+    enabled:
+      selectedArtifact !== undefined &&
+      selectedArtifact.status !== "missing" &&
+      selectedArtifact.status !== "failed",
+  })
 
   useEffect(() => {
+    const firstLog = logScope[0]
+
     if (logScope.length === 0) {
       setSelectedLogRef(undefined)
       return
     }
 
-    if (selectedLogRef === undefined || !logScope.some((log) => log.ref === selectedLogRef)) {
-      setSelectedLogRef(logScope[0].ref)
+    if (firstLog !== undefined && (selectedLogRef === undefined || !logScope.some((log) => log.ref === selectedLogRef))) {
+      setSelectedLogRef(firstLog.ref)
     }
   }, [logScope, selectedLogRef])
 
   useEffect(() => {
+    const firstArtifact = artifactScope[0]
+
     if (artifactScope.length === 0) {
       setSelectedArtifactRef(undefined)
       return
     }
 
-    if (selectedArtifactRef === undefined || !artifactScope.some((artifact) => artifact.ref === selectedArtifactRef)) {
-      setSelectedArtifactRef(artifactScope[0].ref)
+    if (firstArtifact !== undefined && (selectedArtifactRef === undefined || !artifactScope.some((artifact) => artifact.ref === selectedArtifactRef))) {
+      setSelectedArtifactRef(firstArtifact.ref)
     }
   }, [artifactScope, selectedArtifactRef])
 
-  useEffect(() => {
-    if (selectedLog === undefined) {
-      setLogPayload("")
-      setLogError(undefined)
-      setLoadingLog(false)
-      return
-    }
-
-    let cancelled = false
-
-    const loadLog = async () => {
-      setLoadingLog(true)
-      setLogError(undefined)
-      setLogPayload("")
-
-      try {
-        const payload = await props.api.readLogPayload(selectedLog.ref)
-        if (!cancelled) {
-          setLogPayload(payload)
-        }
-      } catch (caught) {
-        if (!cancelled) {
-          setLogError(caught instanceof Error ? caught.message : String(caught))
-        }
-      } finally {
-        if (!cancelled) {
-          setLoadingLog(false)
-        }
-      }
-    }
-
-    void loadLog()
-
-    return () => {
-      cancelled = true
-    }
-  }, [props.api, selectedLog])
-
-  useEffect(() => {
-    if (selectedArtifact === undefined) {
-      setArtifactContent(undefined)
-      setArtifactError(undefined)
-      setLoadingArtifact(false)
-      return
-    }
-
-    if (selectedArtifact.status === "missing" || selectedArtifact.status === "failed") {
-      setArtifactContent({ kind: "unavailable", note: `Artifact is ${selectedArtifact.status}.` })
-      setArtifactError(undefined)
-      setLoadingArtifact(false)
-      return
-    }
-
-    let cancelled = false
-
-    const loadArtifact = async () => {
-      setLoadingArtifact(true)
-      setArtifactError(undefined)
-      setArtifactContent(undefined)
-
-      try {
-        const payload = await props.api.readArtifactPayload(selectedArtifact.ref)
-        if (!cancelled) {
-          setArtifactContent(toArtifactViewerContent(payload))
-        }
-      } catch (caught) {
-        if (!cancelled) {
-          setArtifactError(caught instanceof Error ? caught.message : String(caught))
-        }
-      } finally {
-        if (!cancelled) {
-          setLoadingArtifact(false)
-        }
-      }
-    }
-
-    void loadArtifact()
-
-    return () => {
-      cancelled = true
-    }
-  }, [props.api, selectedArtifact])
-
-  if (loading) {
+  if (detailQuery.isPending) {
     return <p className="text-sm text-muted-foreground">Loading job...</p>
   }
 
-  if (error !== undefined || detail === null) {
-    return <p className="text-sm text-destructive">{error ?? "Run not found"}</p>
+  if (detailQuery.error !== null) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Failed to load job</AlertTitle>
+        <AlertDescription>{detailQuery.error.message}</AlertDescription>
+      </Alert>
+    )
+  }
+
+  if (detail === undefined || detail === null) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Run not found</AlertTitle>
+      </Alert>
+    )
   }
 
   if (unit === undefined) {
-    return <p className="text-sm text-destructive">Job not found.</p>
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Job not found</AlertTitle>
+      </Alert>
+    )
   }
 
   const workflowLabel = detail.run.workflowName ?? detail.run.workflowId
-  const logItems = logScope.map((log) => toLogBrowserItem(log, showAllLogs ? attemptNumbers.get(log.attemptId) : undefined))
+  const logItems = logScope.map((log) => toLogBrowserItem(log, showAllLogs && log.attemptId !== undefined ? attemptNumbers.get(log.attemptId) : undefined))
   const artifactItems = artifactScope.map((artifact) =>
-    toArtifactBrowserItem(artifact, reportFormats.get(artifact.ref), showAllArtifacts ? attemptNumbers.get(artifact.attemptId) : undefined),
+    toArtifactBrowserItem(
+      artifact,
+      reportFormats.get(artifact.ref),
+      showAllArtifacts && artifact.attemptId !== undefined ? attemptNumbers.get(artifact.attemptId) : undefined,
+    ),
   )
+  const artifactContent: PayloadBrowserContent | undefined =
+    selectedArtifact === undefined
+      ? undefined
+      : selectedArtifact.status === "missing" || selectedArtifact.status === "failed"
+        ? { kind: "unavailable", note: `Artifact is ${selectedArtifact.status}.` }
+        : artifactPayloadQuery.data === undefined
+          ? undefined
+          : toArtifactViewerContent(artifactPayloadQuery.data)
+
+  const setRouteState = (view: JobPageView, attempt: number | undefined) => {
+    const nextParams = new URLSearchParams(searchParams)
+
+    if (view === "overview") {
+      nextParams.delete("view")
+    } else {
+      nextParams.set("view", view)
+    }
+
+    if (attempt === undefined) {
+      nextParams.delete("attempt")
+    } else {
+      nextParams.set("attempt", `${attempt}`)
+    }
+
+    setSearchParams(nextParams, { replace: true })
+  }
 
   return (
     <section className="grid gap-4">
-      <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-        <button type="button" onClick={() => props.navigate(hrefForProjects())} className="hover:text-foreground">
-          Projects
-        </button>
-        <span>/</span>
-        <button type="button" onClick={() => props.navigate(hrefForProject(detail.run.projectId))} className="hover:text-foreground">
-          {detail.run.projectId}
-        </button>
-        <span>/</span>
-        <button type="button" onClick={() => props.navigate(hrefForRun(detail.run.runId))} className="hover:text-foreground">
-          {workflowLabel}
-        </button>
-        <span>/</span>
-        <span className="text-foreground">{unit.name}</span>
-      </div>
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink asChild>
+              <Link to={hrefForProjects()}>Projects</Link>
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbLink asChild>
+              <Link to={hrefForProject(detail.run.projectId)}>{detail.run.projectId}</Link>
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbLink asChild>
+              <Link to={hrefForRun(detail.run.runId)}>{workflowLabel}</Link>
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage>{unit.name}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
 
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="grid gap-3">
@@ -232,24 +203,24 @@ export function JobPage(props: { readonly api: DashboardApi; readonly navigate: 
           {unit.nextRetryAt === undefined ? null : <p className="text-sm text-muted-foreground">Retry scheduled for {formatDateTime(unit.nextRetryAt)}</p>}
         </div>
 
-        <label className="grid gap-2 text-sm text-muted-foreground">
-          <span>Attempt</span>
-          <select
+        <Field className="w-full max-w-xs">
+          <FieldLabel htmlFor="job-attempt">Attempt</FieldLabel>
+          <Select
+            id="job-attempt"
             value={selectedAttempt?.attemptNumber ?? ""}
-            onChange={(event) => props.navigate(hrefForJob(detail.run.runId, unit.unitId, activeView, Number(event.target.value)), { replace: true })}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+            onChange={(event) => setRouteState(activeView, Number(event.target.value))}
             disabled={attempts.length === 0}
           >
             {attempts.map((attempt) => (
-              <option key={attempt.attemptId} value={attempt.attemptNumber}>
+              <SelectItem key={attempt.attemptId} value={attempt.attemptNumber}>
                 Attempt {attempt.attemptNumber} · {attempt.status}
-              </option>
+              </SelectItem>
             ))}
-          </select>
-        </label>
+          </Select>
+        </Field>
       </div>
 
-      <Tabs value={activeView} onValueChange={(value) => props.navigate(hrefForJob(detail.run.runId, unit.unitId, value as JobPageView, selectedAttempt?.attemptNumber), { replace: true })}>
+      <Tabs value={activeView} onValueChange={(value) => setRouteState(value as JobPageView, selectedAttempt?.attemptNumber)}>
         <TabsList className="grid w-full max-w-md grid-cols-4">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
@@ -309,10 +280,14 @@ export function JobPage(props: { readonly api: DashboardApi; readonly navigate: 
 
           <PayloadBrowser
             items={logItems}
-            selectedItem={selectedLog === undefined ? undefined : toLogBrowserItem(selectedLog, showAllLogs ? attemptNumbers.get(selectedLog.attemptId) : undefined)}
-            content={selectedLog === undefined ? undefined : { kind: "text", text: logPayload }}
-            {...(logError === undefined ? {} : { payloadError: logError })}
-            loadingPayload={loadingLog}
+            selectedItem={
+              selectedLog === undefined
+                ? undefined
+                : toLogBrowserItem(selectedLog, showAllLogs && selectedLog.attemptId !== undefined ? attemptNumbers.get(selectedLog.attemptId) : undefined)
+            }
+            content={selectedLog === undefined ? undefined : { kind: "text", text: logPayloadQuery.data ?? "" }}
+            {...(logPayloadQuery.error === null ? {} : { payloadError: logPayloadQuery.error.message })}
+            loadingPayload={logPayloadQuery.isPending}
             emptyMessage="No logs for this selection."
             selectMessage="Select a log entry to inspect its payload."
             onSelect={setSelectedLogRef}
@@ -328,10 +303,18 @@ export function JobPage(props: { readonly api: DashboardApi; readonly navigate: 
 
           <PayloadBrowser
             items={artifactItems}
-            selectedItem={selectedArtifact === undefined ? undefined : toArtifactBrowserItem(selectedArtifact, reportFormats.get(selectedArtifact.ref), showAllArtifacts ? attemptNumbers.get(selectedArtifact.attemptId) : undefined)}
+            selectedItem={
+              selectedArtifact === undefined
+                ? undefined
+                : toArtifactBrowserItem(
+                    selectedArtifact,
+                    reportFormats.get(selectedArtifact.ref),
+                    showAllArtifacts && selectedArtifact.attemptId !== undefined ? attemptNumbers.get(selectedArtifact.attemptId) : undefined,
+                  )
+            }
             content={artifactContent}
-            {...(artifactError === undefined ? {} : { payloadError: artifactError })}
-            loadingPayload={loadingArtifact}
+            {...(artifactPayloadQuery.error === null ? {} : { payloadError: artifactPayloadQuery.error.message })}
+            loadingPayload={artifactPayloadQuery.isPending}
             emptyMessage="No artifacts for this selection."
             selectMessage="Select an artifact to inspect it."
             onSelect={setSelectedArtifactRef}

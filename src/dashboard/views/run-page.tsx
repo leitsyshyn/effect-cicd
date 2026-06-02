@@ -1,110 +1,106 @@
-import { useEffect, useState } from "react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useNavigate, useParams, useSearchParams } from "react-router-dom"
 
-import type { createDashboardApi } from "../api.ts"
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.tsx"
 import { RunHeader } from "../components/run-header.tsx"
 import { RunPipelineView } from "../components/run-pipeline.tsx"
 import { RunTimeline } from "../components/run-timeline.tsx"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs.tsx"
-import { hrefForJob, hrefForRun, type DashboardNavigate, type RunPageView, type RunRoute } from "../lib/routing.ts"
-import type { RunDetailDto } from "../types.ts"
-
-type DashboardApi = ReturnType<typeof createDashboardApi>
+import { dashboardApi, dashboardQueries, dashboardQueryKeys } from "../lib/dashboard-query.ts"
+import { hrefForJob, hrefForRun, parseRunPageView, type RunPageView } from "../lib/routing.ts"
 
 const pageTabs: ReadonlyArray<readonly [RunPageView, string]> = [
   ["workflow", "Workflow"],
   ["timeline", "Timeline"],
 ]
 
-export function RunPage(props: { readonly api: DashboardApi; readonly navigate: DashboardNavigate; readonly route: RunRoute }) {
-  const [detail, setDetail] = useState<RunDetailDto | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string>()
-  const [actionPending, setActionPending] = useState<string>()
-  const [actionNotice, setActionNotice] = useState<string>()
-  const [actionError, setActionError] = useState<string>()
+export function RunPage() {
+  const params = useParams<{ runId: string }>()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const runId = params.runId
 
-  const load = async (background = false) => {
-    if (!background) {
-      setLoading(true)
-      setError(undefined)
-    }
-
-    try {
-      setDetail(await props.api.inspectRun(props.route.runId))
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught))
-    } finally {
-      if (!background) {
-        setLoading(false)
-      }
-    }
+  if (runId === undefined) {
+    return null
   }
 
-  useEffect(() => {
-    void load()
+  const detailQuery = useQuery(dashboardQueries.runDetail(runId))
 
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
-        void load(true)
+  const actionMutation = useMutation({
+    mutationFn: async (action: "cancel" | "retry" | "gc") => {
+      if (action === "cancel") {
+        return dashboardApi.cancelRun(runId, "Canceled from dashboard")
       }
-    }, 5_000)
-
-    return () => window.clearInterval(interval)
-  }, [props.route.runId])
-
-  const runAction = async (action: "cancel" | "retry" | "gc", effect: () => Promise<unknown>) => {
-    setActionPending(action)
-    setActionError(undefined)
-    setActionNotice(undefined)
-
-    try {
-      const result = await effect()
-
+      if (action === "retry") {
+        return dashboardApi.retryRun(runId, "Retried from dashboard")
+      }
+      return dashboardApi.gcRunArtifacts(runId)
+    },
+    onSuccess: async (result, action) => {
       if (action === "retry" && typeof result === "object" && result !== null && "runId" in result && typeof result.runId === "string") {
-        props.navigate(hrefForRun(result.runId))
+        navigate(hrefForRun(result.runId))
         return
       }
 
-      if (action === "gc" && typeof result === "object" && result !== null && "deletedCount" in result) {
-        setActionNotice(`Payload GC completed. Deleted ${(result as any).deletedCount} payloads and freed ${(result as any).bytesFreed} bytes.`)
-      }
+      await queryClient.invalidateQueries({ queryKey: dashboardQueryKeys.runDetail(runId) })
+    },
+  })
 
-      if (action === "cancel") {
-        setActionNotice("Cancellation requested.")
-      }
-
-      await load(true)
-    } catch (caught) {
-      setActionError(caught instanceof Error ? caught.message : String(caught))
-    } finally {
-      setActionPending(undefined)
-    }
-  }
-
-  if (loading) {
+  if (detailQuery.isPending) {
     return <p className="text-sm text-muted-foreground">Loading run...</p>
   }
 
-  if (error !== undefined || detail === null) {
-    return <p className="text-sm text-destructive">{error ?? "Run not found"}</p>
+  if (detailQuery.error !== null) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Failed to load run</AlertTitle>
+        <AlertDescription>{detailQuery.error.message}</AlertDescription>
+      </Alert>
+    )
   }
 
-  const activeView: RunPageView = props.route.view ?? "workflow"
+  if (detailQuery.data === null || detailQuery.data === undefined) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Run not found</AlertTitle>
+      </Alert>
+    )
+  }
+
+  const detail = detailQuery.data
+  const activeView: RunPageView = parseRunPageView(searchParams.get("view")) ?? "workflow"
+
+  const actionNotice =
+    actionMutation.isSuccess && actionMutation.variables === "cancel"
+      ? "Cancellation requested."
+      : actionMutation.isSuccess && actionMutation.variables === "gc" && actionMutation.data !== undefined && "deletedCount" in actionMutation.data
+        ? `Payload GC completed. Deleted ${actionMutation.data.deletedCount} payloads and freed ${actionMutation.data.bytesFreed} bytes.`
+        : undefined
+
+  const setActiveView = (view: RunPageView) => {
+    const nextParams = new URLSearchParams(searchParams)
+    if (view === "workflow") {
+      nextParams.delete("view")
+    } else {
+      nextParams.set("view", view)
+    }
+    setSearchParams(nextParams, { replace: true })
+  }
 
   return (
     <section className="grid gap-4">
       <RunHeader
         detail={detail}
-        navigate={props.navigate}
-        {...(actionPending === undefined ? {} : { actionPending })}
+        {...(actionMutation.variables === undefined ? {} : { actionPending: actionMutation.variables })}
         {...(actionNotice === undefined ? {} : { actionNotice })}
-        {...(actionError === undefined ? {} : { actionError })}
-        onCancel={() => void runAction("cancel", () => props.api.cancelRun(detail.run.runId, "Canceled from dashboard"))}
-        onRetry={() => void runAction("retry", () => props.api.retryRun(detail.run.runId, "Retried from dashboard"))}
-        onGc={() => void runAction("gc", () => props.api.gcRunArtifacts(detail.run.runId))}
+        {...(actionMutation.error === null ? {} : { actionError: actionMutation.error.message })}
+        onCancel={() => void actionMutation.mutateAsync("cancel")}
+        onRetry={() => void actionMutation.mutateAsync("retry")}
+        onGc={() => void actionMutation.mutateAsync("gc")}
       />
 
-      <Tabs value={activeView} onValueChange={(value) => props.navigate(hrefForRun(detail.run.runId, value as RunPageView), { replace: true })}>
+      <Tabs value={activeView} onValueChange={(value) => setActiveView(value as RunPageView)}>
         <TabsList className="grid w-full max-w-xs grid-cols-2">
           {pageTabs.map(([value, label]) => (
             <TabsTrigger key={value} value={value}>{label}</TabsTrigger>
@@ -112,7 +108,7 @@ export function RunPage(props: { readonly api: DashboardApi; readonly navigate: 
         </TabsList>
 
         <TabsContent value="workflow">
-          <RunPipelineView detail={detail} onSelectUnit={(unitId) => props.navigate(hrefForJob(detail.run.runId, unitId))} />
+          <RunPipelineView detail={detail} onSelectUnit={(unitId) => navigate(hrefForJob(detail.run.runId, unitId))} />
         </TabsContent>
 
         <TabsContent value="timeline">

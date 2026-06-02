@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { renderToStaticMarkup } from "react-dom/server"
+import { MemoryRouter } from "react-router-dom"
 
 import { createDashboardApi } from "../src/dashboard/api.ts"
 import { RunHeader } from "../src/dashboard/components/run-header.tsx"
@@ -19,7 +20,11 @@ describe("dashboard UI smoke", () => {
   })
 
   it("run header renders project breadcrumb and actions", () => {
-    const markup = renderToStaticMarkup(<RunHeader detail={sampleDetail()} onCancel={() => {}} onRetry={() => {}} onGc={() => {}} />)
+    const markup = renderToStaticMarkup(
+      <MemoryRouter>
+        <RunHeader detail={sampleDetail()} onCancel={() => {}} onRetry={() => {}} onGc={() => {}} />
+      </MemoryRouter>,
+    )
 
     expect(markup).toContain("Projects")
     expect(markup).toContain("project:dashboard")

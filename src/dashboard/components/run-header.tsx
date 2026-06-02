@@ -1,14 +1,15 @@
 import { DatabaseZap, RotateCcw, Square } from "lucide-react"
+import { Link } from "react-router-dom"
 
 import { formatDateTime, formatDuration, truncateMiddle } from "../lib/format.ts"
-import { hrefForProject, hrefForProjects, hrefForRun, type DashboardNavigate } from "../lib/routing.ts"
+import { hrefForProject, hrefForProjects, hrefForRun } from "../lib/routing.ts"
 import type { RunDetailDto } from "../types.ts"
 import { StatusBadge } from "./status-badge.tsx"
+import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "./ui/breadcrumb.tsx"
 import { Button } from "./ui/button.tsx"
 
 export function RunHeader(props: {
   readonly detail: RunDetailDto
-  readonly navigate?: DashboardNavigate | undefined
   readonly actionPending?: string | undefined
   readonly actionNotice?: string | undefined
   readonly actionError?: string | undefined
@@ -20,17 +21,25 @@ export function RunHeader(props: {
 
   return (
     <div className="grid gap-4">
-      <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-        <button type="button" onClick={() => props.navigate?.(hrefForProjects())} className="hover:text-foreground">
-          Projects
-        </button>
-        <span>/</span>
-        <button type="button" onClick={() => props.navigate?.(hrefForProject(props.detail.run.projectId))} className="hover:text-foreground">
-          {props.detail.run.projectId}
-        </button>
-        <span>/</span>
-        <span className="text-foreground">{workflowLabel}</span>
-      </div>
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink asChild>
+              <Link to={hrefForProjects()}>Projects</Link>
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbLink asChild>
+              <Link to={hrefForProject(props.detail.run.projectId)}>{props.detail.run.projectId}</Link>
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage>{workflowLabel}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
 
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="grid gap-3">
@@ -44,13 +53,9 @@ export function RunHeader(props: {
             <span>Duration {formatDuration(props.detail.run.durationMs)}</span>
             <span className="font-mono text-[12px]">{truncateMiddle(props.detail.run.runId, 72)}</span>
             {props.detail.source.retriedFromRunId === undefined ? null : (
-              <button
-                type="button"
-                onClick={() => props.navigate?.(hrefForRun(props.detail.source.retriedFromRunId!))}
-                className="hover:text-foreground"
-              >
+              <Link to={hrefForRun(props.detail.source.retriedFromRunId)} className="hover:text-foreground">
                 retried from {truncateMiddle(props.detail.source.retriedFromRunId, 36)}
-              </button>
+              </Link>
             )}
           </div>
           {props.detail.run.failureMessage === undefined ? null : <p className="text-sm text-destructive">{props.detail.run.failureMessage}</p>}

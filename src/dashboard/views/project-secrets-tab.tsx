@@ -1,142 +1,117 @@
-import { useEffect, useState } from "react"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useForm } from "react-hook-form"
+import { z } from "zod"
 
-import type { SecretSummaryDto, createDashboardApi } from "../api.ts"
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.tsx"
 import { Button } from "../components/ui/button.tsx"
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card.tsx"
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "../components/ui/card.tsx"
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "../components/ui/field.tsx"
+import { Input } from "../components/ui/input.tsx"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table.tsx"
+import { Textarea } from "../components/ui/textarea.tsx"
+import { dashboardApi, dashboardQueries, dashboardQueryKeys } from "../lib/dashboard-query.ts"
 import { formatDateTime } from "../lib/format.ts"
 
-type DashboardApi = ReturnType<typeof createDashboardApi>
+const secretSchema = z.object({
+  key: z.string().trim().min(1, "Key is required."),
+  value: z.string().min(1, "Value is required."),
+})
 
-export function ProjectSecretsTab(props: { readonly api: DashboardApi; readonly projectId: string }) {
-  const [secrets, setSecrets] = useState<ReadonlyArray<SecretSummaryDto>>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string>()
-  const [showForm, setShowForm] = useState(false)
-  const [pending, setPending] = useState(false)
-  const [formError, setFormError] = useState<string>()
-  const [key, setKey] = useState("")
-  const [value, setValue] = useState("")
+type SecretFormValues = z.infer<typeof secretSchema>
 
-  const load = async () => {
-    setLoading(true)
-    setError(undefined)
+export function ProjectSecretsTab(props: { readonly projectId: string }) {
+  const queryClient = useQueryClient()
+  const secretsQuery = useQuery(dashboardQueries.projectSecrets(props.projectId))
+  const form = useForm<SecretFormValues>({
+    resolver: zodResolver(secretSchema),
+    defaultValues: { key: "", value: "" },
+  })
 
-    try {
-      setSecrets(await props.api.listSecrets(props.projectId))
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught))
-    } finally {
-      setLoading(false)
-    }
-  }
+  const setSecretMutation = useMutation({
+    mutationFn: (values: SecretFormValues) =>
+      dashboardApi.setSecret({ projectId: props.projectId, key: values.key.trim(), value: values.value }),
+    onSuccess: async () => {
+      form.reset()
+      await queryClient.invalidateQueries({ queryKey: dashboardQueryKeys.projectSecrets(props.projectId) })
+    },
+  })
 
-  useEffect(() => {
-    void load()
-  }, [props.projectId])
+  const deleteSecretMutation = useMutation({
+    mutationFn: (secretKey: string) => dashboardApi.deleteSecret(props.projectId, secretKey),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: dashboardQueryKeys.projectSecrets(props.projectId) })
+    },
+  })
 
-  const submit = async () => {
-    if (key.trim().length === 0) {
-      setFormError("Key is required.")
-      return
-    }
-
-    if (value.trim().length === 0) {
-      setFormError("Value is required.")
-      return
-    }
-
-    setPending(true)
-    setFormError(undefined)
-
-    try {
-      await props.api.setSecret({ projectId: props.projectId, key: key.trim(), value })
-      setKey("")
-      setValue("")
-      setShowForm(false)
-      await load()
-    } catch (caught) {
-      setFormError(caught instanceof Error ? caught.message : String(caught))
-    } finally {
-      setPending(false)
-    }
-  }
+  const submit = form.handleSubmit(async (values) => {
+    await setSecretMutation.mutateAsync(values)
+  })
 
   const removeSecret = async (secretKey: string) => {
     if (!window.confirm(`Delete secret ${secretKey}?`)) {
       return
     }
 
-    try {
-      await props.api.deleteSecret(props.projectId, secretKey)
-      await load()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught))
-    }
+    await deleteSecretMutation.mutateAsync(secretKey).catch(() => undefined)
   }
 
   return (
     <section className="grid gap-4">
-      <div className="flex justify-end">
-        <Button variant={showForm ? "secondary" : "default"} size="sm" onClick={() => setShowForm((value) => !value)}>
-          {showForm ? "Close" : "Add Secret"}
-        </Button>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Add Secret</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={(event) => void submit(event)}>
+            <FieldGroup>
+              <Field data-invalid={form.formState.errors.key !== undefined}>
+                <FieldLabel htmlFor="secret-key">Key</FieldLabel>
+                <Input id="secret-key" className="font-mono" placeholder="API_TOKEN" aria-invalid={form.formState.errors.key !== undefined} {...form.register("key")} />
+                <FieldDescription>Use uppercase names for consistency.</FieldDescription>
+                {form.formState.errors.key === undefined ? null : <FieldError>{form.formState.errors.key.message}</FieldError>}
+              </Field>
 
-      {showForm ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Add Secret</CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-4">
-            <label className="grid gap-2 text-sm">
-              <span>Key (use uppercase names)</span>
-              <input
-                value={key}
-                onChange={(event) => setKey(event.target.value)}
-                className="h-9 rounded-md border border-input bg-background px-3 font-mono text-sm"
-                placeholder="API_TOKEN"
-              />
-            </label>
-            <label className="grid gap-2 text-sm">
-              <span>Value</span>
-              <textarea
-                value={value}
-                onChange={(event) => setValue(event.target.value)}
-                className="min-h-28 rounded-md border border-input bg-background px-3 py-2 text-sm"
-              />
-            </label>
-            {formError === undefined ? null : <p className="text-sm text-destructive">{formError}</p>}
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => void submit()} disabled={pending}>
-                {pending ? "Saving..." : "Save Secret"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setShowForm(false)
-                  setFormError(undefined)
-                }}
-                disabled={pending}
-              >
-                Cancel
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
+              <Field data-invalid={form.formState.errors.value !== undefined}>
+                <FieldLabel htmlFor="secret-value">Value</FieldLabel>
+                <Textarea id="secret-value" aria-invalid={form.formState.errors.value !== undefined} {...form.register("value")} />
+                {form.formState.errors.value === undefined ? null : <FieldError>{form.formState.errors.value.message}</FieldError>}
+              </Field>
+            </FieldGroup>
+          </form>
+          {setSecretMutation.error === null ? null : <FieldError className="mt-4">{setSecretMutation.error.message}</FieldError>}
+        </CardContent>
+        <CardFooter className="justify-end gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => form.reset()} disabled={setSecretMutation.isPending}>
+            Reset
+          </Button>
+          <Button size="sm" onClick={() => void submit()} disabled={setSecretMutation.isPending}>
+            {setSecretMutation.isPending ? "Saving..." : "Save Secret"}
+          </Button>
+        </CardFooter>
+      </Card>
 
-      {loading ? <p className="text-sm text-muted-foreground">Loading secrets...</p> : null}
-      {error === undefined ? null : <p className="text-sm text-destructive">{error}</p>}
+      {secretsQuery.isPending ? <p className="text-sm text-muted-foreground">Loading secrets...</p> : null}
+      {secretsQuery.error === null ? null : (
+        <Alert variant="destructive">
+          <AlertTitle>Failed to load secrets</AlertTitle>
+          <AlertDescription>{secretsQuery.error.message}</AlertDescription>
+        </Alert>
+      )}
+      {deleteSecretMutation.error === null ? null : (
+        <Alert variant="destructive">
+          <AlertTitle>Failed to delete secret</AlertTitle>
+          <AlertDescription>{deleteSecretMutation.error.message}</AlertDescription>
+        </Alert>
+      )}
 
-      {!loading && error === undefined && secrets.length === 0 ? (
+      {!secretsQuery.isPending && secretsQuery.error === null && (secretsQuery.data?.length ?? 0) === 0 ? (
         <Card>
           <CardContent className="pt-5 text-sm text-muted-foreground">No secrets for this project.</CardContent>
         </Card>
       ) : null}
 
-      {!loading && error === undefined && secrets.length > 0 ? (
+      {!secretsQuery.isPending && secretsQuery.error === null && (secretsQuery.data?.length ?? 0) > 0 ? (
         <Card>
           <CardContent className="p-0">
             <Table>
@@ -149,13 +124,13 @@ export function ProjectSecretsTab(props: { readonly api: DashboardApi; readonly 
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {secrets.map((secret) => (
+                {secretsQuery.data!.map((secret) => (
                   <TableRow key={secret.key}>
                     <TableCell className="font-mono text-xs">{secret.key}</TableCell>
                     <TableCell>{formatDateTime(secret.createdAt)}</TableCell>
                     <TableCell>{formatDateTime(secret.updatedAt)}</TableCell>
                     <TableCell>
-                      <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => void removeSecret(secret.key)}>
+                      <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => void removeSecret(secret.key)} disabled={deleteSecretMutation.isPending}>
                         Delete
                       </Button>
                     </TableCell>

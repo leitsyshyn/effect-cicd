@@ -1,55 +1,63 @@
-import { useEffect, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { Link, useSearchParams, useParams } from "react-router-dom"
 
-import type { ProjectSummaryDto, createDashboardApi } from "../api.ts"
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.tsx"
+import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "../components/ui/breadcrumb.tsx"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs.tsx"
-import { hrefForProject, hrefForProjects, type DashboardNavigate, type ProjectPageView, type ProjectRoute } from "../lib/routing.ts"
+import { dashboardQueries } from "../lib/dashboard-query.ts"
+import { hrefForProjects, parseProjectPageView, type ProjectPageView } from "../lib/routing.ts"
 import { ProjectBindingsTab } from "./project-bindings-tab.tsx"
 import { ProjectSecretsTab } from "./project-secrets-tab.tsx"
 import { projectLabel } from "./projects-page.tsx"
 import { RunsTab } from "./runs-page.tsx"
 
-type DashboardApi = ReturnType<typeof createDashboardApi>
+export function ProjectPage() {
+  const params = useParams<{ projectId: string }>()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const projectId = params.projectId
 
-export function ProjectPage(props: { readonly api: DashboardApi; readonly navigate: DashboardNavigate; readonly route: ProjectRoute }) {
-  const [project, setProject] = useState<ProjectSummaryDto>()
+  if (projectId === undefined) {
+    return null
+  }
 
-  useEffect(() => {
-    let cancelled = false
+  const projectQuery = useQuery(dashboardQueries.project(projectId))
+  const activeView: ProjectPageView = parseProjectPageView(searchParams.get("view")) ?? "runs"
+  const label = projectQuery.data === null || projectQuery.data === undefined ? projectId : projectLabel(projectQuery.data)
 
-    const load = async () => {
-      try {
-        const projects = await props.api.listProjects()
-        if (!cancelled) {
-          setProject(projects.find((entry) => entry.projectId === props.route.projectId))
-        }
-      } catch {
-        if (!cancelled) {
-          setProject(undefined)
-        }
-      }
+  const setActiveView = (view: ProjectPageView) => {
+    const nextParams = new URLSearchParams(searchParams)
+    if (view === "runs") {
+      nextParams.delete("view")
+    } else {
+      nextParams.set("view", view)
     }
-
-    void load()
-
-    return () => {
-      cancelled = true
-    }
-  }, [props.api, props.route.projectId])
-
-  const activeView: ProjectPageView = props.route.view ?? "runs"
-  const label = project === undefined ? props.route.projectId : projectLabel(project)
+    setSearchParams(nextParams, { replace: true })
+  }
 
   return (
     <section className="grid gap-4">
-      <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-        <button type="button" onClick={() => props.navigate(hrefForProjects())} className="hover:text-foreground">
-          Projects
-        </button>
-        <span>/</span>
-        <span className="text-foreground">{label}</span>
-      </div>
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink asChild>
+              <Link to={hrefForProjects()}>Projects</Link>
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage>{label}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
 
-      <Tabs value={activeView} onValueChange={(value) => props.navigate(hrefForProject(props.route.projectId, value as ProjectPageView), { replace: true })}>
+      {projectQuery.error === null ? null : (
+        <Alert variant="destructive">
+          <AlertTitle>Failed to load project details</AlertTitle>
+          <AlertDescription>{projectQuery.error.message}</AlertDescription>
+        </Alert>
+      )}
+
+      <Tabs value={activeView} onValueChange={(value) => setActiveView(value as ProjectPageView)}>
         <TabsList className="grid w-full max-w-sm grid-cols-3">
           <TabsTrigger value="runs">Runs</TabsTrigger>
           <TabsTrigger value="bindings">Bindings</TabsTrigger>
@@ -57,13 +65,13 @@ export function ProjectPage(props: { readonly api: DashboardApi; readonly naviga
         </TabsList>
 
         <TabsContent value="runs">
-          <RunsTab api={props.api} navigate={props.navigate} projectId={props.route.projectId} />
+          <RunsTab projectId={projectId} />
         </TabsContent>
         <TabsContent value="bindings">
-          <ProjectBindingsTab api={props.api} projectId={props.route.projectId} />
+          <ProjectBindingsTab projectId={projectId} />
         </TabsContent>
         <TabsContent value="secrets">
-          <ProjectSecretsTab api={props.api} projectId={props.route.projectId} />
+          <ProjectSecretsTab projectId={projectId} />
         </TabsContent>
       </Tabs>
     </section>
