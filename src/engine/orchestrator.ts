@@ -52,7 +52,6 @@ import {
   WorkflowRunState,
 } from "../domain/runtime-state.ts"
 import { StorageTransactor } from "../runtime/storage.ts"
-import { logInfo } from "../runtime/logger.ts"
 import { Metrics } from "../runtime/metrics.ts"
 import { SecretStore } from "../secrets/store.ts"
 import { DispatchInput, DispatchRequest, DispatchWorkspace, Executor, ExecutorFailureSummary, ExecutorResult } from "./executor.ts"
@@ -212,21 +211,6 @@ export class Orchestrator extends Context.Service<
         
         yield* persistRun(nextRun)
         yield* publishRunUpdate(nextRun, "RetryReady")
-        yield* advanceRun(runId).pipe(Effect.catchTag("RunNotFound", () => Effect.succeed(nextRun)), Effect.asVoid)
-      })
-
-      const scheduleRecoveredRetries = Effect.fn("Orchestrator.scheduleRecoveredRetries")(function* (run: WorkflowRunState) {
-        const scheduledUnits = run.units.filter((unit) => unit.nextRetryAt !== undefined)
-
-        for (const unit of scheduledUnits) {
-          const delayMillis = Math.max(unit.nextRetryAt!.getTime() - Date.now(), 0)
-          yield* Effect.sleep(Duration.millis(delayMillis)).pipe(
-            Effect.andThen(activateScheduledRetry(run.runId, unit.unitId, unit.nextRetryAt!)),
-            Effect.catch(() => Effect.succeed(undefined)),
-            Effect.forkDetach({ startImmediately: true }),
-            Effect.asVoid,
-          )
-        }
       })
 
       const createRun = Effect.fn("Orchestrator.createRun")(function* (
@@ -278,6 +262,15 @@ export class Orchestrator extends Context.Service<
 
           const readyUnitIds = getReadyUnitIds(plan, run)
           if (readyUnitIds.length === 0) {
+            const nextScheduledRetry = getNextScheduledRetry(run)
+            if (nextScheduledRetry !== undefined) {
+              const delayMillis = Math.max(nextScheduledRetry.scheduledAt.getTime() - Date.now(), 0)
+              yield* Effect.sleep(Duration.millis(delayMillis))
+              yield* activateScheduledRetry(run.runId, nextScheduledRetry.unitId, nextScheduledRetry.scheduledAt)
+              run = yield* stateStore.getRun(run.runId)
+              continue
+            }
+
             return run
           }
 
@@ -543,13 +536,6 @@ export class Orchestrator extends Context.Service<
             }),
           )
           yield* publishRunUpdate(run, "RetryScheduled")
-          yield* Effect.sleep(Duration.millis(delayMillis)).pipe(
-            Effect.andThen(activateScheduledRetry(run.runId, unitId, scheduledAt)),
-            Effect.tap(() => logInfo("scheduled retry fired", { module: "orchestrator", runId: run.runId, unitId })),
-            Effect.catch(() => Effect.succeed(undefined)),
-            Effect.forkDetach({ startImmediately: true }),
-            Effect.asVoid,
-          )
 
           return run
         }
@@ -875,7 +861,6 @@ export class Orchestrator extends Context.Service<
             }),
           )
           yield* publishRunUpdate(nextRun, "RunResumed")
-          yield* scheduleRecoveredRetries(nextRun)
           recovered.push(nextRun)
         }
 
@@ -1550,6 +1535,23 @@ const getRetryPolicy = (planUnit: PlanUnit) =>
       policy instanceof PlanRetryPolicy && (selected === undefined || policy.maxAttempts > selected.maxAttempts) ? policy : selected,
     undefined,
   )
+
+const getNextScheduledRetry = (run: WorkflowRunState) => {
+  const scheduledUnits = run.units.filter((unit) => unit.nextRetryAt !== undefined)
+
+  if (scheduledUnits.length === 0) {
+    return undefined
+  }
+
+  const nextUnit = scheduledUnits.sort(
+    (left, right) => left.nextRetryAt!.getTime() - right.nextRetryAt!.getTime() || compareUnitIds(left.unitId, right.unitId),
+  )[0]!
+
+  return {
+    unitId: nextUnit.unitId,
+    scheduledAt: nextUnit.nextRetryAt!,
+  }
+}
 
 const createRetrySchedule = (policy: PlanRetryPolicy) => {
   const base = Schedule.exponential(Duration.millis(policy.baseDelayMillis), policy.exponent)
