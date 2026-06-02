@@ -3,26 +3,57 @@ import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "../../lib/utils.ts"
 
-const alertVariants = cva("relative w-full rounded-md border px-4 py-3 text-sm", {
-  variants: {
-    variant: {
-      default: "border-border bg-card text-card-foreground",
-      destructive: "border-destructive/30 bg-destructive/10 text-destructive",
+const alertVariants = cva(
+  "relative w-full rounded-lg border p-4 [&>svg~*]:pl-7 [&>svg+div]:translate-y-[-3px] [&>svg]:absolute [&>svg]:left-4 [&>svg]:top-4 [&>svg]:text-foreground",
+  {
+    variants: {
+      variant: {
+        default: "bg-background text-foreground",
+        destructive:
+          "border-destructive/50 text-destructive dark:border-destructive [&>svg]:text-destructive",
+      },
     },
-  },
-  defaultVariants: {
-    variant: "default",
-  },
-})
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
 
-export function Alert({ className, variant, ...props }: React.HTMLAttributes<HTMLDivElement> & VariantProps<typeof alertVariants>) {
-  return <div role="alert" className={cn(alertVariants({ variant }), className)} {...props} />
-}
+const Alert = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement> & VariantProps<typeof alertVariants>
+>(({ className, variant, ...props }, ref) => (
+  <div
+    ref={ref}
+    role="alert"
+    className={cn(alertVariants({ variant }), className)}
+    {...props}
+  />
+))
+Alert.displayName = "Alert"
 
-export function AlertTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h5 className={cn("mb-1 font-medium leading-none tracking-tight", className)} {...props} />
-}
+const AlertTitle = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLHeadingElement>
+>(({ className, ...props }, ref) => (
+  <h5
+    ref={ref}
+    className={cn("mb-1 font-medium leading-none tracking-tight", className)}
+    {...props}
+  />
+))
+AlertTitle.displayName = "AlertTitle"
 
-export function AlertDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
-  return <div className={cn("text-sm [&_p]:leading-relaxed", className)} {...props} />
-}
+const AlertDescription = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLParagraphElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("text-sm [&_p]:leading-relaxed", className)}
+    {...props}
+  />
+))
+AlertDescription.displayName = "AlertDescription"
+
+export { Alert, AlertTitle, AlertDescription }

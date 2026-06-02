@@ -5,22 +5,38 @@ const retryableStatuses = new Set(["succeeded", "failed", "timed_out", "canceled
 
 export const badgeVariantForStatus = (status: string): BadgeProps["variant"] => {
   if (status === "succeeded") {
-    return "success"
+    return "secondary"
   }
 
   if (status === "failed" || status === "interrupted" || status === "timed_out" || status === "canceled") {
-    return "failure"
+    return "destructive"
   }
 
   if (status === "running" || status === "ready" || status === "queued" || status === "canceling") {
-    return "running"
+    return "secondary"
   }
 
   if (status === "skipped") {
-    return "skipped"
+    return "outline"
   }
 
   return "secondary"
+}
+
+export const badgeClassNameForStatus = (status: string) => {
+  if (status === "succeeded") {
+    return "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+  }
+
+  if (status === "running" || status === "ready" || status === "queued" || status === "canceling") {
+    return "border-sky-500/20 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+  }
+
+  if (status === "skipped") {
+    return "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+  }
+
+  return undefined
 }
 
 export const dotClassForStatus = (status: string) => {

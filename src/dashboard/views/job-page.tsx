@@ -11,7 +11,7 @@ import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbP
 import { Button } from "../components/ui/button.tsx"
 import { Field, FieldLabel } from "../components/ui/field.tsx"
 import { ScrollArea } from "../components/ui/scroll-area.tsx"
-import { Select, SelectItem } from "../components/ui/select.tsx"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select.tsx"
 import { Separator } from "../components/ui/separator.tsx"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs.tsx"
 import { dashboardQueries } from "../lib/dashboard-query.ts"
@@ -203,21 +203,25 @@ export function JobPage() {
           {unit.nextRetryAt === undefined ? null : <p className="text-sm text-muted-foreground">Retry scheduled for {formatDateTime(unit.nextRetryAt)}</p>}
         </div>
 
-        <Field className="w-full max-w-xs">
-          <FieldLabel htmlFor="job-attempt">Attempt</FieldLabel>
-          <Select
-            id="job-attempt"
-            value={selectedAttempt?.attemptNumber ?? ""}
-            onChange={(event) => setRouteState(activeView, Number(event.target.value))}
-            disabled={attempts.length === 0}
-          >
-            {attempts.map((attempt) => (
-              <SelectItem key={attempt.attemptId} value={attempt.attemptNumber}>
-                Attempt {attempt.attemptNumber} · {attempt.status}
-              </SelectItem>
-            ))}
-          </Select>
-        </Field>
+          <Field className="w-full max-w-xs">
+            <FieldLabel htmlFor="job-attempt">Attempt</FieldLabel>
+            <Select
+              {...(selectedAttempt === undefined ? {} : { value: String(selectedAttempt.attemptNumber) })}
+              onValueChange={(value) => setRouteState(activeView, Number(value))}
+              disabled={attempts.length === 0}
+            >
+              <SelectTrigger id="job-attempt">
+                <SelectValue placeholder="Select attempt" />
+              </SelectTrigger>
+              <SelectContent>
+                {attempts.map((attempt) => (
+                  <SelectItem key={attempt.attemptId} value={String(attempt.attemptNumber)}>
+                    Attempt {attempt.attemptNumber} · {attempt.status}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
       </div>
 
       <Tabs value={activeView} onValueChange={(value) => setRouteState(value as JobPageView, selectedAttempt?.attemptNumber)}>

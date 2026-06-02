@@ -23,7 +23,7 @@ import {
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "../components/ui/field.tsx"
 import { Input } from "../components/ui/input.tsx"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs.tsx"
-import { badgeVariantForStatus } from "../lib/run-status.ts"
+import { badgeClassNameForStatus, badgeVariantForStatus } from "../lib/run-status.ts"
 import { dashboardApi, dashboardQueries, dashboardQueryKeys } from "../lib/dashboard-query.ts"
 import { formatDateTime } from "../lib/format.ts"
 import { hrefForProject } from "../lib/routing.ts"
@@ -339,7 +339,7 @@ function TimestampStatusPill({ project }: { readonly project: ProjectSummaryDto 
           <Clock3 className="size-3.5" />
           {formatDateTime(project.latestRunAt)}
         </Badge>
-        <Badge variant={badgeVariantForStatus(status)} className="rounded-l-none">
+        <Badge variant={badgeVariantForStatus(status)} className={`rounded-l-none ${badgeClassNameForStatus(status) ?? ""}`}>
           {status.replaceAll("_", " ")}
         </Badge>
       </span>

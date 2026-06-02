@@ -167,7 +167,12 @@ export function ProjectBindingsTab(props: { readonly projectId: string }) {
                     <TableCell>{binding.branch ?? "*"}</TableCell>
                     <TableCell>{binding.workspaceSubdir ?? "-"}</TableCell>
                     <TableCell>
-                      <Badge variant={binding.enabled ? "success" : "secondary"}>{binding.enabled ? "enabled" : "disabled"}</Badge>
+                      <Badge
+                        variant={binding.enabled ? "secondary" : "outline"}
+                        className={binding.enabled ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : undefined}
+                      >
+                        {binding.enabled ? "enabled" : "disabled"}
+                      </Badge>
                     </TableCell>
                     <TableCell>{formatDateTime(binding.createdAt)}</TableCell>
                   </TableRow>
