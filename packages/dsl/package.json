@@ -1,0 +1,12 @@
+{
+  "name": "@effect-cicd/dsl",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "module": "./src/index.ts",
+  "dependencies": {
+    "effect": "^4.0.0-beta.74"
+  }
+}

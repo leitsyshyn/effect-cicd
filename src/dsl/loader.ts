@@ -1,7 +1,8 @@
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
-import { existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { isWorkflowAuthoring, type WorkflowAuthoring } from "./public.ts";
 
@@ -73,16 +74,7 @@ const loadWorkflowModule = Effect.fn("dsl.loadWorkflowModule")(function* (
   options?: WorkflowModuleLoadOptions,
 ) {
   const resolved = yield* resolveWorkflowModulePath(modulePath);
-  const moduleUrl = Bun.pathToFileURL(resolved).href;
-
-  const moduleNamespace = yield* Effect.tryPromise({
-    try: () => import(moduleUrl),
-    catch: (error) =>
-      new WorkflowModuleImportFailed({
-        modulePath,
-        message: `Failed to import workflow module: ${toErrorMessage(error)}`,
-      }),
-  });
+  const moduleNamespace = yield* importWorkflowModule(resolved, modulePath);
 
   const exportName = options?.exportName;
   if (exportName !== undefined) {
@@ -134,6 +126,79 @@ const resolveWorkflowModulePath = (modulePath: string) =>
         message: `Failed to resolve workflow module path: ${toErrorMessage(error)}`,
       }),
   });
+
+const importWorkflowModule = (resolvedModulePath: string, modulePath: string) => {
+  const importOnce = (cacheKey: string) =>
+    Effect.tryPromise({
+      try: () => import(`${Bun.pathToFileURL(resolvedModulePath).href}?effect-cicd-load=${cacheKey}`),
+      catch: (error) =>
+        new WorkflowModuleImportFailed({
+          modulePath,
+          message: `Failed to import workflow module: ${toErrorMessage(error)}`,
+        }),
+    });
+
+  return importOnce("initial").pipe(
+    Effect.catch((error) =>
+      missingBundledDslImport(error)
+        ? Effect.try({
+            try: () => ensureBundledDslPackage(resolvedModulePath),
+            catch: (shimError) =>
+              new WorkflowModuleImportFailed({
+                modulePath,
+                message: `Failed to prepare @effect-cicd/dsl for workflow import: ${toErrorMessage(shimError)}`,
+              }),
+          }).pipe(
+            Effect.flatMap(() => importOnce(`shim-${Date.now()}`)),
+          )
+        : Effect.fail(error),
+    ),
+  );
+};
+
+const bundledDslPackagePath = fileURLToPath(new URL("../../packages/dsl", import.meta.url));
+
+const ensureBundledDslPackage = (resolvedModulePath: string) => {
+  const packageRoot = findNearestPackageRoot(dirname(resolvedModulePath)) ?? dirname(resolvedModulePath);
+  const scopedPackageRoot = join(packageRoot, "node_modules", "@effect-cicd");
+  const linkPath = join(scopedPackageRoot, "dsl");
+
+  if (existsSync(linkPath)) {
+    return;
+  }
+
+  mkdirSync(scopedPackageRoot, { recursive: true });
+
+  try {
+    symlinkSync(bundledDslPackagePath, linkPath, "dir");
+  } catch (error) {
+    if (!existsSync(linkPath)) {
+      throw error;
+    }
+  }
+};
+
+const findNearestPackageRoot = (start: string): string | undefined => {
+  let current = start;
+
+  while (true) {
+    if (existsSync(join(current, "package.json"))) {
+      return current;
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+
+    current = parent;
+  }
+};
+
+const missingBundledDslImport = (error: unknown) => {
+  const message = toErrorMessage(error);
+  return message.includes("@effect-cicd/dsl") && message.includes("Cannot find module");
+};
 
 const extractExport = (
   modulePath: string,

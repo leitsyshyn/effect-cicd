@@ -22,6 +22,18 @@ describe("WorkflowModuleLoader", () => {
     }).pipe(Effect.provide(Layer.mergeAll(WorkflowModuleLoader.layer, DslMaterializer.layer))),
   )
 
+  it.effect("loads workflows that import @effect-cicd/dsl", () =>
+    Effect.gen(function* () {
+      const loader = yield* WorkflowModuleLoader
+      const materializer = yield* DslMaterializer
+      const authored = yield* loader.load("./tests/fixtures/workflows/package-import-workflow.ts")
+      const definition = yield* materializer.materialize(authored)
+
+      expect(definition.workflowId).toBe("workflow:fixture:package-import")
+      expect(definition.triggers?.map((trigger) => trigger._tag)).toEqual(["GitHubPushTriggerDeclaration"])
+    }).pipe(Effect.provide(Layer.mergeAll(WorkflowModuleLoader.layer, DslMaterializer.layer))),
+  )
+
   it.effect("fails with WorkflowModuleNotFound when module path is missing", () =>
     Effect.gen(function* () {
       const loader = yield* WorkflowModuleLoader

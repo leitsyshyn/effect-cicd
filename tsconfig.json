@@ -12,6 +12,10 @@
     "composite": true,
     "declarationMap": true,
     "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@effect-cicd/dsl": ["packages/dsl/src/index.ts"]
+    },
     "jsx": "react-jsx",
     "strict": true,
     "exactOptionalPropertyTypes": true,
