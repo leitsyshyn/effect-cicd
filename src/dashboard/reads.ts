@@ -364,7 +364,7 @@ const stringifyUnknown = (value: unknown) => {
 
 const stageLabel = (index: number, units: ReadonlyArray<RunUnitDto>) => {
   const names = units.slice(0, 2).map((unit) => unit.name)
-  return names.length === 0 ? `Stage ${index}` : `Stage ${index} · ${names.join(" + ")}`
+  return names.length === 0 ? `Units ${index}` : names.join(" + ")
 }
 
 type RawRecord = Record<string, any>

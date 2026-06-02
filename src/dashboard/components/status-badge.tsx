@@ -1,14 +1,16 @@
 import { Badge } from "./ui/badge.tsx"
-import { badgeClassNameForStatus, badgeVariantForStatus } from "../lib/run-status.ts"
+import { badgeClassNameForStatus, badgeVariantForStatus, displayStatus } from "../lib/run-status.ts"
 
-export function StatusBadge({ status }: { readonly status: string | null | undefined }) {
+export function StatusBadge({ status, nextRetryAt }: { readonly status: string | null | undefined; readonly nextRetryAt?: string }) {
   if (typeof status !== "string" || status.trim().length === 0) {
     return null
   }
 
+  const value = displayStatus(status, nextRetryAt)
+
   return (
-    <Badge variant={badgeVariantForStatus(status)} className={badgeClassNameForStatus(status)}>
-      {status.replaceAll("_", " ")}
+    <Badge variant={badgeVariantForStatus(value)} className={badgeClassNameForStatus(value)}>
+      {value.replaceAll("_", " ")}
     </Badge>
   )
 }

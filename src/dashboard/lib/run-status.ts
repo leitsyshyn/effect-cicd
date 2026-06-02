@@ -3,8 +3,15 @@ import type { BadgeProps } from "../components/ui/badge.tsx"
 const activeStatuses = new Set(["queued", "running", "canceling"])
 const retryableStatuses = new Set(["succeeded", "failed", "timed_out", "canceled", "interrupted"])
 
+export const displayStatus = (status: string, nextRetryAt?: string) =>
+  nextRetryAt !== undefined && status === "failed" ? "retrying" : status
+
 export const badgeVariantForStatus = (status: string): BadgeProps["variant"] => {
   if (status === "succeeded") {
+    return "secondary"
+  }
+
+  if (status === "retrying") {
     return "secondary"
   }
 
@@ -28,6 +35,10 @@ export const badgeClassNameForStatus = (status: string) => {
     return "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
   }
 
+  if (status === "retrying") {
+    return "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+  }
+
   if (status === "running" || status === "ready" || status === "queued" || status === "canceling") {
     return "border-sky-500/20 bg-sky-500/10 text-sky-700 dark:text-sky-300"
   }
@@ -42,6 +53,10 @@ export const badgeClassNameForStatus = (status: string) => {
 export const dotClassForStatus = (status: string) => {
   if (status === "succeeded") {
     return "bg-emerald-400"
+  }
+
+  if (status === "retrying") {
+    return "bg-amber-400"
   }
 
   if (status === "failed" || status === "interrupted" || status === "timed_out" || status === "canceled") {

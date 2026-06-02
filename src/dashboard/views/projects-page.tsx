@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Activity, Clock3, Link2 } from "lucide-react"
+import { Activity, Link2 } from "lucide-react"
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { Link, useNavigate } from "react-router-dom"
@@ -23,11 +23,9 @@ import {
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "../components/ui/field.tsx"
 import { Input } from "../components/ui/input.tsx"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs.tsx"
-import { badgeClassNameForStatus, badgeVariantForStatus } from "../lib/run-status.ts"
 import { dashboardApi, dashboardQueries, dashboardQueryKeys } from "../lib/dashboard-query.ts"
-import { formatDateTime } from "../lib/format.ts"
+import { StatusTimestampPill } from "../components/status-timestamp-pill.tsx"
 import { hrefForProject } from "../lib/routing.ts"
-import type { ProjectSummaryDto } from "../api.ts"
 
 const localProjectSchema = z.object({
   workflowModulePath: z.string().trim().min(1, "Workflow file is required."),
@@ -307,7 +305,7 @@ export function ProjectsPage() {
                     <Activity className="size-3.5" />
                     {formatCount(project.runCount, "run")}
                   </Badge>
-                  <TimestampStatusPill project={project} />
+                  <StatusTimestampPill {...(project.latestRunAt == null ? {} : { timestamp: project.latestRunAt })} {...(project.latestRunStatus == null ? {} : { status: project.latestRunStatus })} />
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="outline">{project.provider}</Badge>
@@ -324,42 +322,6 @@ export function ProjectsPage() {
       ) : null}
     </section>
   )
-}
-
-function TimestampStatusPill({ project }: { readonly project: ProjectSummaryDto }) {
-  const status = project.latestRunStatus
-  const hasTimestamp = project.runCount > 0 && formatDateTime(project.latestRunAt) !== "-"
-
-  if (!hasTimestamp) return null
-
-  if (typeof status === "string" && status.trim().length > 0) {
-    return (
-      <span className="inline-flex items-center">
-        <Badge variant="secondary" className={`gap-1.5 rounded-r-none border-r-0 bg-background/60 text-muted-foreground ${borderClassForStatus(status)}`}>
-          <Clock3 className="size-3.5" />
-          {formatDateTime(project.latestRunAt)}
-        </Badge>
-        <Badge variant={badgeVariantForStatus(status)} className={`rounded-l-none ${badgeClassNameForStatus(status) ?? ""}`}>
-          {status.replaceAll("_", " ")}
-        </Badge>
-      </span>
-    )
-  }
-
-  return (
-    <Badge variant="secondary" className="gap-1.5 border border-border/60 bg-background/60 text-muted-foreground">
-      <Clock3 className="size-3.5" />
-      {formatDateTime(project.latestRunAt)}
-    </Badge>
-  )
-}
-
-const borderClassForStatus = (status: string) => {
-  if (status === "succeeded") return "border-emerald-500/20"
-  if (status === "failed" || status === "interrupted" || status === "timed_out" || status === "canceled") return "border-rose-500/20"
-  if (status === "running" || status === "ready" || status === "queued" || status === "canceling") return "border-sky-500/20"
-  if (status === "skipped") return "border-amber-500/20"
-  return "border-border/60"
 }
 
 const formatCount = (count: number, noun: string) => `${count} ${count === 1 ? noun : `${noun}s`}`

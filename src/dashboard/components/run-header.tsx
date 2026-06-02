@@ -41,8 +41,8 @@ export function RunHeader(props: {
         </BreadcrumbList>
       </Breadcrumb>
 
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="grid gap-3">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-4">
+        <div className="grid min-w-0 gap-3">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-3xl font-semibold tracking-tight">{workflowLabel}</h1>
             <StatusBadge status={props.detail.run.status} />
@@ -51,7 +51,7 @@ export function RunHeader(props: {
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
             <span>Started {formatDateTime(props.detail.run.startedAt)}</span>
             <span>Duration {formatDuration(props.detail.run.durationMs)}</span>
-            <span className="font-mono text-[12px]">{truncateMiddle(props.detail.run.runId, 72)}</span>
+            <span className="max-w-full break-all font-mono text-[12px]">{truncateMiddle(props.detail.run.runId, 72)}</span>
             {props.detail.source.retriedFromRunId === undefined ? null : (
               <Link to={hrefForRun(props.detail.source.retriedFromRunId)} className="hover:text-foreground">
                 retried from {truncateMiddle(props.detail.source.retriedFromRunId, 36)}

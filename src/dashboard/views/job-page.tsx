@@ -5,19 +5,19 @@ import { Link, useSearchParams, useParams } from "react-router-dom"
 import type { ArtifactPayloadDto } from "../api.ts"
 import { PayloadBrowser, type PayloadBrowserContent, type PayloadBrowserItem } from "../components/payload-browser.tsx"
 import { StatusBadge } from "../components/status-badge.tsx"
+import { StatusTimestampPill } from "../components/status-timestamp-pill.tsx"
+import { TimelineEventList } from "../components/timeline-event-list.tsx"
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.tsx"
 import { Badge } from "../components/ui/badge.tsx"
 import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "../components/ui/breadcrumb.tsx"
 import { Button } from "../components/ui/button.tsx"
-import { Field, FieldLabel } from "../components/ui/field.tsx"
-import { ScrollArea } from "../components/ui/scroll-area.tsx"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select.tsx"
 import { Separator } from "../components/ui/separator.tsx"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs.tsx"
 import { dashboardQueries } from "../lib/dashboard-query.ts"
 import { formatAge, formatBytes, formatDateTime, formatDuration, formatSourceLocation, formatValue, truncateMiddle } from "../lib/format.ts"
 import { hrefForProject, hrefForProjects, hrefForRun, parseAttemptNumber, parseJobPageView, type JobPageView } from "../lib/routing.ts"
-import type { PayloadMetadataDto, TimelineEventDto } from "../types.ts"
+import type { PayloadMetadataDto } from "../types.ts"
 
 export function JobPage() {
   const params = useParams<{ runId: string; unitId: string }>()
@@ -159,7 +159,7 @@ export function JobPage() {
   }
 
   return (
-    <section className="grid gap-4">
+    <section className="grid min-w-0 gap-4 overflow-x-hidden">
       <Breadcrumb>
         <BreadcrumbList>
           <BreadcrumbItem>
@@ -186,16 +186,16 @@ export function JobPage() {
         </BreadcrumbList>
       </Breadcrumb>
 
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="grid gap-3">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-4">
+        <div className="grid min-w-0 gap-3">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-3xl font-semibold tracking-tight">{unit.name}</h1>
-            <StatusBadge status={unit.status} />
+            <StatusBadge status={unit.status} {...(unit.nextRetryAt === undefined ? {} : { nextRetryAt: unit.nextRetryAt })} />
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
             <span>Started {formatDateTime(unit.startedAt)}</span>
             <span>Duration {formatDuration(unit.durationMs)}</span>
-            <span className="font-mono text-[12px]">{truncateMiddle(unit.unitId, 72)}</span>
+            <span className="max-w-full break-all font-mono text-[12px]">{truncateMiddle(unit.unitId, 72)}</span>
           </div>
           {unit.failureMessage === undefined ? null : <p className="text-sm text-destructive">{unit.failureMessage}</p>}
           {unit.skipReason === undefined ? null : <p className="text-sm text-destructive">{unit.skipReason}</p>}
@@ -203,28 +203,32 @@ export function JobPage() {
           {unit.nextRetryAt === undefined ? null : <p className="text-sm text-muted-foreground">Retry scheduled for {formatDateTime(unit.nextRetryAt)}</p>}
         </div>
 
-          <Field className="w-full max-w-xs">
-            <FieldLabel htmlFor="job-attempt">Attempt</FieldLabel>
+          <div className="w-full max-w-xs">
             <Select
               {...(selectedAttempt === undefined ? {} : { value: String(selectedAttempt.attemptNumber) })}
               onValueChange={(value) => setRouteState(activeView, Number(value))}
               disabled={attempts.length === 0}
             >
               <SelectTrigger id="job-attempt">
-                <SelectValue placeholder="Select attempt" />
+                <SelectValue placeholder="Select attempt">
+                  {selectedAttempt === undefined ? "Select attempt" : `Attempt ${selectedAttempt.attemptNumber}`}
+                </SelectValue>
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="min-w-[var(--radix-select-trigger-width)]">
                 {attempts.map((attempt) => (
                   <SelectItem key={attempt.attemptId} value={String(attempt.attemptNumber)}>
-                    Attempt {attempt.attemptNumber} · {attempt.status}
+                    <div className="flex w-full items-center justify-between gap-3">
+                      <span className="text-sm">Attempt {attempt.attemptNumber}</span>
+                      <StatusTimestampPill status={attempt.status} {...((attempt.finishedAt ?? attempt.startedAt) === undefined ? {} : { timestamp: attempt.finishedAt ?? attempt.startedAt })} />
+                    </div>
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          </Field>
+          </div>
       </div>
 
-      <Tabs value={activeView} onValueChange={(value) => setRouteState(value as JobPageView, selectedAttempt?.attemptNumber)}>
+      <Tabs value={activeView} onValueChange={(value) => setRouteState(value as JobPageView, selectedAttempt?.attemptNumber)} className="min-w-0">
         <TabsList className="grid w-full max-w-md grid-cols-4">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
@@ -325,28 +329,8 @@ export function JobPage() {
           />
         </TabsContent>
 
-        <TabsContent value="timeline">
-          {jobEvents.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No events for this attempt.</p>
-          ) : (
-            <ScrollArea className="h-[60vh] rounded-md border">
-              <div className="grid">
-                {jobEvents.map((event) => (
-                  <div key={event.eventId} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 border-b border-border px-4 py-3 last:border-b-0">
-                    <span className={`mt-1 inline-flex size-2.5 rounded-full ${eventDotClass(event)}`} />
-                    <div className="grid gap-1">
-                      <p className="text-sm text-foreground">{event.message}</p>
-                      <p className="text-xs text-muted-foreground">{event.type}</p>
-                    </div>
-                    <div className="grid justify-items-end gap-1 text-xs text-muted-foreground">
-                      <span>{formatDateTime(event.occurredAt)}</span>
-                      <span>#{event.sequence}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </ScrollArea>
-          )}
+        <TabsContent value="timeline" className="min-w-0">
+          {jobEvents.length === 0 ? <p className="text-sm text-muted-foreground">No events for this attempt.</p> : <TimelineEventList events={jobEvents} heightClassName="h-[60vh] rounded-md border" />}
         </TabsContent>
       </Tabs>
     </section>
@@ -403,25 +387,3 @@ const toArtifactViewerContent = (payload: ArtifactPayloadDto): PayloadBrowserCon
         kind: "binary",
         note: payload.contentType === undefined ? "Binary payload. Download raw to inspect it." : `Binary payload (${payload.contentType}). Download raw to inspect it.`,
       }
-
-const eventDotClass = (event: TimelineEventDto) => {
-  const type = event.type.toLowerCase()
-
-  if (type.includes("succeeded") || type.includes("completed")) {
-    return "bg-emerald-400"
-  }
-
-  if (type.includes("failed") || type.includes("timedout") || type.includes("timed_out")) {
-    return "bg-rose-400"
-  }
-
-  if (type.includes("started") || type.includes("dispatched") || type.includes("ready")) {
-    return "bg-sky-400"
-  }
-
-  if (type.includes("skipped")) {
-    return "bg-amber-400"
-  }
-
-  return "bg-zinc-500"
-}

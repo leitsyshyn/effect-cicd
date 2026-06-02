@@ -89,7 +89,7 @@ export function RunPage() {
   }
 
   return (
-    <section className="grid gap-4">
+    <section className="grid min-w-0 gap-4 overflow-x-hidden">
       <RunHeader
         detail={detail}
         {...(actionMutation.variables === undefined ? {} : { actionPending: actionMutation.variables })}
@@ -100,18 +100,18 @@ export function RunPage() {
         onGc={() => void actionMutation.mutateAsync("gc")}
       />
 
-      <Tabs value={activeView} onValueChange={(value) => setActiveView(value as RunPageView)}>
+      <Tabs value={activeView} onValueChange={(value) => setActiveView(value as RunPageView)} className="min-w-0">
         <TabsList className="grid w-full max-w-xs grid-cols-2">
           {pageTabs.map(([value, label]) => (
             <TabsTrigger key={value} value={value}>{label}</TabsTrigger>
           ))}
         </TabsList>
 
-        <TabsContent value="workflow">
+        <TabsContent value="workflow" className="min-w-0 overflow-hidden">
           <RunPipelineView detail={detail} onSelectUnit={(unitId) => navigate(hrefForJob(detail.run.runId, unitId))} />
         </TabsContent>
 
-        <TabsContent value="timeline">
+        <TabsContent value="timeline" className="min-w-0">
           <RunTimeline events={detail.events} />
         </TabsContent>
       </Tabs>

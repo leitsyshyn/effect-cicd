@@ -267,7 +267,7 @@ export class Orchestrator extends Context.Service<
               const delayMillis = Math.max(nextScheduledRetry.scheduledAt.getTime() - Date.now(), 0)
               yield* Effect.sleep(Duration.millis(delayMillis))
               yield* activateScheduledRetry(run.runId, nextScheduledRetry.unitId, nextScheduledRetry.scheduledAt)
-              run = yield* stateStore.getRun(run.runId)
+              run = yield* stateStore.getRun(run.runId).pipe(Effect.catchTag("RunNotFound", () => Effect.succeed(run)))
               continue
             }
 
