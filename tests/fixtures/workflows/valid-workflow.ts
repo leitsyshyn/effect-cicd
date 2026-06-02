@@ -1,59 +1,45 @@
-import { artifact, containerCommand, unit, workflow } from "../../../src/dsl/index.ts"
+import { Artifact, Job, Workflow } from "../../../src/dsl/index.ts"
 
-export default workflow({
-  workflowId: "workflow:fixture:valid",
-  name: "fixture valid workflow",
-  metadata: { owner: "tests" },
-  units: [
-    unit({
-      unitId: "unit:test",
-      name: "test",
-      command: containerCommand({
-        image: "alpine:latest",
-        command: ["sh", "-c", "echo test"],
-        env: { CI: "true" },
-      }),
-      dependsOn: ["unit:build"],
-      artifacts: [artifact({ name: "coverage", path: "artifacts/coverage.txt" })],
-    }),
-    unit({
-      unitId: "unit:deploy",
-      name: "deploy",
-      command: containerCommand({
-        image: "alpine:latest",
-        command: ["sh", "-c", "echo deploy"],
-        env: { CI: "true" },
-      }),
-      dependsOn: ["unit:test"],
-      artifacts: [artifact({ name: "release-manifest", path: "artifacts/release-manifest.json" })],
-    }),
-    unit({
-      unitId: "unit:build",
-      name: "build",
-      command: containerCommand({
-        image: "alpine:latest",
-        command: ["sh", "-c", "echo build"],
-        env: { CI: "true" },
-      }),
-      artifacts: [artifact({ name: "dist", path: "artifacts/dist.txt" })],
-    }),
-  ],
-})
+export default Workflow.make("workflow:fixture:valid").pipe(
+  Workflow.named("fixture valid workflow"),
+  Workflow.metadata({ owner: "tests" }),
+  Workflow.job(
+    Job.make("unit:build").pipe(
+      Job.named("build"),
+      Job.image("alpine:latest"),
+      Job.run("echo build"),
+      Job.env({ CI: "true" }),
+      Job.artifact(Artifact.file("dist", "artifacts/dist.txt")),
+    ),
+    Job.make("unit:test").pipe(
+      Job.named("test"),
+      Job.image("alpine:latest"),
+      Job.dependsOn("unit:build"),
+      Job.run("echo test"),
+      Job.env({ CI: "true" }),
+      Job.artifact(Artifact.file("coverage", "artifacts/coverage.txt")),
+    ),
+    Job.make("unit:deploy").pipe(
+      Job.named("deploy"),
+      Job.image("alpine:latest"),
+      Job.dependsOn("unit:test"),
+      Job.run("echo deploy"),
+      Job.env({ CI: "true" }),
+      Job.artifact(Artifact.file("release-manifest", "artifacts/release-manifest.json")),
+    ),
+  ),
+)
 
-export const workflowNamed = workflow({
-  workflowId: "workflow:fixture:named",
-  name: "fixture named workflow",
-  metadata: { owner: "tests" },
-  units: [
-    unit({
-      unitId: "unit:build",
-      name: "build",
-      command: containerCommand({
-        image: "alpine:latest",
-        command: ["sh", "-c", "echo build"],
-        env: { CI: "true" },
-      }),
-      artifacts: [artifact({ name: "dist", path: "artifacts/named-dist.txt" })],
-    }),
-  ],
-})
+export const workflowNamed = Workflow.make("workflow:fixture:named").pipe(
+  Workflow.named("fixture named workflow"),
+  Workflow.metadata({ owner: "tests" }),
+  Workflow.job(
+    Job.make("unit:build").pipe(
+      Job.named("build"),
+      Job.image("alpine:latest"),
+      Job.run("echo build"),
+      Job.env({ CI: "true" }),
+      Job.artifact(Artifact.file("dist", "artifacts/named-dist.txt")),
+    ),
+  ),
+)

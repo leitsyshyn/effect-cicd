@@ -3,18 +3,26 @@ import { Effect, Layer } from "effect"
 
 import { WorkflowId } from "../src/domain/ids.ts"
 import {
-  artifact,
+  Artifact,
+  Cancellation,
+  Command,
+  Condition,
   containerCommand,
   DslMaterializer,
-  githubPushTrigger,
-  retry,
-  secret,
-  unit,
-  whenBranch,
-  whenInputEquals,
-  workflow,
+  Input,
+  Job,
+  Output,
+  Report,
+  Retry,
+  Secret,
+  Timeout,
+  Trigger,
+  Workflow,
+  artifact,
   type AuthoredUnit,
   type AuthoredWorkflow,
+  unit,
+  workflow,
 } from "../src/dsl/index.ts"
 import { Planner } from "../src/engine/planner.ts"
 
@@ -37,12 +45,18 @@ describe("DslMaterializer", () => {
     Effect.gen(function* () {
       const materializer = yield* DslMaterializer
       const definition = yield* materializer.materialize(
-        authoredWorkflow({
-          units: [
-            authoredUnit("unit:build", { name: "build" }),
-            authoredUnit("unit:test", { name: "test", dependsOn: ["unit:build"] }),
-          ],
-        }),
+        Workflow.make("workflow:test").pipe(
+          Workflow.named("test workflow"),
+          Workflow.job(
+            Job.make("unit:build").pipe(Job.named("build"), Job.image("oven/bun:latest"), Job.run("bun run build")),
+            Job.make("unit:test").pipe(
+              Job.named("test"),
+              Job.image("oven/bun:latest"),
+              Job.dependsOn("unit:build"),
+              Job.run("bun test"),
+            ),
+          ),
+        ),
       )
 
       expect(definition.dependencies.map((dependency) => `${dependency.from}->${dependency.to}`)).toEqual([
@@ -56,9 +70,13 @@ describe("DslMaterializer", () => {
       const materializer = yield* DslMaterializer
       const error = yield* materializer
         .materialize(
-          authoredWorkflow({
-            units: [authoredUnit("unit:build"), authoredUnit("unit:build", { name: "build again" })],
-          }),
+          Workflow.make("workflow:test").pipe(
+            Workflow.named("test workflow"),
+            Workflow.job(
+              Job.make("unit:build").pipe(Job.image("oven/bun:latest"), Job.run("bun run build")),
+              Job.make("unit:build").pipe(Job.named("build again"), Job.image("oven/bun:latest"), Job.run("bun run build")),
+            ),
+          ),
         )
         .pipe(Effect.flip)
 
@@ -72,9 +90,16 @@ describe("DslMaterializer", () => {
       const materializer = yield* DslMaterializer
       const error = yield* materializer
         .materialize(
-          authoredWorkflow({
-            units: [authoredUnit("unit:test", { dependsOn: ["unit:missing"] })],
-          }),
+          Workflow.make("workflow:test").pipe(
+            Workflow.named("test workflow"),
+            Workflow.job(
+              Job.make("unit:test").pipe(
+                Job.image("oven/bun:latest"),
+                Job.dependsOn("unit:missing"),
+                Job.run("bun test"),
+              ),
+            ),
+          ),
         )
         .pipe(Effect.flip)
 
@@ -88,9 +113,16 @@ describe("DslMaterializer", () => {
       const materializer = yield* DslMaterializer
       const error = yield* materializer
         .materialize(
-          authoredWorkflow({
-            units: [authoredUnit("unit:build", { dependsOn: ["unit:build"] })],
-          }),
+          Workflow.make("workflow:test").pipe(
+            Workflow.named("test workflow"),
+            Workflow.job(
+              Job.make("unit:build").pipe(
+                Job.image("oven/bun:latest"),
+                Job.dependsOn("unit:build"),
+                Job.run("bun run build"),
+              ),
+            ),
+          ),
         )
         .pipe(Effect.flip)
 
@@ -99,28 +131,66 @@ describe("DslMaterializer", () => {
     }).pipe(Effect.provide(DslMaterializer.layer)),
   )
 
-  it.effect("retry maxAttempts greater than 1 materializes successfully", () =>
+  it.effect("canonical public DSL authoring materializes conditions policies artifacts reports and outputs", () =>
     Effect.gen(function* () {
       const materializer = yield* DslMaterializer
       const definition = yield* materializer.materialize(
-        authoredWorkflow({
-          units: [authoredUnit("unit:build", { policies: [retry({ maxAttempts: 2 })] })],
-        }),
+        Workflow.make("payments-ci").pipe(
+          Workflow.named("Payments CI"),
+          Workflow.on(Trigger.manual(), Trigger.githubPush({ branches: ["main"] })),
+          Workflow.input(Input.make("release")),
+          Workflow.output(Output.fromJob("build", "releaseVersion", "version")),
+          Workflow.job(
+            Job.make("build").pipe(
+              Job.image("node:22"),
+              Job.exec(Command.shell("pnpm build")),
+              Job.env("CI", "true"),
+              Job.secret("NPM_TOKEN"),
+              Job.input(Input.fromWorkflow("release")),
+              Job.output(Output.file("releaseVersion", "outputs/release-version.txt", { format: "text" })),
+              Job.artifact(Artifact.file("dist", "dist")),
+              Job.report(Report.file("summary", "reports/summary.txt")),
+              Job.when(Condition.branch("main"), Condition.inputEquals("release", "stable")),
+              Job.retry(Retry.times(2)),
+              Job.timeout(Timeout.minutes(10)),
+              Job.cancel(Cancellation.failFast()),
+            ),
+          ),
+        ),
       )
 
-      expect(definition.units[0]?.policies[0]).toMatchObject({ _tag: "RetryPolicyDeclaration", maxAttempts: 2 })
+      expect(definition.triggers?.map((trigger) => trigger._tag)).toEqual(["ManualTriggerDeclaration", "GitHubPushTriggerDeclaration"])
+      expect(definition.inputs.map((input) => input.name)).toEqual(["release"])
+      expect(definition.outputs?.map((output) => output.name)).toEqual(["version"])
+      expect(definition.units[0]?.inputs?.map((input) => input.name)).toEqual(["release"])
+      expect(definition.units[0]?.outputs?.map((output) => output.name)).toEqual(["releaseVersion"])
+      expect(definition.units[0]?.artifacts.map((artifact) => artifact.name)).toEqual(["dist"])
+      expect(definition.units[0]?.reports?.map((report) => report.name)).toEqual(["summary"])
+      expect(definition.units[0]?.conditions?.map((condition) => condition._tag)).toEqual([
+        "TriggerBranchConditionDeclaration",
+        "WorkflowInputEqualsConditionDeclaration",
+      ])
+      expect(definition.units[0]?.policies.map((policy) => policy._tag)).toEqual([
+        "RetryPolicyDeclaration",
+        "TimeoutPolicyDeclaration",
+        "CancellationPolicyDeclaration",
+      ])
     }).pipe(Effect.provide(DslMaterializer.layer)),
   )
 
-  it.effect("materialized output is deterministic", () =>
+  it.effect("reusable job fragments compose into a static workflow", () =>
     Effect.gen(function* () {
       const materializer = yield* DslMaterializer
-      const authored = authoredWorkflow({
-        units: [
-          authoredUnit("unit:test", { dependsOn: ["unit:build"] }),
-          authoredUnit("unit:build"),
-        ],
-      })
+      const bunJob = (jobId: string, command: string) =>
+        Job.make(jobId).pipe(Job.image("oven/bun:latest"), Job.run(command), Job.env({ CI: "true" }))
+
+      const authored = Workflow.make("workflow:test").pipe(
+        Workflow.named("test workflow"),
+        Workflow.job(
+          bunJob("unit:build", "bun run build"),
+          bunJob("unit:test", "bun test").pipe(Job.dependsOn("unit:build")),
+        ),
+      )
 
       const first = yield* materializer.materialize(authored)
       const second = yield* materializer.materialize(authored)
@@ -134,13 +204,18 @@ describe("DslMaterializer", () => {
       const materializer = yield* DslMaterializer
       const planner = yield* Planner
       const definition = yield* materializer.materialize(
-        authoredWorkflow({
-          workflowId: "workflow:planner",
-          units: [
-            authoredUnit("unit:test", { name: "test", dependsOn: ["unit:build"] }),
-            authoredUnit("unit:build", { name: "build" }),
-          ],
-        }),
+        Workflow.make("workflow:planner").pipe(
+          Workflow.named("planner workflow"),
+          Workflow.job(
+            Job.make("unit:test").pipe(
+              Job.named("test"),
+              Job.image("oven/bun:latest"),
+              Job.dependsOn("unit:build"),
+              Job.run("bun test"),
+            ),
+            Job.make("unit:build").pipe(Job.named("build"), Job.image("oven/bun:latest"), Job.run("bun run build")),
+          ),
+        ),
       )
 
       const plan = yield* planner.plan(definition)
@@ -157,43 +232,37 @@ describe("DslMaterializer", () => {
     Effect.gen(function* () {
       const materializer = yield* DslMaterializer
       const definition = yield* materializer.materialize(
-        authoredWorkflow({
-          units: [
-            authoredUnit("unit:build", {
-              command: containerCommand({
-                image: "oven/bun:latest",
-                command: ["bun", "run", "build"],
-                env: { NPM_TOKEN: secret("NPM_TOKEN") },
-              }),
-            }),
-          ],
-        }),
+        Workflow.make("workflow:test").pipe(
+          Workflow.named("test workflow"),
+          Workflow.job(
+            Job.make("unit:build").pipe(
+              Job.image("oven/bun:latest"),
+              Job.exec(Command.argv("bun", ["run", "build"])),
+              Job.env({ CI: "true" }),
+              Job.env({ NPM_TOKEN: Secret.ref("NPM_TOKEN") }),
+            ),
+          ),
+        ),
       )
 
-      expect(definition.units[0]?.payloadDeclaration.env).toEqual({ NPM_TOKEN: secret("NPM_TOKEN") })
+      expect(definition.units[0]?.payloadDeclaration.env).toEqual({ CI: "true", NPM_TOKEN: Secret.ref("NPM_TOKEN") })
     }).pipe(Effect.provide(DslMaterializer.layer)),
   )
 
-  it.effect("materializes explicit triggers and unit conditions", () =>
+  it.effect("missing image or command in the public DSL fails materialization clearly", () =>
     Effect.gen(function* () {
       const materializer = yield* DslMaterializer
-      const definition = yield* materializer.materialize(
-        authoredWorkflow({
-          triggers: [githubPushTrigger({ branches: ["main"] })],
-          inputs: [{ name: "release", metadata: {} }],
-          units: [
-            authoredUnit("unit:build", {
-              conditions: [whenBranch("main"), whenInputEquals("release", "stable")],
-            }),
-          ],
-        }),
-      )
+      const error = yield* materializer
+        .materialize(
+          Workflow.make("workflow:test").pipe(
+            Workflow.named("test workflow"),
+            Workflow.job(Job.make("unit:build").pipe(Job.image("oven/bun:latest"))),
+          ),
+        )
+        .pipe(Effect.flip)
 
-      expect(definition.triggers?.map((trigger) => trigger._tag)).toEqual(["GitHubPushTriggerDeclaration"])
-      expect(definition.units[0]?.conditions?.map((condition) => condition._tag)).toEqual([
-        "TriggerBranchConditionDeclaration",
-        "WorkflowInputEqualsConditionDeclaration",
-      ])
+      expect(error._tag).toBe("DslMaterializationFailed")
+      expect(error.message).toContain("must declare a command")
     }).pipe(Effect.provide(DslMaterializer.layer)),
   )
 })

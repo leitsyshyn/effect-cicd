@@ -3,7 +3,7 @@ import * as Context from "effect/Context";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
-import type { AuthoredWorkflow } from "./authored-workflow.ts";
+import { isWorkflowAuthoring, type WorkflowAuthoring } from "./public.ts";
 
 export class WorkflowModuleNotFound extends Schema.TaggedErrorClass<WorkflowModuleNotFound>()(
   "WorkflowModuleNotFound",
@@ -56,7 +56,7 @@ export class WorkflowModuleLoader extends Context.Service<
     readonly load: (
       modulePath: string,
       options?: WorkflowModuleLoadOptions,
-    ) => Effect.Effect<AuthoredWorkflow, WorkflowModuleLoaderError>;
+      ) => Effect.Effect<WorkflowAuthoring, WorkflowModuleLoaderError>;
   }
 >()("@effect-cicd/dsl/WorkflowModuleLoader") {
   static readonly layer = Layer.succeed(WorkflowModuleLoader, {
@@ -166,68 +166,7 @@ const extractExport = (
   return Effect.succeed(value);
 };
 
-const isAuthoredWorkflow = (value: unknown): value is AuthoredWorkflow => {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const record = value as Record<string, unknown>;
-  if (
-    typeof record.workflowId !== "string" ||
-    record.workflowId.trim().length === 0
-  ) {
-    return false;
-  }
-  if (typeof record.name !== "string" || record.name.trim().length === 0) {
-    return false;
-  }
-  if (!Array.isArray(record.units) || record.units.length === 0) {
-    return false;
-  }
-
-  for (const unit of record.units) {
-    if (typeof unit !== "object" || unit === null) {
-      return false;
-    }
-    const unitRecord = unit as Record<string, unknown>;
-    if (
-      typeof unitRecord.unitId !== "string" ||
-      unitRecord.unitId.trim().length === 0
-    ) {
-      return false;
-    }
-    if (
-      typeof unitRecord.name !== "string" ||
-      unitRecord.name.trim().length === 0
-    ) {
-      return false;
-    }
-    if (typeof unitRecord.command !== "object" || unitRecord.command === null) {
-      return false;
-    }
-    const command = unitRecord.command as Record<string, unknown>;
-    if (command._tag !== "ContainerCommand") {
-      return false;
-    }
-    if (
-      typeof command.image !== "string" ||
-      command.image.trim().length === 0
-    ) {
-      return false;
-    }
-    if (!Array.isArray(command.command) || command.command.length === 0) {
-      return false;
-    }
-    if (
-      typeof command.command[0] !== "string" ||
-      (command.command[0] as string).trim().length === 0
-    ) {
-      return false;
-    }
-  }
-
-  return true;
-};
+const isAuthoredWorkflow = isWorkflowAuthoring;
 
 const toErrorMessage = (error: unknown) => {
   if (error instanceof Error) {

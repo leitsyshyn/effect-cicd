@@ -1,41 +1,32 @@
-import { artifact, containerCommand, unit, workflow } from "../builders.ts"
+import { Artifact, Job, Trigger, Workflow } from "../public.ts"
 
-export const sampleWorkflow = workflow({
-  workflowId: "workflow:sample",
-  name: "sample workflow",
-  metadata: { owner: "cli" },
-  units: [
-    unit({
-      unitId: "unit:test",
-      name: "test",
-      command: containerCommand({
-        image: "alpine:latest",
-        command: ["sh", "-c", "echo test"],
-        env: { CI: "true" },
-      }),
-      dependsOn: ["unit:build"],
-      artifacts: [artifact({ name: "coverage", path: "artifacts/coverage.txt" })],
-    }),
-    unit({
-      unitId: "unit:deploy",
-      name: "deploy",
-      command: containerCommand({
-        image: "alpine:latest",
-        command: ["sh", "-c", "echo deploy"],
-        env: { CI: "true" },
-      }),
-      dependsOn: ["unit:test"],
-      artifacts: [artifact({ name: "release-manifest", path: "artifacts/release-manifest.json" })],
-    }),
-    unit({
-      unitId: "unit:build",
-      name: "build",
-      command: containerCommand({
-        image: "alpine:latest",
-        command: ["sh", "-c", "echo build"],
-        env: { CI: "true" },
-      }),
-      artifacts: [artifact({ name: "dist", path: "artifacts/dist.txt" })],
-    }),
-  ],
-})
+export const sampleWorkflow = Workflow.make("workflow:sample").pipe(
+  Workflow.named("sample workflow"),
+  Workflow.metadata({ owner: "cli" }),
+  Workflow.on(Trigger.manual()),
+  Workflow.job(
+    Job.make("unit:build").pipe(
+      Job.named("build"),
+      Job.image("alpine:latest"),
+      Job.run("echo build"),
+      Job.env({ CI: "true" }),
+      Job.artifact(Artifact.file("dist", "artifacts/dist.txt")),
+    ),
+    Job.make("unit:test").pipe(
+      Job.named("test"),
+      Job.image("alpine:latest"),
+      Job.dependsOn("unit:build"),
+      Job.run("echo test"),
+      Job.env({ CI: "true" }),
+      Job.artifact(Artifact.file("coverage", "artifacts/coverage.txt")),
+    ),
+    Job.make("unit:deploy").pipe(
+      Job.named("deploy"),
+      Job.image("alpine:latest"),
+      Job.dependsOn("unit:test"),
+      Job.run("echo deploy"),
+      Job.env({ CI: "true" }),
+      Job.artifact(Artifact.file("release-manifest", "artifacts/release-manifest.json")),
+    ),
+  ),
+)

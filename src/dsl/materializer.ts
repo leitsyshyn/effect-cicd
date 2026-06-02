@@ -44,24 +44,32 @@ import type {
   AuthoredUnit,
   AuthoredUnitInputDeclaration,
   AuthoredValueSource,
-  AuthoredWorkflow,
   AuthoredWorkflowOutputDeclaration,
 } from "./authored-workflow.ts"
+import { lowerWorkflowAuthoring, type WorkflowAuthoring } from "./public.ts"
 
 export class DslMaterializer extends Context.Service<
   DslMaterializer,
   {
-    readonly materialize: (authored: AuthoredWorkflow) => Effect.Effect<NormalizedWorkflowDefinition, DslMaterializationFailed>
+    readonly materialize: (authored: WorkflowAuthoring) => Effect.Effect<NormalizedWorkflowDefinition, DslMaterializationFailed>
   }
 >()("@effect-cicd/dsl/DslMaterializer") {
   static readonly layer = Layer.succeed(DslMaterializer, {
-    materialize: Effect.fn("DslMaterializer.materialize")((authored: AuthoredWorkflow) => materialize(authored)),
+    materialize: Effect.fn("DslMaterializer.materialize")((authored: WorkflowAuthoring) => materialize(authored)),
   })
 }
 
 const schemaVersion = "0.1.0"
 
-const materialize = Effect.fn("dsl.materialize")(function* (authored: AuthoredWorkflow) {
+const materialize = Effect.fn("dsl.materialize")(function* (workflow: WorkflowAuthoring) {
+  const authored = yield* Effect.try({
+    try: () => lowerWorkflowAuthoring(workflow),
+    catch: (error) =>
+      new DslMaterializationFailed({
+        message: error instanceof Error ? error.message : `Failed to lower public workflow DSL: ${String(error)}`,
+      }),
+  })
+
   if (authored.workflowId.trim().length === 0) {
     return yield* fail("Workflow id is required")
   }

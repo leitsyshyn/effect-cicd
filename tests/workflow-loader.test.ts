@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 
+import { DslMaterializer } from "../src/dsl/index.ts"
 import {
   WorkflowModuleInvalidExport,
   WorkflowModuleLoader,
@@ -12,11 +13,13 @@ describe("WorkflowModuleLoader", () => {
   it.effect("loads default export authored workflow", () =>
     Effect.gen(function* () {
       const loader = yield* WorkflowModuleLoader
+      const materializer = yield* DslMaterializer
       const authored = yield* loader.load("./tests/fixtures/workflows/valid-workflow.ts")
+      const definition = yield* materializer.materialize(authored)
 
-      expect(authored.workflowId).toBe("workflow:fixture:valid")
-      expect(authored.units.map((unit) => unit.unitId).sort()).toEqual(["unit:build", "unit:deploy", "unit:test"].sort())
-    }).pipe(Effect.provide(WorkflowModuleLoader.layer)),
+      expect(definition.workflowId).toBe("workflow:fixture:valid")
+      expect(definition.units.map((unit) => unit.unitId).sort()).toEqual(["unit:build", "unit:deploy", "unit:test"].sort())
+    }).pipe(Effect.provide(Layer.mergeAll(WorkflowModuleLoader.layer, DslMaterializer.layer))),
   )
 
   it.effect("fails with WorkflowModuleNotFound when module path is missing", () =>
@@ -32,11 +35,13 @@ describe("WorkflowModuleLoader", () => {
   it.effect("resolves named exports via --export name", () =>
     Effect.gen(function* () {
       const loader = yield* WorkflowModuleLoader
+      const materializer = yield* DslMaterializer
       const authored = yield* loader.load("./tests/fixtures/workflows/valid-workflow.ts", { exportName: "workflowNamed" })
+      const definition = yield* materializer.materialize(authored)
 
-      expect(authored.workflowId).toBe("workflow:fixture:named")
-      expect(authored.units).toHaveLength(1)
-    }).pipe(Effect.provide(WorkflowModuleLoader.layer)),
+      expect(definition.workflowId).toBe("workflow:fixture:named")
+      expect(definition.units).toHaveLength(1)
+    }).pipe(Effect.provide(Layer.mergeAll(WorkflowModuleLoader.layer, DslMaterializer.layer))),
   )
 
   it.effect("fails clearly when export is missing", () =>
