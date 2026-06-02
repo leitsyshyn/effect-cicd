@@ -76,6 +76,16 @@ Start the persistent engine service:
 bun run server
 ```
 
+Start the self-hosted dashboard against that service:
+
+```bash
+ENGINE_BASE_URL=http://127.0.0.1:3000 bun run dashboard
+```
+
+Default dashboard URL:
+
+- `http://127.0.0.1:3001`
+
 Health check:
 
 ```bash
@@ -175,6 +185,37 @@ Retry a terminal run as a new run:
 ```bash
 ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts runs retry <runId>
 ```
+
+## Dashboard
+
+The dashboard is now a real Interface-layer client over the persistent engine service.
+
+Major capabilities:
+
+- durable run index with workflow, progress, failure, and duration summaries
+- workflow-aware run inspection with stage-grouped DAG rendering
+- unit inspector for resolved inputs, outputs, reports, attempts, logs, artifacts, and unit-scoped events
+- run context inspection for workspace path, retry lineage, triggers, metadata, and planning diagnostics
+- run timeline for Engine event history
+
+Supported dashboard control actions:
+
+- cancel active runs
+- retry terminal runs as new runs
+- trigger run-level artifact/log payload GC through the Engine service
+
+Pointing the dashboard at a service:
+
+- set `ENGINE_BASE_URL` before `bun run dashboard`
+- optional `DASHBOARD_PORT` overrides the default `3001`
+
+Suggested demo flow:
+
+1. `bun run infra:up`
+2. `bun run server`
+3. `ENGINE_BASE_URL=http://127.0.0.1:3000 bun run dashboard`
+4. `ENGINE_BASE_URL=http://127.0.0.1:3000 bun run index.ts run ./examples/demo-workflow.ts --workspace ./examples/demo-project`
+5. Open `http://127.0.0.1:3001`, inspect the new run, open unit logs/artifacts, then try retry or payload GC on a completed run
 
 ## Workflow Semantics
 

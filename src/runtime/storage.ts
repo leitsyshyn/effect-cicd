@@ -415,6 +415,18 @@ export const storageMigrationLayer = PgMigrator.layer({
       yield* sql`ALTER TABLE log_metadata ADD COLUMN IF NOT EXISTS retention_days integer`
       yield* sql`CREATE INDEX IF NOT EXISTS log_metadata_expires_at_idx ON log_metadata (expires_at, run_id)`
     }),
+    "0007_cleanup_legacy_run_state_json": Effect.gen(function* () {
+      const sql = yield* SqlClient
+
+      yield* sql`UPDATE workflow_runs
+        SET state_json = jsonb_set(
+          state_json,
+          '{projectId}',
+          to_jsonb(project_id),
+          true
+        )
+        WHERE state_json->>'projectId' IS NULL`
+    }),
   }),
 })
 

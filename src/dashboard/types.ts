@@ -1,5 +1,7 @@
 export interface RunSummaryDto {
   readonly runId: string
+  readonly projectId: string
+  readonly planId: string
   readonly workflowId: string
   readonly workflowName?: string
   readonly status: string
@@ -7,12 +9,19 @@ export interface RunSummaryDto {
   readonly updatedAt: string
   readonly startedAt?: string
   readonly finishedAt?: string
+  readonly durationMs?: number
   readonly failureMessage?: string
+  readonly cancellationReason?: string
   readonly progress: {
     readonly totalUnits: number
     readonly completedUnits: number
     readonly failedUnits: number
     readonly skippedUnits: number
+  }
+  readonly controls: {
+    readonly canCancel: boolean
+    readonly canRetry: boolean
+    readonly canGc: boolean
   }
 }
 
@@ -22,8 +31,16 @@ export interface RunUnitAttemptDto {
   readonly status: string
   readonly startedAt?: string
   readonly finishedAt?: string
+  readonly durationMs?: number
   readonly failureMessage?: string
   readonly cancellationReason?: string
+}
+
+export interface SourceLocationDto {
+  readonly file?: string
+  readonly line?: number
+  readonly column?: number
+  readonly origin?: string
 }
 
 export interface ResolvedValueDto {
@@ -32,11 +49,32 @@ export interface ResolvedValueDto {
   readonly source?: string
 }
 
+export interface OutputValueDto {
+  readonly name: string
+  readonly value: unknown
+  readonly source?: string
+  readonly format?: string
+  readonly unitId?: string
+  readonly path?: string
+}
+
 export interface ReportDto {
   readonly name: string
   readonly format: string
   readonly artifactRef: string
   readonly status: string
+}
+
+export interface PlanningDiagnosticDto {
+  readonly severity: string
+  readonly message: string
+  readonly unitId?: string
+  readonly source?: SourceLocationDto
+}
+
+export interface TriggerDto {
+  readonly type: string
+  readonly summary: string
 }
 
 export interface RunUnitDto {
@@ -50,10 +88,16 @@ export interface RunUnitDto {
   readonly durationMs?: number
   readonly failureMessage?: string
   readonly cancellationReason?: string
+  readonly skipReason?: string
   readonly latestAttemptId?: string
+  readonly nextRetryAt?: string
+  readonly command?: string
+  readonly image?: string
+  readonly workingDirectory?: string
+  readonly source?: SourceLocationDto
   readonly attempts: ReadonlyArray<RunUnitAttemptDto>
   readonly inputs?: ReadonlyArray<ResolvedValueDto>
-  readonly outputs?: ReadonlyArray<ResolvedValueDto>
+  readonly outputs?: ReadonlyArray<OutputValueDto>
   readonly reports?: ReadonlyArray<ReportDto>
   readonly artifactCount: number
   readonly logCount: number
@@ -99,12 +143,23 @@ export interface TimelineEventDto {
   readonly message: string
 }
 
+export interface RunSourceContextDto {
+  readonly projectId: string
+  readonly planId: string
+  readonly workspacePath?: string
+  readonly retriedFromRunId?: string
+  readonly triggers: ReadonlyArray<TriggerDto>
+  readonly metadata: ReadonlyArray<{ readonly key: string; readonly value: string }>
+  readonly diagnostics: ReadonlyArray<PlanningDiagnosticDto>
+}
+
 export interface RunDetailDto {
   readonly run: RunSummaryDto
+  readonly source: RunSourceContextDto
   readonly stages: ReadonlyArray<RunStageDto>
   readonly dependencies: ReadonlyArray<RunDependencyDto>
   readonly inputs?: ReadonlyArray<ResolvedValueDto>
-  readonly outputs?: ReadonlyArray<ResolvedValueDto>
+  readonly outputs?: ReadonlyArray<OutputValueDto>
   readonly reports?: ReadonlyArray<ReportDto>
   readonly units: ReadonlyArray<RunUnitDto>
   readonly artifacts: ReadonlyArray<PayloadMetadataDto>

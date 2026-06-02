@@ -511,7 +511,17 @@ const runJsonEffect = async <A, I, RD, RE>(
       return new Response(null, { status: options.status ?? 204 })
     }
 
-    return Response.json(encodeJson(options.schema!, value), { status: options.status ?? 200 })
+    if (options.schema === undefined) {
+      return Response.json(value, { status: options.status ?? 200 })
+    }
+
+    try {
+      return Response.json(encodeJson(options.schema, value), { status: options.status ?? 200 })
+    } catch {
+      // Some persisted runtime objects still serialize more faithfully through the native JSON path
+      // than through Schema.toCodecJson, especially around optional nested fields.
+      return Response.json(value, { status: options.status ?? 200 })
+    }
   } catch (error) {
     return errorResponse(error)
   }

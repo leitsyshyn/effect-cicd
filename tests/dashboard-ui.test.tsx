@@ -2,7 +2,8 @@ import { describe, expect, it } from "@effect/vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
 import { createDashboardApi } from "../src/dashboard/api.ts"
-import { RunHeader, RunPipelineView } from "../src/dashboard/app.tsx"
+import { RunHeader } from "../src/dashboard/components/run-header.tsx"
+import { RunPipelineView } from "../src/dashboard/components/run-pipeline.tsx"
 import type { RunDetailDto } from "../src/dashboard/types.ts"
 
 describe("dashboard UI smoke", () => {
@@ -17,11 +18,11 @@ describe("dashboard UI smoke", () => {
   })
 
   it("run header renders workflow and payload summaries", () => {
-    const markup = renderToStaticMarkup(<RunHeader detail={sampleDetail()} />)
+    const markup = renderToStaticMarkup(<RunHeader detail={sampleDetail()} onCancel={() => {}} onRetry={() => {}} onGc={() => {}} />)
 
     expect(markup).toContain("Runs")
     expect(markup).toContain("workflow:dashboard")
-    expect(markup).toContain("Completed")
+    expect(markup).toContain("Retry Run")
   })
 
   it("API client fetches log payload text", async () => {
@@ -32,18 +33,40 @@ describe("dashboard UI smoke", () => {
 
     await expect(api.readLogPayload("log:demo")).resolves.toBe("hello from log\n")
   })
+
+  it("API client posts retry action", async () => {
+    const api = createDashboardApi(async (input, init) => {
+      expect(input).toBe("/api/runs/run%3Ademo/retry")
+      expect(init?.method).toBe("POST")
+      return Response.json({ runId: "run:next", projectId: "project:demo", planId: "plan:demo", workflowId: "workflow:demo", status: "queued", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", progress: { totalUnits: 2, completedUnits: 0, failedUnits: 0, skippedUnits: 0 }, controls: { canCancel: true, canRetry: false, canGc: false } })
+    })
+
+    await expect(api.retryRun("run:demo", "Retried from test")).resolves.toMatchObject({ runId: "run:next" })
+  })
 })
 
 const sampleDetail = (): RunDetailDto => ({
   run: {
     runId: "run:dashboard",
+    projectId: "project:dashboard",
+    planId: "plan:dashboard",
     workflowId: "workflow:dashboard",
     status: "succeeded",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:04.000Z",
     startedAt: "2026-01-01T00:00:00.000Z",
     finishedAt: "2026-01-01T00:00:04.000Z",
+    durationMs: 4000,
     progress: { totalUnits: 2, completedUnits: 2, failedUnits: 0, skippedUnits: 0 },
+    controls: { canCancel: false, canRetry: true, canGc: true },
+  },
+  source: {
+    projectId: "project:dashboard",
+    planId: "plan:dashboard",
+    workspacePath: "/repo/examples",
+    triggers: [{ type: "ManualTriggerDeclaration", summary: "manual" }],
+    metadata: [],
+    diagnostics: [],
   },
   stages: [
     {
@@ -60,6 +83,8 @@ const sampleDetail = (): RunDetailDto => ({
           startedAt: "2026-01-01T00:00:00.000Z",
           finishedAt: "2026-01-01T00:00:02.000Z",
           durationMs: 2000,
+          command: "bun test",
+          image: "oven/bun:1",
           attempts: [],
           artifactCount: 1,
           logCount: 1,
@@ -80,6 +105,8 @@ const sampleDetail = (): RunDetailDto => ({
           startedAt: "2026-01-01T00:00:02.500Z",
           finishedAt: "2026-01-01T00:00:04.000Z",
           durationMs: 1500,
+          command: "bun test",
+          image: "oven/bun:1",
           attempts: [],
           artifactCount: 0,
           logCount: 0,
@@ -98,6 +125,8 @@ const sampleDetail = (): RunDetailDto => ({
       startedAt: "2026-01-01T00:00:00.000Z",
       finishedAt: "2026-01-01T00:00:02.000Z",
       durationMs: 2000,
+      command: "bun test",
+      image: "oven/bun:1",
       attempts: [],
       artifactCount: 1,
       logCount: 1,
@@ -111,6 +140,8 @@ const sampleDetail = (): RunDetailDto => ({
       startedAt: "2026-01-01T00:00:02.500Z",
       finishedAt: "2026-01-01T00:00:04.000Z",
       durationMs: 1500,
+      command: "bun test",
+      image: "oven/bun:1",
       attempts: [],
       artifactCount: 0,
       logCount: 0,

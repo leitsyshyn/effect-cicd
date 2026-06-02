@@ -1,23 +1,16 @@
-import { Console, Effect, Layer } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
+import { Console, Effect } from "effect"
 
-import { Engine } from "../engine/interface.ts"
 import { EngineServiceConfig } from "../runtime/config.ts"
-import { engineServiceClientLayer } from "../service/client.ts"
 import dashboardHtml from "./dashboard.html"
-import { createDashboardHandlers } from "./handlers.ts"
+import { createDashboardProxyHandlers } from "./proxy-handlers.ts"
 
 export const makeDashboardLayer = () =>
-  engineServiceClientLayer.pipe(
-    Layer.provideMerge(FetchHttpClient.layer),
-    Layer.provideMerge(EngineServiceConfig.layer),
-  )
+  EngineServiceConfig.layer
 
 export const dashboardProgram = Effect.gen(function* () {
-  const engine = yield* Engine
   const engineServiceConfig = yield* EngineServiceConfig
 
-  const handlers = createDashboardHandlers(engine as any)
+  const handlers = createDashboardProxyHandlers(engineServiceConfig.baseUrl)
   const port = Number(process.env.DASHBOARD_PORT ?? 3001)
   const development = process.env.NODE_ENV !== "production"
 
@@ -28,6 +21,9 @@ export const dashboardProgram = Effect.gen(function* () {
       "/runs/:runId": dashboardHtml,
       "/api/runs": {
         GET: () => handlers.listRuns(),
+      },
+      "/api/version": {
+        GET: () => handlers.version(),
       },
       "/api/runs/stream": {
         GET: () => proxyEventStream(`${engineServiceConfig.baseUrl}/api/runs/stream`),
@@ -43,6 +39,21 @@ export const dashboardProgram = Effect.gen(function* () {
       },
       "/api/runs/:runId/logs": {
         GET: (request) => handlers.listLogs(request.params.runId),
+      },
+      "/api/runs/:runId/cancel": {
+        POST: async (request) => {
+          const payload = await request.json().catch(() => ({} as { readonly reason?: string }))
+          return handlers.cancelRun(request.params.runId, payload.reason)
+        },
+      },
+      "/api/runs/:runId/retry": {
+        POST: async (request) => {
+          const payload = await request.json().catch(() => ({} as { readonly reason?: string }))
+          return handlers.retryRun(request.params.runId, payload.reason)
+        },
+      },
+      "/api/runs/:runId/gc": {
+        POST: (request) => handlers.gcRunArtifacts(request.params.runId),
       },
       "/api/logs/:logRef": {
         GET: (request) => handlers.readLogPayload(request.params.logRef),

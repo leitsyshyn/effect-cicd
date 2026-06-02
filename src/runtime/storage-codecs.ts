@@ -88,6 +88,12 @@ const upgradeLegacyWorkflowRunStateJson = (value: unknown): unknown => {
       ...record,
       projectId,
       status: record.status === "created" ? "queued" : record.status,
+      units: Array.isArray(record.units)
+        ? record.units.map((unit) => ({
+            ...unit,
+            nextRetryAt: "nextRetryAt" in unit ? (unit as Record<string, unknown>).nextRetryAt : null,
+          }))
+        : record.units,
     }
   }
 
@@ -121,7 +127,7 @@ const upgradeLegacyWorkflowRunStateJson = (value: unknown): unknown => {
     units: Array.isArray((record as { readonly units?: ReadonlyArray<Record<string, unknown>> }).units)
       ? (record as { readonly units: ReadonlyArray<Record<string, unknown>> }).units.map((unit) => ({
           ...unit,
-          nextRetryAt: unit.nextRetryAt,
+          nextRetryAt: "nextRetryAt" in unit ? unit.nextRetryAt : null,
         }))
       : undefined,
     execution: {

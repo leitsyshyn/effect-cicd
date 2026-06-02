@@ -5,6 +5,8 @@ import type { DashboardEngine } from "./reads.ts"
 import { mapEvent, mapPayloadMetadata, mapRunDetail, mapRunSummary } from "./reads.ts"
 
 export const createDashboardHandlers = (engine: DashboardEngine) => ({
+  version: () => runText(engine.version()),
+
   listRuns: () => runJson(engine.listRuns().pipe(Effect.map((runs) => runs.map(mapRunSummary)))),
 
   inspectRun: (runId: string) => {
@@ -39,6 +41,12 @@ export const createDashboardHandlers = (engine: DashboardEngine) => ({
 
   listLogs: (runId: string) =>
     runJson(engine.readLogs(RunId.make(runId)).pipe(Effect.map((logs) => logs.map(mapPayloadMetadata)))),
+
+  cancelRun: (runId: string, reason?: string) => runJson(engine.cancelRun(RunId.make(runId), reason).pipe(Effect.map(mapRunSummary))),
+
+  retryRun: (runId: string, reason?: string) => runJson(engine.retryRun(RunId.make(runId), reason).pipe(Effect.map(mapRunSummary))),
+
+  gcRunArtifacts: (runId: string) => runJson(engine.gcRunArtifacts(RunId.make(runId))),
 
   readLogPayload: (logRef: string) => runText(engine.readLogPayload(LogRef.make(logRef))),
 
