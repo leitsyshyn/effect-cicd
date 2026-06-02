@@ -26,6 +26,7 @@ export const dashboardProgram = Effect.gen(function* () {
       },
       "/api/projects": {
         GET: () => handlers.listProjects(),
+        POST: async (request) => handlers.createLocalProject(await request.json().catch(() => ({}))),
       },
       "/api/projects/:projectId": {
         PATCH: async (request) => handlers.updateProject(request.params.projectId, await request.json().catch(() => ({}))),
@@ -33,6 +34,9 @@ export const dashboardProgram = Effect.gen(function* () {
       },
       "/api/bindings": {
         GET: () => handlers.listBindings(),
+      },
+      "/api/workflows/files": {
+        GET: () => handlers.listWorkflowFiles(),
       },
       "/api/bindings/github": {
         POST: async (request) => handlers.createBinding(await request.json().catch(() => ({}))),

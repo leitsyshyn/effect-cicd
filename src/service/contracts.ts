@@ -37,5 +37,11 @@ export class ProjectUpdateRequest extends Schema.Class<ProjectUpdateRequest>("Pr
   projectId: Schema.String,
 }) {}
 
+export class LocalProjectCreateRequest extends Schema.Class<LocalProjectCreateRequest>("LocalProjectCreateRequest")({
+  workflowModulePath: Schema.String,
+  workspacePath: Schema.optional(Schema.String),
+  projectId: Schema.optional(Schema.String),
+}) {}
+
 export { SecretSummary }
 export { ProjectSummary }

@@ -15,6 +15,15 @@ export class ProjectSummary extends Schema.Class<ProjectSummary>("ProjectSummary
   latestRunStatus: Schema.optional(WorkflowRunStatus),
 }) {}
 
+export class LocalProject extends Schema.Class<LocalProject>("LocalProject")({
+  projectId: ProjectId,
+  provider: Schema.Literals(["local"]),
+  workflowModulePath: Schema.String,
+  workspacePath: Schema.String,
+  createdAt: Schema.Date,
+  updatedAt: Schema.Date,
+}) {}
+
 export const deriveGitHubProjectId = (repositoryId: number | undefined, repositoryOwner: string, repositoryName: string) =>
   ProjectId.make(
     repositoryId === undefined

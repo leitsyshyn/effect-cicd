@@ -7,6 +7,7 @@ export const dashboardApi = createDashboardApi()
 export const dashboardQueryKeys = {
   serviceVersion: ["service-version"] as const,
   projects: ["projects"] as const,
+  workflowFiles: ["workflow-files"] as const,
   project: (projectId: string) => ["projects", projectId] as const,
   bindings: ["bindings"] as const,
   projectBindings: (projectId: string) => ["bindings", projectId] as const,
@@ -28,6 +29,11 @@ export const dashboardQueries = {
     queryOptions({
       queryKey: dashboardQueryKeys.projects,
       queryFn: () => dashboardApi.listProjects(),
+    }),
+  workflowFiles: () =>
+    queryOptions({
+      queryKey: dashboardQueryKeys.workflowFiles,
+      queryFn: () => dashboardApi.listWorkflowFiles(),
     }),
   project: (projectId: string) =>
     queryOptions({

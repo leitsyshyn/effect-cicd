@@ -57,6 +57,12 @@ export interface ProjectUpdateRequestDto {
   readonly projectId: string
 }
 
+export interface LocalProjectCreateRequestDto {
+  readonly workflowModulePath: string
+  readonly workspacePath?: string
+  readonly projectId?: string
+}
+
 export type ArtifactPayloadDto =
   | { readonly kind: "text"; readonly text: string; readonly contentType?: string }
   | { readonly kind: "binary"; readonly contentType?: string }
@@ -64,6 +70,8 @@ export type ArtifactPayloadDto =
 export const createDashboardApi = (fetcher: FetchLike = fetch) => ({
   getVersion: () => getText(fetcher, "/api/version"),
   listProjects: () => getJson<ReadonlyArray<ProjectSummaryDto>>(fetcher, "/api/projects"),
+  createLocalProject: (request: LocalProjectCreateRequestDto) => postJson<ProjectSummaryDto>(fetcher, "/api/projects", request),
+  listWorkflowFiles: () => getJson<ReadonlyArray<string>>(fetcher, "/api/workflows/files"),
   updateProject: (projectId: string, request: ProjectUpdateRequestDto) =>
     sendEmpty(fetcher, `/api/projects/${encodeURIComponent(projectId)}`, {
       method: "PATCH",

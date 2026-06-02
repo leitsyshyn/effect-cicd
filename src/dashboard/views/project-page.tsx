@@ -152,11 +152,8 @@ export function ProjectPage() {
       )}
 
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="grid gap-2">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-3xl font-semibold tracking-tight">{label}</h1>
-          </div>
-          <p className="truncate font-mono text-sm text-muted-foreground">{projectId}</p>
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">{label}</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>

@@ -433,6 +433,20 @@ export const storageMigrationLayer = PgMigrator.layer({
 
       yield* sql`ALTER TABLE artifact_metadata ADD COLUMN IF NOT EXISTS content_type text`
     }),
+    "0009_local_projects": Effect.gen(function* () {
+      const sql = yield* SqlClient
+
+      yield* sql`CREATE TABLE IF NOT EXISTS local_projects (
+        project_id text PRIMARY KEY,
+        provider text NOT NULL,
+        workflow_module_path text NOT NULL,
+        workspace_path text NOT NULL,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL
+      )`
+
+      yield* sql`CREATE INDEX IF NOT EXISTS local_projects_updated_at_idx ON local_projects (updated_at DESC, project_id ASC)`
+    }),
   }),
 })
 

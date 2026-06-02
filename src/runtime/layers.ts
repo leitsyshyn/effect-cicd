@@ -10,6 +10,7 @@ import { ArtifactStore } from "../engine/stores/artifact-store.ts"
 import { ArtifactGc } from "../engine/stores/artifact-gc.ts"
 import { EventLog } from "../engine/stores/event-log.ts"
 import { StateStore } from "../engine/stores/state-store.ts"
+import { LocalProjectStore } from "../projects/local-project-store.ts"
 import { SecretEncryptionConfig, SecretStore } from "../secrets/store.ts"
 import { ArtifactLifecycleConfig } from "./config.ts"
 import { structuredLoggerLayer } from "./logger.ts"
@@ -20,13 +21,15 @@ import { SchedulerConfig } from "./config.ts"
 export const makeDurableStorageLayer = () => {
   const sqlLayer = sqlClientLayer
   const objectStorageLayer = ObjectStorageClient.layer
+  const stateLayer = StateStore.postgresLayer.pipe(Layer.provideMerge(sqlLayer))
 
   return Layer.mergeAll(
     Metrics.layer,
     ArtifactLifecycleConfig.layer,
     storageMigrationLayer.pipe(Layer.provideMerge(sqlLayer)),
     StorageTransactor.postgresLayer.pipe(Layer.provideMerge(sqlLayer)),
-    StateStore.postgresLayer.pipe(Layer.provideMerge(sqlLayer)),
+    stateLayer,
+    LocalProjectStore.postgresLayer.pipe(Layer.provideMerge(sqlLayer), Layer.provideMerge(stateLayer)),
     EventLog.postgresLayer.pipe(Layer.provideMerge(sqlLayer)),
     SecretStore.postgresLayer.pipe(
       Layer.provideMerge(sqlLayer),
@@ -79,6 +82,7 @@ export const makeInMemoryEngineLayer = (options: TestExecutorLayerOptions = {}) 
   const transactorLayer = StorageTransactor.memoryLayer
   const stateLayer = StateStore.memoryLayer
   const eventLayer = EventLog.memoryLayer
+  const localProjectLayer = LocalProjectStore.memoryLayer.pipe(Layer.provideMerge(stateLayer))
   const artifactLayer = ArtifactStore.memoryLayer
   const secretLayer = SecretStore.memoryLayer
   const executorLayer = Executor.testLayer(options)
@@ -104,6 +108,7 @@ export const makeInMemoryEngineLayer = (options: TestExecutorLayerOptions = {}) 
     transactorLayer,
     stateLayer,
     eventLayer,
+    localProjectLayer,
     artifactLayer,
     secretLayer,
     executorLayer,
@@ -136,6 +141,7 @@ export const makeInMemoryServiceEngineLayer = (options: TestExecutorLayerOptions
   const transactorLayer = StorageTransactor.memoryLayer
   const stateLayer = StateStore.memoryLayer
   const eventLayer = EventLog.memoryLayer
+  const localProjectLayer = LocalProjectStore.memoryLayer.pipe(Layer.provideMerge(stateLayer))
   const artifactLayer = ArtifactStore.memoryLayer
   const secretLayer = SecretStore.memoryLayer
   const executorLayer = Executor.testLayer(options)
@@ -161,6 +167,7 @@ export const makeInMemoryServiceEngineLayer = (options: TestExecutorLayerOptions
     transactorLayer,
     stateLayer,
     eventLayer,
+    localProjectLayer,
     artifactLayer,
     secretLayer,
     executorLayer,

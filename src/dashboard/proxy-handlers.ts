@@ -7,6 +7,15 @@ export const createDashboardProxyHandlers = (baseUrl: string, fetcher: FetchLike
 
   listProjects: () => proxyPassthrough(fetcher, `${baseUrl}/api/projects`),
 
+  createLocalProject: (body: unknown) =>
+    proxyPassthrough(fetcher, `${baseUrl}/api/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  listWorkflowFiles: () => proxyPassthrough(fetcher, `${baseUrl}/api/workflows/files`),
+
   updateProject: (projectId: string, body: unknown) =>
     proxyPassthrough(fetcher, `${baseUrl}/api/projects/${encodeURIComponent(projectId)}`, {
       method: "PATCH",

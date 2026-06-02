@@ -1,3 +1,5 @@
+import { dirname, isAbsolute, relative } from "node:path"
+
 import { Effect, Layer, Option, Schema, Stream } from "effect"
 import { Sse } from "effect/unstable/encoding"
 import { SqlClient } from "effect/unstable/sql/SqlClient"
@@ -8,8 +10,8 @@ import { DomainError, ProjectNotFound, ProjectOperationRejected, StoreUnavailabl
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { WorkflowEvent } from "../domain/events.ts"
 import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubTriggerResponse } from "../domain/github.ts"
-import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
-import { ProjectSummary } from "../domain/project.ts"
+import { ArtifactRef, LogRef, ProjectId, RunId } from "../domain/ids.ts"
+import { LocalProject, ProjectSummary } from "../domain/project.ts"
 import { WorkflowRunState, type WorkflowRunStatus } from "../domain/runtime-state.ts"
 import { SecretSummary } from "../domain/secrets.ts"
 import { NormalizedWorkflowDefinition } from "../domain/workflow-definition.ts"
@@ -25,6 +27,7 @@ import { GitHubIntegration } from "../github/integration.ts"
 import { GitHubRunLinkStore } from "../github/run-link-store.ts"
 import { GitHubSourceSnapshots } from "../github/source-snapshots.ts"
 import { GitHubTriggerDeliveryStore } from "../github/trigger-delivery-store.ts"
+import { LocalProjectStore } from "../projects/local-project-store.ts"
 import { EngineServiceConfig, GitHubAppConfig, GitHubTriggerConfig, StorageRuntimeConfig } from "../runtime/config.ts"
 import { logInfo } from "../runtime/logger.ts"
 import { Metrics } from "../runtime/metrics.ts"
@@ -35,7 +38,7 @@ import { SecretStore } from "../secrets/store.ts"
 import { ArtifactGc } from "../engine/stores/artifact-gc.ts"
 import { ArtifactStore } from "../engine/stores/artifact-store.ts"
 import { StateStore } from "../engine/stores/state-store.ts"
-import { ProjectUpdateRequest, RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse, WorkflowRunSubmissionRequest } from "./contracts.ts"
+import { LocalProjectCreateRequest, ProjectUpdateRequest, RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse, WorkflowRunSubmissionRequest } from "./contracts.ts"
 import { decodeJson, encodeJson } from "./schema-json.ts"
 
 type EngineService = typeof Engine.Service
@@ -109,6 +112,9 @@ export const startServiceServer = Effect.gen(function* () {
   const secretStore = yield* SecretStore
   const artifactStore = yield* ArtifactStore
   const stateStore = yield* Effect.serviceOption(StateStore)
+  const localProjectStore = yield* Effect.serviceOption(LocalProjectStore)
+  const workflowLoader = yield* WorkflowModuleLoader
+  const materializer = yield* DslMaterializer
   const sql = yield* Effect.serviceOption(SqlClient)
   const objectStorage = yield* Effect.serviceOption(ObjectStorageClient)
   const metrics = yield* Effect.serviceOption(Metrics)
@@ -211,11 +217,16 @@ export const startServiceServer = Effect.gen(function* () {
         POST: (request) => runJsonEffect(submitRun(engine, request), { schema: WorkflowRunState }),
       },
       "/api/projects": {
-        GET: () => runJsonEffect(gitHubIntegration.listProjects(), { schema: Schema.Array(ProjectSummary) }),
+        GET: () => runJsonEffect(listProjects(gitHubIntegration, localProjectStore), { schema: Schema.Array(ProjectSummary) }),
+        POST: (request) =>
+          runJsonEffect(createLocalProject(localProjectStore, sql, workflowLoader, materializer, request), { schema: ProjectSummary, status: 201 }),
       },
       "/api/projects/:projectId": {
-        PATCH: (request) => runJsonEffect(updateProject(stateStore, sql, request, request.params.projectId), { noContent: true }),
-        DELETE: (request) => runJsonEffect(deleteProject(stateStore, sql, objectStorage, request.params.projectId), { noContent: true }),
+        PATCH: (request) => runJsonEffect(updateProject(stateStore, localProjectStore, sql, request, request.params.projectId), { noContent: true }),
+        DELETE: (request) => runJsonEffect(deleteProject(stateStore, localProjectStore, sql, objectStorage, request.params.projectId), { noContent: true }),
+      },
+      "/api/workflows/files": {
+        GET: () => runJsonEffect(listWorkflowFiles(), { schema: Schema.Array(Schema.String) }),
       },
       "/api/secrets": {
         GET: (request) => runJsonEffect(listSecrets(secretStore, request), { schema: Schema.Array(SecretSummary) }),
@@ -418,14 +429,102 @@ const createGitHubBinding = (gitHubIntegration: typeof GitHubIntegration.Service
     return yield* gitHubIntegration.addBinding(binding)
   })
 
+const listProjects = (
+  gitHubIntegration: typeof GitHubIntegration.Service,
+  localProjectStore: Option.Option<typeof LocalProjectStore.Service>,
+) =>
+  Effect.gen(function* () {
+    const [gitHubProjects, localProjects] = yield* Effect.all([
+      gitHubIntegration.listProjects(),
+      Option.match(localProjectStore, {
+        onNone: () => Effect.succeed([] as const),
+        onSome: (store) => store.listProjects(),
+      }),
+    ])
+
+    return [...gitHubProjects, ...localProjects].sort((left, right) => (left.projectId < right.projectId ? -1 : left.projectId > right.projectId ? 1 : 0))
+  })
+
+const createLocalProject = (
+  localProjectStore: Option.Option<typeof LocalProjectStore.Service>,
+  sql: Option.Option<typeof SqlClient.Service>,
+  workflowLoader: typeof WorkflowModuleLoader.Service,
+  materializer: typeof DslMaterializer.Service,
+  request: Request,
+) =>
+  Effect.gen(function* () {
+    const store = yield* requireService(localProjectStore, "local project storage")
+    const sqlClient = yield* requireService(sql, "SQL storage")
+    const payload = yield* parseRequestBody(request, LocalProjectCreateRequest)
+    const workflowModulePath = payload.workflowModulePath.trim()
+
+    if (workflowModulePath.length === 0) {
+      return yield* new RequestBodyInvalid({ message: "workflowModulePath must be non-empty" })
+    }
+
+    const authored = yield* workflowLoader.load(workflowModulePath)
+    const definition = yield* materializer.materialize(authored)
+    const resolvedWorkflowModulePath = yield* workflowLoader.resolve(workflowModulePath)
+    const projectId = payload.projectId?.trim().length ? payload.projectId.trim() : definition.workflowId
+    const workspacePath = payload.workspacePath?.trim().length ? payload.workspacePath.trim() : dirname(resolvedWorkflowModulePath)
+
+    if (yield* projectExists(sqlClient, projectId)) {
+      return yield* new ProjectOperationRejected({
+        projectId,
+        operation: "create",
+        message: `Project ${projectId} already exists`,
+      })
+    }
+
+    const now = new Date()
+    yield* store.create(
+      new LocalProject({
+        projectId: ProjectId.make(projectId),
+        provider: "local",
+        workflowModulePath: toWorkspaceRelativePath(resolvedWorkflowModulePath),
+        workspacePath: toWorkspaceRelativePath(workspacePath),
+        createdAt: now,
+        updatedAt: now,
+      }),
+    )
+
+    return new ProjectSummary({
+      projectId: ProjectId.make(projectId),
+      provider: "local",
+      bindingCount: 0,
+      runCount: 0,
+    })
+  })
+
+const listWorkflowFiles = Effect.fn("Service.listWorkflowFiles")(() =>
+  Effect.promise(async () => {
+    const patterns = ["**/*workflow*.{ts,tsx,js,jsx,mts,mjs}", "workflows/**/*.{ts,tsx,js,jsx,mts,mjs}"]
+    const matches = new Set<string>()
+
+    for (const pattern of patterns) {
+      const glob = new Bun.Glob(pattern)
+      for await (const path of glob.scan({ cwd: process.cwd(), absolute: false, onlyFiles: true })) {
+        if (path.includes("node_modules/") || path.includes("/.git/") || path.startsWith("node_modules/") || path.startsWith(".git/")) {
+          continue
+        }
+        matches.add(path)
+      }
+    }
+
+    return [...matches].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+  }),
+)
+
 const updateProject = (
   stateStore: Option.Option<typeof StateStore.Service>,
+  localProjectStore: Option.Option<typeof LocalProjectStore.Service>,
   sql: Option.Option<typeof SqlClient.Service>,
   request: Request,
   currentProjectId: string,
 ) =>
   Effect.gen(function* () {
     const store = yield* requireService(stateStore, "project state storage")
+    const localStore = yield* requireService(localProjectStore, "local project storage")
     const sqlClient = yield* requireService(sql, "SQL storage")
     const payload = yield* parseRequestBody(request, ProjectUpdateRequest)
     const nextProjectId = payload.projectId.trim()
@@ -453,6 +552,7 @@ const updateProject = (
       sqlClient.withTransaction(
         Effect.gen(function* () {
           yield* store.renameProject(currentProjectId, nextProjectId)
+          yield* localStore.renameProject(currentProjectId, nextProjectId)
           yield* sqlClient`
             UPDATE github_bindings
             SET project_id = ${nextProjectId},
@@ -479,12 +579,14 @@ const updateProject = (
 
 const deleteProject = (
   stateStore: Option.Option<typeof StateStore.Service>,
+  localProjectStore: Option.Option<typeof LocalProjectStore.Service>,
   sql: Option.Option<typeof SqlClient.Service>,
   objectStorage: Option.Option<typeof ObjectStorageClient.Service>,
   projectId: string,
 ) =>
   Effect.gen(function* () {
     const store = yield* requireService(stateStore, "project state storage")
+    const localStore = yield* requireService(localProjectStore, "local project storage")
     const sqlClient = yield* requireService(sql, "SQL storage")
     const storage = yield* requireService(objectStorage, "object storage")
 
@@ -517,6 +619,7 @@ const deleteProject = (
           yield* sqlClient`DELETE FROM github_run_links WHERE project_id = ${projectId}`
           yield* sqlClient`DELETE FROM github_bindings WHERE project_id = ${projectId}`
           yield* sqlClient`DELETE FROM secrets WHERE project_id = ${projectId}`
+          yield* localStore.deleteProject(projectId)
           yield* store.deleteProject(projectId)
         }),
       ),
@@ -558,9 +661,20 @@ const projectExists = (sql: typeof SqlClient.Service, projectId: string) =>
         SELECT 1 FROM github_trigger_deliveries WHERE project_id = ${projectId}
         UNION ALL
         SELECT 1 FROM secrets WHERE project_id = ${projectId}
+        UNION ALL
+        SELECT 1 FROM local_projects WHERE project_id = ${projectId}
       ) AS exists
     `.pipe(Effect.map((rows) => rows[0]?.exists ?? false)),
   )
+
+const toWorkspaceRelativePath = (path: string) => {
+  if (!isAbsolute(path)) {
+    return path
+  }
+
+  const nextPath = relative(process.cwd(), path)
+  return nextPath.length === 0 || nextPath.startsWith("..") ? path : nextPath
+}
 
 const requireService = <A>(service: Option.Option<A>, name: string) =>
   Option.match(service, {
