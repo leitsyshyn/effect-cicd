@@ -1,13 +1,13 @@
-import { ScrollArea } from "./ui/scroll-area.tsx"
+import type { RunDetailDto } from "../types.ts"
 import { StatusBadge } from "./status-badge.tsx"
 import { StatusDot } from "./status-dot.tsx"
-import { formatDuration, truncateMiddle } from "../lib/format.ts"
-import type { RunDetailDto } from "../types.ts"
+import { Card, CardContent } from "./ui/card.tsx"
+import { ScrollArea } from "./ui/scroll-area.tsx"
 
-const pipelineStageWidth = 244
+const pipelineStageWidth = 260
 const pipelineStageGap = 24
-const pipelineStageHeaderHeight = 42
-const pipelineUnitHeight = 68
+const pipelineStageHeaderHeight = 40
+const pipelineUnitHeight = 56
 const pipelineUnitGap = 12
 const pipelineFramePaddingX = 16
 const pipelineFramePaddingY = 16
@@ -18,7 +18,9 @@ export function RunPipelineView(props: {
   readonly onSelectUnit: (unitId: string) => void
 }) {
   const positions = new Map<string, { readonly x: number; readonly y: number }>()
-  const stageHeights = props.detail.stages.map((stage) => pipelineStageHeaderHeight + Math.max(stage.units.length, 1) * pipelineUnitHeight + Math.max(stage.units.length - 1, 0) * pipelineUnitGap)
+  const stageHeights = props.detail.stages.map(
+    (stage) => pipelineStageHeaderHeight + Math.max(stage.units.length, 1) * pipelineUnitHeight + Math.max(stage.units.length - 1, 0) * pipelineUnitGap,
+  )
   const canvasHeight = Math.max(...stageHeights, 0) + pipelineFramePaddingY * 2
   const canvasWidth = props.detail.stages.length * pipelineStageWidth + Math.max(props.detail.stages.length - 1, 0) * pipelineStageGap + pipelineFramePaddingX * 2
 
@@ -32,17 +34,8 @@ export function RunPipelineView(props: {
   })
 
   return (
-    <section className="dashboard-section overflow-hidden">
-      <header className="border-b border-border px-4 py-3 sm:px-5">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div className="grid gap-1">
-            <div className="text-[17px] font-semibold text-foreground">Execution pipeline</div>
-            <div className="text-sm text-muted-foreground">Stage-grouped DAG view driven by plan dependencies.</div>
-          </div>
-          <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{props.detail.dependencies.length} dependencies</div>
-        </div>
-      </header>
-      <div className="p-4 sm:px-5">
+    <Card>
+      <CardContent className="p-4">
         <ScrollArea className="w-full">
           <div className="relative min-w-max" style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}>
             <svg data-testid="pipeline-deps" className="pointer-events-none absolute inset-0" width={canvasWidth} height={canvasHeight} viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} fill="none">
@@ -64,7 +57,7 @@ export function RunPipelineView(props: {
                   <path
                     key={`${dependency.from}-${dependency.to}`}
                     d={`M ${startX} ${startY} C ${startX + delta} ${startY}, ${endX - delta} ${endY}, ${endX} ${endY}`}
-                    stroke={highlighted ? "rgba(76,142,218,0.9)" : "rgba(174,177,189,0.26)"}
+                    stroke={highlighted ? "rgba(148, 163, 184, 0.8)" : "rgba(148, 163, 184, 0.3)"}
                     strokeWidth={highlighted ? 2.2 : 1.2}
                   />
                 )
@@ -73,38 +66,31 @@ export function RunPipelineView(props: {
 
             <div className="relative flex gap-6">
               {props.detail.stages.map((stage) => (
-                <div key={stage.id} className="dashboard-stage w-[244px] min-w-[244px]">
+                <div key={stage.id} className="w-[260px] min-w-[260px] rounded-md border bg-card p-3">
                   <div className="mb-3 flex items-end justify-between gap-3 border-b border-border pb-2">
                     <div>
                       <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">stage {stage.depth + 1}</div>
-                      <div className="mt-1 text-sm font-semibold text-zinc-100">{stage.label}</div>
+                      <div className="mt-1 text-sm font-semibold text-foreground">{stage.label}</div>
                     </div>
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">{stage.units.length} units</div>
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{stage.units.length} units</div>
                   </div>
 
-                  <div className="flex flex-col gap-[12px]">
+                  <div className="flex flex-col gap-3">
                     {stage.units.map((unit) => (
                       <button
                         key={unit.unitId}
                         type="button"
                         onClick={() => props.onSelectUnit(unit.unitId)}
                         className={[
-                          "dashboard-unit-card flex h-[68px] w-full items-start justify-between gap-3 px-3 py-2.5 text-left transition duration-150",
-                          props.selectedUnitId === unit.unitId ? "border-[var(--dashboard-highlight)] bg-[#2a2436]" : "hover:border-border hover:bg-[#211c2d]",
+                          "flex h-[56px] w-full items-center justify-between gap-3 rounded-md border bg-background px-3 py-2 text-left transition-colors",
+                          props.selectedUnitId === unit.unitId ? "border-ring bg-accent/40" : "hover:bg-accent/30",
                         ].join(" ")}
                       >
-                        <div className="min-w-0 grid gap-1.5">
-                          <div className="flex items-center gap-2">
-                            <StatusDot status={unit.status} />
-                            <div className="truncate text-[14px] font-medium text-zinc-100">{unit.name}</div>
-                          </div>
-                          <div className="font-mono text-[11px] text-zinc-500">{truncateMiddle(unit.unitId, 52)}</div>
+                        <div className="min-w-0 flex items-center gap-2">
+                          <StatusDot status={unit.status} />
+                          <div className="truncate text-sm font-medium text-foreground">{unit.name}</div>
                         </div>
-
-                        <div className="grid justify-items-end gap-1.5 text-right">
-                          <StatusBadge status={unit.status} />
-                          <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">{formatDuration(unit.durationMs)}</div>
-                        </div>
+                        <StatusBadge status={unit.status} />
                       </button>
                     ))}
                   </div>
@@ -113,7 +99,7 @@ export function RunPipelineView(props: {
             </div>
           </div>
         </ScrollArea>
-      </div>
-    </section>
+      </CardContent>
+    </Card>
   )
 }

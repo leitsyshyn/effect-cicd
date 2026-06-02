@@ -5,9 +5,38 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 export const createDashboardProxyHandlers = (baseUrl: string, fetcher: FetchLike = fetch) => ({
   version: () => proxyText(fetcher, `${baseUrl}/version`),
 
-  listRuns: async () => {
+  listProjects: () => proxyPassthrough(fetcher, `${baseUrl}/api/projects`),
+
+  listBindings: () => proxyPassthrough(fetcher, `${baseUrl}/api/bindings`),
+
+  createBinding: (body: unknown) =>
+    proxyPassthrough(fetcher, `${baseUrl}/api/bindings/github`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  listSecrets: (projectId: string) =>
+    proxyPassthrough(fetcher, `${baseUrl}/api/secrets?projectId=${encodeURIComponent(projectId)}`),
+
+  setSecret: (body: unknown) =>
+    proxyPassthrough(fetcher, `${baseUrl}/api/secrets`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  deleteSecret: (projectId: string, key: string) =>
+    proxyPassthrough(fetcher, `${baseUrl}/api/secrets/${encodeURIComponent(projectId)}/${encodeURIComponent(key)}`, {
+      method: "DELETE",
+    }),
+
+  listRuns: async (projectId?: string) => {
     try {
-      const runs = await fetchJson<ReadonlyArray<unknown>>(fetcher, `${baseUrl}/api/runs`)
+      const runs = await fetchJson<ReadonlyArray<unknown>>(
+        fetcher,
+        `${baseUrl}/api/runs${projectId === undefined ? "" : `?projectId=${encodeURIComponent(projectId)}`}`,
+      )
       return Response.json(runs.map(mapRawRunSummary))
     } catch (error) {
       return errorResponse(error)
@@ -76,9 +105,10 @@ export const createDashboardProxyHandlers = (baseUrl: string, fetcher: FetchLike
   gcRunArtifacts: (runId: string) =>
     proxyJson(fetcher, `${baseUrl}/api/runs/${encodeURIComponent(runId)}/gc`, { method: "POST" }),
 
-  readLogPayload: (logRef: string) => proxyText(fetcher, `${baseUrl}/api/logs/${encodeURIComponent(logRef)}`),
+  readLogPayload: (logRef: string) => proxyPassthrough(fetcher, `${baseUrl}/api/logs/${encodeURIComponent(logRef)}`),
 
-  readArtifactPayload: (artifactRef: string) => proxyText(fetcher, `${baseUrl}/api/artifacts/${encodeURIComponent(artifactRef)}`),
+  readArtifactPayload: (artifactRef: string) =>
+    proxyPassthrough(fetcher, `${baseUrl}/api/artifacts/${encodeURIComponent(artifactRef)}`),
 })
 
 const proxyJson = async <A>(
@@ -104,6 +134,18 @@ const proxyText = async (fetcher: FetchLike, url: string, init?: RequestInit) =>
 
     return new Response(await response.text(), {
       headers: { "content-type": response.headers.get("content-type") ?? "text/plain; charset=utf-8" },
+    })
+  } catch (error) {
+    return errorResponse(error)
+  }
+}
+
+const proxyPassthrough = async (fetcher: FetchLike, url: string, init?: RequestInit) => {
+  try {
+    const response = await fetcher(url, init)
+    return new Response(response.body, {
+      status: response.status,
+      headers: response.headers,
     })
   } catch (error) {
     return errorResponse(error)

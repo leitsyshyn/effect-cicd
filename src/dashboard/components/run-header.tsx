@@ -1,9 +1,8 @@
-import { ArrowLeft, DatabaseZap, RotateCcw, Square } from "lucide-react"
+import { DatabaseZap, RotateCcw, Square } from "lucide-react"
 
 import { formatDateTime, formatDuration, truncateMiddle } from "../lib/format.ts"
-import { hrefForRun, type DashboardNavigate } from "../lib/routing.ts"
+import { hrefForProject, hrefForProjects, hrefForRun, type DashboardNavigate } from "../lib/routing.ts"
 import type { RunDetailDto } from "../types.ts"
-import { InlineError } from "./inline-error.tsx"
 import { StatusBadge } from "./status-badge.tsx"
 import { Button } from "./ui/button.tsx"
 
@@ -20,42 +19,44 @@ export function RunHeader(props: {
   const workflowLabel = props.detail.run.workflowName ?? props.detail.run.workflowId
 
   return (
-    <div className="grid gap-3 border-b border-border pb-4">
+    <div className="grid gap-4">
       <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-        <button type="button" onClick={() => props.navigate?.("/")} className="inline-flex items-center gap-2 transition hover:text-foreground">
-          <ArrowLeft className="size-3.5" />
-          Runs
+        <button type="button" onClick={() => props.navigate?.(hrefForProjects())} className="hover:text-foreground">
+          Projects
         </button>
         <span>/</span>
-        <span>{workflowLabel}</span>
+        <button type="button" onClick={() => props.navigate?.(hrefForProject(props.detail.run.projectId))} className="hover:text-foreground">
+          {props.detail.run.projectId}
+        </button>
+        <span>/</span>
+        <span className="text-foreground">{workflowLabel}</span>
       </div>
 
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="grid gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="dashboard-title text-[30px] leading-none">{workflowLabel}</h1>
+            <h1 className="text-3xl font-semibold tracking-tight">{workflowLabel}</h1>
             <StatusBadge status={props.detail.run.status} />
           </div>
 
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
             <span>Started {formatDateTime(props.detail.run.startedAt)}</span>
-            <span>Finished {formatDateTime(props.detail.run.finishedAt)}</span>
             <span>Duration {formatDuration(props.detail.run.durationMs)}</span>
             <span className="font-mono text-[12px]">{truncateMiddle(props.detail.run.runId, 72)}</span>
             {props.detail.source.retriedFromRunId === undefined ? null : (
               <button
                 type="button"
-                onClick={() => props.navigate?.(hrefForRun(props.detail.source.retriedFromRunId!, undefined, "pipeline"))}
-                className="text-[var(--dashboard-highlight)] transition hover:text-[var(--dashboard-highlight-strong)]"
+                onClick={() => props.navigate?.(hrefForRun(props.detail.source.retriedFromRunId!))}
+                className="hover:text-foreground"
               >
                 retried from {truncateMiddle(props.detail.source.retriedFromRunId, 36)}
               </button>
             )}
           </div>
-          {props.detail.run.failureMessage === undefined ? null : <InlineError message={props.detail.run.failureMessage} compact />}
-          {props.detail.run.cancellationReason === undefined ? null : <InlineError message={props.detail.run.cancellationReason} compact />}
-          {props.actionError === undefined ? null : <InlineError message={props.actionError} compact />}
-          {props.actionNotice === undefined ? null : <div className="text-sm text-[var(--dashboard-highlight)]">{props.actionNotice}</div>}
+          {props.detail.run.failureMessage === undefined ? null : <p className="text-sm text-destructive">{props.detail.run.failureMessage}</p>}
+          {props.detail.run.cancellationReason === undefined ? null : <p className="text-sm text-destructive">{props.detail.run.cancellationReason}</p>}
+          {props.actionError === undefined ? null : <p className="text-sm text-destructive">{props.actionError}</p>}
+          {props.actionNotice === undefined ? null : <p className="text-sm text-muted-foreground">{props.actionNotice}</p>}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">

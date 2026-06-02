@@ -2,8 +2,10 @@ import { TooltipProvider } from "./components/ui/tooltip.tsx"
 import { AppShell } from "./components/app-shell.tsx"
 import { createDashboardApi } from "./api.ts"
 import { parseDashboardRoute, type DashboardNavigate } from "./lib/routing.ts"
+import { JobPage } from "./views/job-page.tsx"
+import { ProjectPage } from "./views/project-page.tsx"
+import { ProjectsPage } from "./views/projects-page.tsx"
 import { RunPage } from "./views/run-page.tsx"
-import { RunsPage } from "./views/runs-page.tsx"
 import { startTransition, useEffect, useState } from "react"
 
 const api = createDashboardApi()
@@ -47,11 +49,12 @@ export function App() {
   return (
     <TooltipProvider>
       <AppShell {...(serviceVersion === undefined ? {} : { serviceVersion })} onRefresh={() => window.location.reload()}>
-        {route._tag === "RunsRoute" ? (
-          <RunsPage api={api} navigate={navigate} />
-        ) : (
+        {route._tag === "ProjectsRoute" ? <ProjectsPage api={api} navigate={navigate} /> : null}
+        {route._tag === "ProjectRoute" ? <ProjectPage api={api} navigate={navigate} route={route} /> : null}
+        {route._tag === "RunRoute" ? (
           <RunPage api={api} navigate={navigate} route={route} />
-        )}
+        ) : null}
+        {route._tag === "JobRoute" ? <JobPage api={api} navigate={navigate} route={route} /> : null}
       </AppShell>
     </TooltipProvider>
   )

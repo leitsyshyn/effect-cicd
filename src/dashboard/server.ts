@@ -18,9 +18,27 @@ export const dashboardProgram = Effect.gen(function* () {
     port,
     routes: {
       "/": dashboardHtml,
+      "/projects/:projectId": dashboardHtml,
       "/runs/:runId": dashboardHtml,
+      "/runs/:runId/jobs/:unitId": dashboardHtml,
       "/api/runs": {
-        GET: () => handlers.listRuns(),
+        GET: (request) => handlers.listRuns(new URL(request.url).searchParams.get("projectId") ?? undefined),
+      },
+      "/api/projects": {
+        GET: () => handlers.listProjects(),
+      },
+      "/api/bindings": {
+        GET: () => handlers.listBindings(),
+      },
+      "/api/bindings/github": {
+        POST: async (request) => handlers.createBinding(await request.json().catch(() => ({}))),
+      },
+      "/api/secrets": {
+        GET: (request) => handlers.listSecrets(new URL(request.url).searchParams.get("projectId") ?? ""),
+        POST: async (request) => handlers.setSecret(await request.json().catch(() => ({}))),
+      },
+      "/api/secrets/:projectId/:key": {
+        DELETE: (request) => handlers.deleteSecret(request.params.projectId, request.params.key),
       },
       "/api/version": {
         GET: () => handlers.version(),

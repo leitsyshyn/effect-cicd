@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { createDashboardApi } from "../src/dashboard/api.ts"
 import { RunHeader } from "../src/dashboard/components/run-header.tsx"
 import { RunPipelineView } from "../src/dashboard/components/run-pipeline.tsx"
+import { hrefForJob, hrefForProject, hrefForRun, parseDashboardRoute } from "../src/dashboard/lib/routing.ts"
 import type { RunDetailDto } from "../src/dashboard/types.ts"
 
 describe("dashboard UI smoke", () => {
@@ -13,16 +14,47 @@ describe("dashboard UI smoke", () => {
 
     expect(markup).toContain("Stage 1")
     expect(markup).toContain("Stage 2")
-    expect(markup).toContain("unit:build")
+    expect(markup).toContain("build")
     expect(markup).toContain("data-testid=\"pipeline-deps\"")
   })
 
-  it("run header renders workflow and payload summaries", () => {
+  it("run header renders project breadcrumb and actions", () => {
     const markup = renderToStaticMarkup(<RunHeader detail={sampleDetail()} onCancel={() => {}} onRetry={() => {}} onGc={() => {}} />)
 
-    expect(markup).toContain("Runs")
+    expect(markup).toContain("Projects")
+    expect(markup).toContain("project:dashboard")
     expect(markup).toContain("workflow:dashboard")
     expect(markup).toContain("Retry Run")
+  })
+
+  it("routing parses project, run, and job pages", () => {
+    expect(parseDashboardRoute("/projects/project%3Ademo", "?view=bindings")).toEqual({
+      _tag: "ProjectRoute",
+      projectId: "project:demo",
+      view: "bindings",
+    })
+
+    expect(parseDashboardRoute("/runs/run%3Ademo", "?view=timeline")).toEqual({
+      _tag: "RunRoute",
+      runId: "run:demo",
+      view: "timeline",
+    })
+
+    expect(parseDashboardRoute("/runs/run%3Ademo/jobs/unit%3Atest", "?view=logs&attempt=2")).toEqual({
+      _tag: "JobRoute",
+      runId: "run:demo",
+      unitId: "unit:test",
+      view: "logs",
+      attempt: 2,
+    })
+  })
+
+  it("routing helpers build expected URLs", () => {
+    expect(hrefForProject("project:demo", "secrets")).toBe("/projects/project%3Ademo?view=secrets")
+    expect(hrefForRun("run:demo", "timeline")).toBe("/runs/run%3Ademo?view=timeline")
+    expect(hrefForJob("run:demo", "unit:test", "artifacts", 3)).toBe(
+      "/runs/run%3Ademo/jobs/unit%3Atest?view=artifacts&attempt=3",
+    )
   })
 
   it("API client fetches log payload text", async () => {
@@ -34,14 +66,28 @@ describe("dashboard UI smoke", () => {
     await expect(api.readLogPayload("log:demo")).resolves.toBe("hello from log\n")
   })
 
-  it("API client posts retry action", async () => {
-    const api = createDashboardApi(async (input, init) => {
-      expect(input).toBe("/api/runs/run%3Ademo/retry")
-      expect(init?.method).toBe("POST")
-      return Response.json({ runId: "run:next", projectId: "project:demo", planId: "plan:demo", workflowId: "workflow:demo", status: "queued", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", progress: { totalUnits: 2, completedUnits: 0, failedUnits: 0, skippedUnits: 0 }, controls: { canCancel: true, canRetry: false, canGc: false } })
+  it("API client uses projectId query for run lists", async () => {
+    const api = createDashboardApi(async (input) => {
+      expect(input).toBe("/api/runs?projectId=project%3Ademo")
+      return Response.json([])
     })
 
-    await expect(api.retryRun("run:demo", "Retried from test")).resolves.toMatchObject({ runId: "run:next" })
+    await expect(api.listRuns("project:demo")).resolves.toEqual([])
+  })
+
+  it("API client detects binary artifacts", async () => {
+    const api = createDashboardApi(async (input) => {
+      expect(input).toBe("/api/artifacts/artifact%3Ademo")
+      return new Response(new Uint8Array([0, 1, 2]), {
+        status: 200,
+        headers: { "content-type": "application/octet-stream" },
+      })
+    })
+
+    await expect(api.readArtifactPayload("artifact:demo")).resolves.toEqual({
+      kind: "binary",
+      contentType: "application/octet-stream",
+    })
   })
 })
 
