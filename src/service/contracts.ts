@@ -33,5 +33,9 @@ export class SecretSetRequest extends Schema.Class<SecretSetRequest>("SecretSetR
   value: Schema.String,
 }) {}
 
+export class ProjectUpdateRequest extends Schema.Class<ProjectUpdateRequest>("ProjectUpdateRequest")({
+  projectId: Schema.String,
+}) {}
+
 export { SecretSummary }
 export { ProjectSummary }

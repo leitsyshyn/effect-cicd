@@ -53,6 +53,10 @@ export interface SecretSetRequestDto {
   readonly value: string
 }
 
+export interface ProjectUpdateRequestDto {
+  readonly projectId: string
+}
+
 export type ArtifactPayloadDto =
   | { readonly kind: "text"; readonly text: string; readonly contentType?: string }
   | { readonly kind: "binary"; readonly contentType?: string }
@@ -60,6 +64,13 @@ export type ArtifactPayloadDto =
 export const createDashboardApi = (fetcher: FetchLike = fetch) => ({
   getVersion: () => getText(fetcher, "/api/version"),
   listProjects: () => getJson<ReadonlyArray<ProjectSummaryDto>>(fetcher, "/api/projects"),
+  updateProject: (projectId: string, request: ProjectUpdateRequestDto) =>
+    sendEmpty(fetcher, `/api/projects/${encodeURIComponent(projectId)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    }),
+  deleteProject: (projectId: string) => sendEmpty(fetcher, `/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" }),
   listBindings: () => getJson<ReadonlyArray<GitHubBindingSummaryDto>>(fetcher, "/api/bindings"),
   createBinding: (request: GitHubBindingCreateRequestDto) =>
     postJson<GitHubBindingSummaryDto>(fetcher, "/api/bindings/github", request),

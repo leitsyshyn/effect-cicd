@@ -1,9 +1,10 @@
 import { Effect, Layer, Option, Schema, Stream } from "effect"
 import { Sse } from "effect/unstable/encoding"
 import { SqlClient } from "effect/unstable/sql/SqlClient"
+import { isSqlError } from "effect/unstable/sql/SqlError"
 
 import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
-import { DomainError } from "../domain/errors.ts"
+import { DomainError, ProjectNotFound, ProjectOperationRejected, StoreUnavailable } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { WorkflowEvent } from "../domain/events.ts"
 import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubTriggerResponse } from "../domain/github.ts"
@@ -33,7 +34,8 @@ import { appVersion } from "../runtime/version.ts"
 import { SecretStore } from "../secrets/store.ts"
 import { ArtifactGc } from "../engine/stores/artifact-gc.ts"
 import { ArtifactStore } from "../engine/stores/artifact-store.ts"
-import { RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse, WorkflowRunSubmissionRequest } from "./contracts.ts"
+import { StateStore } from "../engine/stores/state-store.ts"
+import { ProjectUpdateRequest, RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse, WorkflowRunSubmissionRequest } from "./contracts.ts"
 import { decodeJson, encodeJson } from "./schema-json.ts"
 
 type EngineService = typeof Engine.Service
@@ -106,6 +108,7 @@ export const startServiceServer = Effect.gen(function* () {
   const gitHubIntegration = yield* GitHubIntegration
   const secretStore = yield* SecretStore
   const artifactStore = yield* ArtifactStore
+  const stateStore = yield* Effect.serviceOption(StateStore)
   const sql = yield* Effect.serviceOption(SqlClient)
   const objectStorage = yield* Effect.serviceOption(ObjectStorageClient)
   const metrics = yield* Effect.serviceOption(Metrics)
@@ -209,6 +212,10 @@ export const startServiceServer = Effect.gen(function* () {
       },
       "/api/projects": {
         GET: () => runJsonEffect(gitHubIntegration.listProjects(), { schema: Schema.Array(ProjectSummary) }),
+      },
+      "/api/projects/:projectId": {
+        PATCH: (request) => runJsonEffect(updateProject(stateStore, sql, request, request.params.projectId), { noContent: true }),
+        DELETE: (request) => runJsonEffect(deleteProject(stateStore, sql, objectStorage, request.params.projectId), { noContent: true }),
       },
       "/api/secrets": {
         GET: (request) => runJsonEffect(listSecrets(secretStore, request), { schema: Schema.Array(SecretSummary) }),
@@ -410,6 +417,170 @@ const createGitHubBinding = (gitHubIntegration: typeof GitHubIntegration.Service
     const binding = yield* parseRequestBody(request, GitHubBindingCreateRequest)
     return yield* gitHubIntegration.addBinding(binding)
   })
+
+const updateProject = (
+  stateStore: Option.Option<typeof StateStore.Service>,
+  sql: Option.Option<typeof SqlClient.Service>,
+  request: Request,
+  currentProjectId: string,
+) =>
+  Effect.gen(function* () {
+    const store = yield* requireService(stateStore, "project state storage")
+    const sqlClient = yield* requireService(sql, "SQL storage")
+    const payload = yield* parseRequestBody(request, ProjectUpdateRequest)
+    const nextProjectId = payload.projectId.trim()
+
+    if (nextProjectId.length === 0) {
+      return yield* new RequestBodyInvalid({ message: "projectId must be non-empty" })
+    }
+
+    yield* assertProjectMutationAllowed(store, sqlClient, currentProjectId, "rename")
+
+    if (nextProjectId === currentProjectId) {
+      return
+    }
+
+    if (yield* projectExists(sqlClient, nextProjectId)) {
+      return yield* new ProjectOperationRejected({
+        projectId: currentProjectId,
+        operation: "rename",
+        message: `Project ${nextProjectId} already exists`,
+      })
+    }
+
+    yield* catchProjectSql(
+      "rename project",
+      sqlClient.withTransaction(
+        Effect.gen(function* () {
+          yield* store.renameProject(currentProjectId, nextProjectId)
+          yield* sqlClient`
+            UPDATE github_bindings
+            SET project_id = ${nextProjectId},
+                binding_json = jsonb_set(binding_json, '{projectId}', to_jsonb(CAST(${nextProjectId} AS text)), true)
+            WHERE project_id = ${currentProjectId}
+          `
+          yield* sqlClient`
+            UPDATE github_run_links
+            SET project_id = ${nextProjectId},
+                link_json = jsonb_set(link_json, '{projectId}', to_jsonb(CAST(${nextProjectId} AS text)), true)
+            WHERE project_id = ${currentProjectId}
+          `
+          yield* sqlClient`
+            UPDATE github_trigger_deliveries
+            SET project_id = ${nextProjectId},
+                delivery_json = jsonb_set(delivery_json, '{projectId}', to_jsonb(CAST(${nextProjectId} AS text)), true)
+            WHERE project_id = ${currentProjectId}
+          `
+          yield* sqlClient`UPDATE secrets SET project_id = ${nextProjectId} WHERE project_id = ${currentProjectId}`
+        }),
+      ),
+    )
+  })
+
+const deleteProject = (
+  stateStore: Option.Option<typeof StateStore.Service>,
+  sql: Option.Option<typeof SqlClient.Service>,
+  objectStorage: Option.Option<typeof ObjectStorageClient.Service>,
+  projectId: string,
+) =>
+  Effect.gen(function* () {
+    const store = yield* requireService(stateStore, "project state storage")
+    const sqlClient = yield* requireService(sql, "SQL storage")
+    const storage = yield* requireService(objectStorage, "object storage")
+
+    yield* assertProjectMutationAllowed(store, sqlClient, projectId, "delete")
+
+    const objectKeys = yield* catchProjectSql(
+      "list project artifacts",
+      sqlClient<{ readonly object_key: string }>`
+        SELECT object_key
+        FROM artifact_metadata
+        WHERE run_id IN (SELECT run_id FROM workflow_runs WHERE project_id = ${projectId})
+        UNION
+        SELECT object_key
+        FROM log_metadata
+        WHERE run_id IN (SELECT run_id FROM workflow_runs WHERE project_id = ${projectId})
+      `,
+    )
+
+    for (const row of objectKeys) {
+      yield* storage.deleteObject(row.object_key)
+    }
+
+    yield* catchProjectSql(
+      "delete project",
+      sqlClient.withTransaction(
+        Effect.gen(function* () {
+          yield* sqlClient`DELETE FROM artifact_metadata WHERE run_id IN (SELECT run_id FROM workflow_runs WHERE project_id = ${projectId})`
+          yield* sqlClient`DELETE FROM log_metadata WHERE run_id IN (SELECT run_id FROM workflow_runs WHERE project_id = ${projectId})`
+          yield* sqlClient`DELETE FROM github_trigger_deliveries WHERE project_id = ${projectId}`
+          yield* sqlClient`DELETE FROM github_run_links WHERE project_id = ${projectId}`
+          yield* sqlClient`DELETE FROM github_bindings WHERE project_id = ${projectId}`
+          yield* sqlClient`DELETE FROM secrets WHERE project_id = ${projectId}`
+          yield* store.deleteProject(projectId)
+        }),
+      ),
+    )
+  })
+
+const assertProjectMutationAllowed = (
+  stateStore: typeof StateStore.Service,
+  sql: typeof SqlClient.Service,
+  projectId: string,
+  operation: string,
+) =>
+  Effect.gen(function* () {
+    if (!(yield* projectExists(sql, projectId))) {
+      return yield* new ProjectNotFound({ projectId })
+    }
+
+    const runs = yield* stateStore.listRuns(projectId)
+    if (runs.some((run) => !isTerminalRun(run.status))) {
+      return yield* new ProjectOperationRejected({
+        projectId,
+        operation,
+        message: `Project ${projectId} has non-terminal runs and cannot be ${operation}d`,
+      })
+    }
+  })
+
+const projectExists = (sql: typeof SqlClient.Service, projectId: string) =>
+  catchProjectSql(
+    "check project existence",
+    sql<{ readonly exists: boolean }>`
+      SELECT EXISTS(
+        SELECT 1 FROM workflow_runs WHERE project_id = ${projectId}
+        UNION ALL
+        SELECT 1 FROM github_bindings WHERE project_id = ${projectId}
+        UNION ALL
+        SELECT 1 FROM github_run_links WHERE project_id = ${projectId}
+        UNION ALL
+        SELECT 1 FROM github_trigger_deliveries WHERE project_id = ${projectId}
+        UNION ALL
+        SELECT 1 FROM secrets WHERE project_id = ${projectId}
+      ) AS exists
+    `.pipe(Effect.map((rows) => rows[0]?.exists ?? false)),
+  )
+
+const requireService = <A>(service: Option.Option<A>, name: string) =>
+  Option.match(service, {
+    onNone: () => Effect.fail(new ServiceUnavailable({ message: `${name} is not configured` })),
+    onSome: Effect.succeed,
+  })
+
+const catchProjectSql = <A>(operation: string, effect: Effect.Effect<A, unknown, never>) =>
+  effect.pipe(
+    Effect.catch((error) =>
+      isSqlError(error)
+        ? Effect.fail(
+            new StoreUnavailable({
+              store: "ProjectStore",
+              message: `Failed to ${operation}: ${error.message}`,
+            }),
+          )
+        : Effect.fail(error),
+    ),
+  ) as Effect.Effect<A, StoreUnavailable, never>
 
 const handleGitHubWebhook = (
   gitHubIntegration: typeof GitHubIntegration.Service,
@@ -633,10 +804,12 @@ const errorResponse = (error: unknown) => {
 const statusForError = (error: DomainError) => {
   switch (error._tag) {
     case "RunNotFound":
+    case "ProjectNotFound":
       return 404
     case "WorkflowDefinitionInvalid":
     case "PlanningFailed":
     case "RunControlRejected":
+    case "ProjectOperationRejected":
     case "WorkflowInputsInvalid":
       return 400
     case "StoreUnavailable":

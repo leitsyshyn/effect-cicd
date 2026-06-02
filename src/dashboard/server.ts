@@ -27,6 +27,10 @@ export const dashboardProgram = Effect.gen(function* () {
       "/api/projects": {
         GET: () => handlers.listProjects(),
       },
+      "/api/projects/:projectId": {
+        PATCH: async (request) => handlers.updateProject(request.params.projectId, await request.json().catch(() => ({}))),
+        DELETE: (request) => handlers.deleteProject(request.params.projectId),
+      },
       "/api/bindings": {
         GET: () => handlers.listBindings(),
       },

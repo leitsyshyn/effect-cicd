@@ -7,6 +7,18 @@ export const createDashboardProxyHandlers = (baseUrl: string, fetcher: FetchLike
 
   listProjects: () => proxyPassthrough(fetcher, `${baseUrl}/api/projects`),
 
+  updateProject: (projectId: string, body: unknown) =>
+    proxyPassthrough(fetcher, `${baseUrl}/api/projects/${encodeURIComponent(projectId)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  deleteProject: (projectId: string) =>
+    proxyPassthrough(fetcher, `${baseUrl}/api/projects/${encodeURIComponent(projectId)}`, {
+      method: "DELETE",
+    }),
+
   listBindings: () => proxyPassthrough(fetcher, `${baseUrl}/api/bindings`),
 
   createBinding: (body: unknown) =>

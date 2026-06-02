@@ -6,11 +6,12 @@ import { ScrollArea } from "./ui/scroll-area.tsx"
 
 const pipelineStageWidth = 260
 const pipelineStageGap = 24
-const pipelineStageHeaderHeight = 40
 const pipelineUnitHeight = 56
 const pipelineUnitGap = 12
 const pipelineFramePaddingX = 16
 const pipelineFramePaddingY = 16
+const pipelineCardPadding = 12
+const pipelineStageHeaderHeight = 41
 
 export function RunPipelineView(props: {
   readonly detail: RunDetailDto
@@ -19,7 +20,11 @@ export function RunPipelineView(props: {
 }) {
   const positions = new Map<string, { readonly x: number; readonly y: number }>()
   const stageHeights = props.detail.stages.map(
-    (stage) => pipelineStageHeaderHeight + Math.max(stage.units.length, 1) * pipelineUnitHeight + Math.max(stage.units.length - 1, 0) * pipelineUnitGap,
+    (stage) =>
+      pipelineStageHeaderHeight +
+      Math.max(stage.units.length, 1) * pipelineUnitHeight +
+      Math.max(stage.units.length - 1, 0) * pipelineUnitGap +
+      pipelineCardPadding * 2,
   )
   const canvasHeight = Math.max(...stageHeights, 0) + pipelineFramePaddingY * 2
   const canvasWidth = props.detail.stages.length * pipelineStageWidth + Math.max(props.detail.stages.length - 1, 0) * pipelineStageGap + pipelineFramePaddingX * 2
@@ -28,7 +33,7 @@ export function RunPipelineView(props: {
     stage.units.forEach((unit, unitIndex) => {
       positions.set(unit.unitId, {
         x: pipelineFramePaddingX + stageIndex * (pipelineStageWidth + pipelineStageGap),
-        y: pipelineFramePaddingY + pipelineStageHeaderHeight + unitIndex * (pipelineUnitHeight + pipelineUnitGap),
+        y: pipelineFramePaddingY + pipelineCardPadding + pipelineStageHeaderHeight + unitIndex * (pipelineUnitHeight + pipelineUnitGap),
       })
     })
   })
@@ -36,7 +41,7 @@ export function RunPipelineView(props: {
   return (
     <Card>
       <CardContent className="p-4">
-        <ScrollArea className="w-full">
+        <ScrollArea className="w-full" scrollHideDelay={500}>
           <div className="relative min-w-max" style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}>
             <svg data-testid="pipeline-deps" className="pointer-events-none absolute inset-0" width={canvasWidth} height={canvasHeight} viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} fill="none">
               {props.detail.dependencies.map((dependency) => {
@@ -64,15 +69,11 @@ export function RunPipelineView(props: {
               })}
             </svg>
 
-            <div className="relative flex gap-6">
+            <div className="relative flex items-start gap-6">
               {props.detail.stages.map((stage) => (
-                <div key={stage.id} className="w-[260px] min-w-[260px] rounded-md border bg-card p-3">
-                  <div className="mb-3 flex items-end justify-between gap-3 border-b border-border pb-2">
-                    <div>
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">stage {stage.depth + 1}</div>
-                      <div className="mt-1 text-sm font-semibold text-foreground">{stage.label}</div>
-                    </div>
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{stage.units.length} units</div>
+                <div key={stage.id} className="flex w-[260px] min-w-[260px] flex-col rounded-md border bg-card p-3">
+                  <div className="mb-3 border-b border-border pb-2">
+                    <div className="truncate text-sm font-semibold text-foreground">{stage.label}</div>
                   </div>
 
                   <div className="flex flex-col gap-3">

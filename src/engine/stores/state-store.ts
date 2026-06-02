@@ -13,6 +13,8 @@ export class StateStore extends Context.Service<
   {
     readonly createRun: (state: WorkflowRunState) => Effect.Effect<void, StoreUnavailable>
     readonly updateRun: (state: WorkflowRunState) => Effect.Effect<void, RunNotFound | StoreUnavailable>
+    readonly renameProject: (projectId: string, nextProjectId: string) => Effect.Effect<void, StoreUnavailable>
+    readonly deleteProject: (projectId: string) => Effect.Effect<void, StoreUnavailable>
     readonly getRun: (runId: RunId) => Effect.Effect<WorkflowRunState, RunNotFound | StoreUnavailable>
     readonly updateUnit: (state: ExecutionUnitState) => Effect.Effect<void, UnitNotFound | StoreUnavailable>
     readonly updateAttempt: (state: ExecutionAttemptState) => Effect.Effect<void, UnitNotFound | StoreUnavailable>
@@ -41,6 +43,28 @@ export class StateStore extends Context.Service<
             : Effect.fail(new RunNotFound({ runId: state.runId })),
         ),
       )
+
+    const renameProject = Effect.fn("StateStore.renameProject")(function* (projectId: string, nextProjectId: string) {
+      yield* Effect.sync(() => {
+        for (const [runId, run] of runs.entries()) {
+          if (run.projectId !== projectId) {
+            continue
+          }
+
+          runs.set(runId, renameRunStateProjectId(run, projectId, nextProjectId))
+        }
+      })
+    })
+
+    const deleteProject = Effect.fn("StateStore.deleteProject")((projectId: string) =>
+      Effect.sync(() => {
+        for (const [runId, run] of runs.entries()) {
+          if (run.projectId === projectId) {
+            runs.delete(runId)
+          }
+        }
+      }),
+    )
 
     const getRun = (runId: RunId) =>
       Effect.sync(() => runs.get(runId)).pipe(
@@ -160,6 +184,8 @@ export class StateStore extends Context.Service<
     return {
       createRun,
       updateRun,
+      renameProject,
+      deleteProject,
       getRun,
       updateUnit,
       updateAttempt,
@@ -253,6 +279,22 @@ export class StateStore extends Context.Service<
         }
 
         return decodeWorkflowRunState(row.state_json)
+      })
+
+      const renameProject = Effect.fn("StateStore.renameProject")(function* (projectId: string, nextProjectId: string) {
+        const runs = yield* listRuns(projectId)
+
+        for (const run of runs) {
+          yield* updateRun(renameRunStateProjectId(run, projectId, nextProjectId)).pipe(
+            Effect.catchTags({
+              RunNotFound: () => Effect.succeed(undefined),
+            }),
+          )
+        }
+      })
+
+      const deleteProject = Effect.fn("StateStore.deleteProject")(function* (projectId: string) {
+        yield* catchSql("delete workflow runs for project", sql`DELETE FROM workflow_runs WHERE project_id = ${projectId}`)
       })
 
       const listRuns = Effect.fn("StateStore.listRuns")(function* (projectId?: string) {
@@ -394,6 +436,8 @@ export class StateStore extends Context.Service<
       return {
         createRun,
         updateRun,
+        renameProject,
+        deleteProject,
         getRun,
         updateUnit,
         updateAttempt,
@@ -421,7 +465,47 @@ const compareQueuedRuns = (left: WorkflowRunState, right: WorkflowRunState) => {
   return timeDelta === 0 ? compareStrings(left.runId, right.runId) : timeDelta
 }
 
+const renameRunStateProjectId = (run: WorkflowRunState, projectId: string, nextProjectId: string) =>
+  new WorkflowRunState({
+    ...run,
+    projectId: nextProjectId as WorkflowRunState["projectId"],
+    execution: {
+      ...run.execution,
+      plan: {
+        ...run.execution.plan,
+        metadata: renamePlanMetadataProjectId(run.execution.plan.metadata, projectId, nextProjectId),
+      },
+    },
+  })
+
+const renamePlanMetadataProjectId = (
+  metadata: Record<string, unknown>,
+  projectId: string,
+  nextProjectId: string,
+): Record<string, unknown> => {
+  const nextMetadata: Record<string, unknown> = { ...metadata }
+
+  if (nextMetadata.projectId === projectId) {
+    nextMetadata.projectId = nextProjectId
+  }
+
+  const project = asRecord(nextMetadata.project)
+  if (project?.projectId === projectId) {
+    nextMetadata.project = { ...project, projectId: nextProjectId }
+  }
+
+  const trigger = asRecord(nextMetadata.trigger)
+  if (trigger?.projectId === projectId) {
+    nextMetadata.trigger = { ...trigger, projectId: nextProjectId }
+  }
+
+  return nextMetadata
+}
+
 const compareStrings = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0)
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined
 
 const catchSql = <A>(operation: string, effect: Effect.Effect<A, unknown, never>) =>
   effect.pipe(
