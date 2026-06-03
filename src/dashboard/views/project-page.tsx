@@ -72,6 +72,7 @@ import {
   parseProjectPageView,
   type ProjectPageView,
 } from "../lib/routing.ts";
+import { missingRequiredProjectInputs, toProjectRunRequest } from "../lib/project-run-inputs.ts";
 import { ProjectBindingsTab } from "./project-bindings-tab.tsx";
 import { ProjectSecretsTab } from "./project-secrets-tab.tsx";
 import { projectLabel } from "./projects-page.tsx";
@@ -232,18 +233,32 @@ export function ProjectPage() {
     await updateProjectMutation.mutateAsync(values);
   });
 
-  const submitRun = runForm.handleSubmit(async (values) => {
-    await startRunMutation.mutateAsync(toProjectRunRequest(values));
-  });
-
-  const startProjectRun = async () => {
+  const submitRun = runForm.handleSubmit((values) => {
     const requiredInputs = projectRunConfigQuery.data?.requiredInputs ?? [];
+    const request = toProjectRunRequest(values.inputValuesText);
+    const missingInputs = missingRequiredProjectInputs(request, requiredInputs);
 
-    if (requiredInputs.length === 0) {
-      await startRunMutation.mutateAsync(undefined);
+    if (missingInputs.length > 0) {
+      runForm.setError("inputValuesText", {
+        type: "required",
+        message: `Missing required inputs: ${missingInputs.join(", ")}`,
+      });
       return;
     }
 
+    runForm.clearErrors("inputValuesText");
+    startRunMutation.mutate(request);
+  });
+
+  const startProjectRun = () => {
+    const requiredInputs = projectRunConfigQuery.data?.requiredInputs ?? [];
+
+    if (requiredInputs.length === 0) {
+      startRunMutation.mutate(undefined);
+      return;
+    }
+
+    runForm.clearErrors("inputValuesText");
     setIsRunOpen(true);
   };
 
@@ -324,7 +339,7 @@ export function ProjectPage() {
             <Dialog open={isRunOpen} onOpenChange={setIsRunOpen}>
               <Button
                 size="sm"
-                onClick={() => void startProjectRun()}
+                onClick={startProjectRun}
                 disabled={
                   startRunMutation.isPending ||
                   updateProjectMutation.isPending ||
@@ -392,10 +407,7 @@ export function ProjectPage() {
                   >
                     Cancel
                   </Button>
-                  <Button
-                    onClick={() => void submitRun()}
-                    disabled={startRunMutation.isPending}
-                  >
+                  <Button onClick={() => void submitRun()} disabled={startRunMutation.isPending}>
                     {startRunMutation.isPending ? "Starting..." : "Start Run"}
                   </Button>
                 </DialogFooter>
@@ -521,15 +533,3 @@ export function ProjectPage() {
     </section>
   );
 }
-
-const toProjectRunRequest = (values: RunProjectFormValues) => {
-  const trimmed = values.inputValuesText.trim();
-
-  if (trimmed.length === 0) {
-    return undefined;
-  }
-
-  return {
-    inputValues: JSON.parse(trimmed) as Record<string, unknown>,
-  };
-};

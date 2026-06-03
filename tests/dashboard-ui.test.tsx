@@ -3,8 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 
 import { createDashboardApi } from "../src/dashboard/api.ts"
+import { PayloadBrowser } from "../src/dashboard/components/payload-browser.tsx"
 import { RunHeader } from "../src/dashboard/components/run-header.tsx"
 import { RunPipelineView } from "../src/dashboard/components/run-pipeline.tsx"
+import { RunTimeline } from "../src/dashboard/components/run-timeline.tsx"
+import { missingRequiredProjectInputs, toProjectRunRequest } from "../src/dashboard/lib/project-run-inputs.ts"
 import { hrefForJob, hrefForProject, hrefForRun, parseDashboardRoute } from "../src/dashboard/lib/routing.ts"
 import type { RunDetailDto } from "../src/dashboard/types.ts"
 
@@ -30,6 +33,75 @@ describe("dashboard UI smoke", () => {
     expect(markup).toContain("project:dashboard")
     expect(markup).toContain("workflow:dashboard")
     expect(markup).toContain("Retry Run")
+  })
+
+  it("run timeline renders events without the legend", () => {
+    const markup = renderToStaticMarkup(
+      <RunTimeline
+        events={[
+          {
+            eventId: "event-1",
+            type: "unit_started",
+            sequence: 1,
+            occurredAt: "2026-01-01T00:00:00.000Z",
+            unitId: "unit:build",
+            message: "Build started",
+          },
+        ]}
+      />,
+    )
+
+    expect(markup).toContain("Build started")
+    expect(markup).toContain("unit_started")
+    expect(markup).not.toContain("Progress")
+    expect(markup).not.toContain("Success")
+  })
+
+  it("payload browser renders count, metadata, and viewer actions", () => {
+    const item = {
+      ref: "log:stdout",
+      name: "stdout",
+      status: "available",
+      meta: ["12 B", "1m ago"],
+      badges: [{ label: "Attempt 2", variant: "outline" as const }],
+      downloadHref: "/api/logs/log%3Astdout",
+    }
+    const markup = renderToStaticMarkup(
+      <PayloadBrowser
+        items={[item]}
+        itemsLabel="logs"
+        selectedItem={item}
+        content={{ kind: "text", text: "line 1\nline 2\n" }}
+        loadingPayload={false}
+        emptyMessage="No logs"
+        selectMessage="Select a log"
+        onSelect={() => {}}
+      />,
+    )
+
+    expect(markup).toContain("Logs")
+    expect(markup).toContain("stdout")
+    expect(markup).toContain("Attempt 2")
+    expect(markup).toContain("Download raw")
+    expect(markup).toContain("line 1")
+  })
+
+  it("run request helper returns undefined for empty inputs", () => {
+    expect(toProjectRunRequest("   ")).toBeUndefined()
+  })
+
+  it("run request helper reports missing required inputs", () => {
+    expect(missingRequiredProjectInputs(undefined, ["releaseVersion", "targetEnvironment"])).toEqual([
+      "releaseVersion",
+      "targetEnvironment",
+    ])
+
+    expect(
+      missingRequiredProjectInputs(
+        toProjectRunRequest('{"releaseVersion":"1.2.3"}'),
+        ["releaseVersion", "targetEnvironment"],
+      ),
+    ).toEqual(["targetEnvironment"])
   })
 
   it("routing parses project, run, and job pages", () => {
