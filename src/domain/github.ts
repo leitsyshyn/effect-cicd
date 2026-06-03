@@ -7,6 +7,7 @@ const GitHubNumericId = Schema.Int
 export class GitHubBinding extends Schema.Class<GitHubBinding>("GitHubBinding")({
   bindingId: BindingId,
   projectId: ProjectId,
+  name: Schema.optional(Schema.String),
   provider: Schema.Literals(["github"]),
   installationId: Schema.optional(GitHubNumericId),
   repositoryId: Schema.optional(GitHubNumericId),
@@ -34,6 +35,7 @@ export class GitHubBindingCreateRequest extends Schema.Class<GitHubBindingCreate
 export class GitHubBindingSummary extends Schema.Class<GitHubBindingSummary>("GitHubBindingSummary")({
   bindingId: BindingId,
   projectId: ProjectId,
+  name: Schema.optional(Schema.String),
   provider: Schema.Literals(["github"]),
   installationId: Schema.optional(GitHubNumericId),
   repositoryId: Schema.optional(GitHubNumericId),
@@ -58,6 +60,16 @@ export class GitHubTriggeredRun extends Schema.Class<GitHubTriggeredRun>("GitHub
   deduped: Schema.optional(Schema.Boolean),
   snapshotPath: Schema.String,
   workspacePath: Schema.String,
+}) {}
+
+export class GitHubInstallationRepository extends Schema.Class<GitHubInstallationRepository>("GitHubInstallationRepository")({
+  installationId: GitHubNumericId,
+  repositoryId: GitHubNumericId,
+  repositoryOwner: Schema.String,
+  repositoryName: Schema.String,
+  repository: Schema.String,
+  cloneUrl: Schema.String,
+  defaultBranch: Schema.optional(Schema.String),
 }) {}
 
 export class GitHubTriggerResponse extends Schema.Class<GitHubTriggerResponse>("GitHubTriggerResponse")({

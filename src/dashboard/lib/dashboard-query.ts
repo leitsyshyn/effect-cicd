@@ -7,8 +7,12 @@ export const dashboardApi = createDashboardApi()
 export const dashboardQueryKeys = {
   serviceVersion: ["service-version"] as const,
   projects: ["projects"] as const,
+  githubRepositories: (installationId: number) => ["github-repositories", installationId] as const,
+  githubBranches: (installationId: number, repository: string) => ["github-branches", installationId, repository] as const,
+  githubWorkflowFiles: (installationId: number, repository: string, ref: string) => ["github-workflow-files", installationId, repository, ref] as const,
   workflowFiles: ["workflow-files"] as const,
   project: (projectId: string) => ["projects", projectId] as const,
+  projectRunConfig: (projectId: string) => ["project-run-config", projectId] as const,
   bindings: ["bindings"] as const,
   projectBindings: (projectId: string) => ["bindings", projectId] as const,
   projectSecrets: (projectId: string) => ["secrets", projectId] as const,
@@ -30,6 +34,24 @@ export const dashboardQueries = {
       queryKey: dashboardQueryKeys.projects,
       queryFn: () => dashboardApi.listProjects(),
     }),
+  githubRepositories: (installationId: number) =>
+    queryOptions({
+      queryKey: dashboardQueryKeys.githubRepositories(installationId),
+      queryFn: () => dashboardApi.listGitHubInstallationRepositories(installationId),
+      enabled: installationId > 0,
+    }),
+  githubBranches: (installationId: number, repository: string) =>
+    queryOptions({
+      queryKey: dashboardQueryKeys.githubBranches(installationId, repository),
+      queryFn: () => dashboardApi.listGitHubRepositoryBranches(installationId, repository),
+      enabled: installationId > 0 && repository.trim().length > 0,
+    }),
+  githubWorkflowFiles: (installationId: number, repository: string, ref?: string) =>
+    queryOptions({
+      queryKey: dashboardQueryKeys.githubWorkflowFiles(installationId, repository, ref ?? ""),
+      queryFn: () => dashboardApi.listGitHubRepositoryWorkflowFiles(installationId, repository, ref),
+      enabled: installationId > 0 && repository.trim().length > 0,
+    }),
   workflowFiles: () =>
     queryOptions({
       queryKey: dashboardQueryKeys.workflowFiles,
@@ -42,6 +64,12 @@ export const dashboardQueries = {
         const projects = await dashboardApi.listProjects()
         return projects.find((project) => project.projectId === projectId) ?? null
       },
+    }),
+  projectRunConfig: (projectId: string, enabled = true) =>
+    queryOptions({
+      queryKey: dashboardQueryKeys.projectRunConfig(projectId),
+      queryFn: () => dashboardApi.getProjectRunConfig(projectId),
+      enabled,
     }),
   projectBindings: (projectId: string) =>
     queryOptions({
@@ -60,13 +88,11 @@ export const dashboardQueries = {
     queryOptions({
       queryKey: dashboardQueryKeys.projectRuns(projectId),
       queryFn: () => dashboardApi.listRuns(projectId),
-      refetchInterval: visibleRefetchInterval(10_000),
     }),
   runDetail: (runId: string) =>
     queryOptions({
       queryKey: dashboardQueryKeys.runDetail(runId),
       queryFn: () => dashboardApi.inspectRun(runId),
-      refetchInterval: visibleRefetchInterval(5_000),
     }),
   logPayload: (logRef: string) =>
     queryOptions({
@@ -78,8 +104,4 @@ export const dashboardQueries = {
       queryKey: dashboardQueryKeys.artifactPayload(artifactRef),
       queryFn: () => dashboardApi.readArtifactPayload(artifactRef),
     }),
-}
-
-function visibleRefetchInterval(intervalMs: number) {
-  return () => (document.visibilityState === "visible" ? intervalMs : false)
 }

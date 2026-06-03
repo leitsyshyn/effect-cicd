@@ -49,6 +49,9 @@ describe("GitHub source snapshots", () => {
               Layer.succeed(GitHubApiClient, {
                 getRepository: () => Effect.die("unused"),
                 downloadRepositoryArchive: () => Effect.succeed(fixture.archive),
+                listInstallationRepositories: () => Effect.die("unused"),
+                listRepositoryBranches: () => Effect.die("unused"),
+                listRepositoryWorkflowFiles: () => Effect.die("unused"),
                 upsertCheckRun: () => Effect.die("unused"),
               }),
             ),
@@ -110,6 +113,9 @@ describe("GitHub source snapshots", () => {
               Layer.succeed(GitHubApiClient, {
                 getRepository: () => Effect.die("unused"),
                 downloadRepositoryArchive: () => Effect.succeed(fixture.archive),
+                listInstallationRepositories: () => Effect.die("unused"),
+                listRepositoryBranches: () => Effect.die("unused"),
+                listRepositoryWorkflowFiles: () => Effect.die("unused"),
                 upsertCheckRun: () => Effect.die("unused"),
               }),
             ),

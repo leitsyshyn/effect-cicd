@@ -267,6 +267,19 @@ const gitHubIntegrationLayer = (fixture: WorkflowFixture, mock: GitHubApiMock) =
         cloneUrl: `https://github.com/${repositoryOwner}/${repositoryName}.git`,
         defaultBranch: "main",
       }),
+    listInstallationRepositories: (installationId) =>
+      Effect.succeed([
+        {
+          id: 2002,
+          owner: "acme",
+          name: "widgets",
+          fullName: "acme/widgets",
+          cloneUrl: "https://github.com/acme/widgets.git",
+          defaultBranch: "main",
+        },
+      ].filter(() => installationId === 1001)),
+    listRepositoryBranches: () => Effect.succeed(["main", "release"]),
+    listRepositoryWorkflowFiles: () => Effect.succeed(["workflow.ts", "workflows/build.ts"]),
     downloadRepositoryArchive: () => Effect.die("unused"),
     upsertCheckRun: (request) =>
       Effect.sync(() => {

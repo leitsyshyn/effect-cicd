@@ -7,7 +7,7 @@ import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { DomainError, EngineUnavailable } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { WorkflowEvent } from "../domain/events.ts"
-import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubTriggerResponse } from "../domain/github.ts"
+import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubInstallationRepository, GitHubTriggerResponse } from "../domain/github.ts"
 import { ArtifactRef, LogRef, RunId } from "../domain/ids.ts"
 import { ProjectSummary } from "../domain/project.ts"
 import { RunExecutionOptions, WorkflowRunState, WorkflowRunStatus } from "../domain/runtime-state.ts"
@@ -223,6 +223,32 @@ export const gitHubIntegrationClientLayer = Layer.effect(
       requestJson(http, HttpClientRequest.get("/api/bindings"), Schema.Array(GitHubBindingSummary)),
     )
 
+    const listInstallationRepositories = Effect.fn("GitHubIntegrationClient.listInstallationRepositories")((installationId: number) =>
+      requestJson(
+        http,
+        HttpClientRequest.get(`/api/github/installations/${encodeURIComponent(String(installationId))}/repositories`),
+        Schema.Array(GitHubInstallationRepository),
+      ),
+    )
+
+    const listRepositoryBranches = Effect.fn("GitHubIntegrationClient.listRepositoryBranches")((installationId: number, repository: string) =>
+      requestJson(
+        http,
+        HttpClientRequest.get(`/api/github/repositories/branches?installationId=${encodeURIComponent(String(installationId))}&repository=${encodeURIComponent(repository)}`),
+        Schema.Array(Schema.String),
+      ),
+    )
+
+    const listRepositoryWorkflowFiles = Effect.fn("GitHubIntegrationClient.listRepositoryWorkflowFiles")((installationId: number, repository: string, ref?: string) =>
+      requestJson(
+        http,
+        HttpClientRequest.get(
+          `/api/github/repositories/workflows?installationId=${encodeURIComponent(String(installationId))}&repository=${encodeURIComponent(repository)}${ref === undefined ? "" : `&ref=${encodeURIComponent(ref)}`}`,
+        ),
+        Schema.Array(Schema.String),
+      ),
+    )
+
     const listProjects = Effect.fn("GitHubIntegrationClient.listProjects")(() =>
       requestJson(http, HttpClientRequest.get("/api/projects"), Schema.Array(ProjectSummary)),
     )
@@ -248,6 +274,9 @@ export const gitHubIntegrationClientLayer = Layer.effect(
     return {
       addBinding,
       listBindings,
+      listInstallationRepositories,
+      listRepositoryBranches,
+      listRepositoryWorkflowFiles,
       listProjects,
       acceptWebhook,
       handleWebhook,

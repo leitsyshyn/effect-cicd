@@ -13,9 +13,10 @@ export class LocalProjectStore extends Context.Service<
   LocalProjectStore,
   {
     readonly create: (project: LocalProject) => Effect.Effect<void, StoreUnavailable>
+    readonly get: (projectId: string) => Effect.Effect<LocalProject | undefined, StoreUnavailable>
     readonly list: () => Effect.Effect<ReadonlyArray<LocalProject>, StoreUnavailable>
     readonly listProjects: () => Effect.Effect<ReadonlyArray<ProjectSummary>, StoreUnavailable>
-    readonly renameProject: (projectId: string, nextProjectId: string) => Effect.Effect<void, StoreUnavailable>
+    readonly updateProjectName: (projectId: string, name: string | undefined) => Effect.Effect<void, StoreUnavailable>
     readonly deleteProject: (projectId: string) => Effect.Effect<void, StoreUnavailable>
   }
 >()("@effect-cicd/projects/LocalProjectStore") {
@@ -31,6 +32,8 @@ export class LocalProjectStore extends Context.Service<
         }),
       )
 
+      const get = Effect.fn("LocalProjectStore.get")((projectId: string) => Effect.sync(() => projects.get(projectId)))
+
       const list = Effect.fn("LocalProjectStore.list")(() =>
         Effect.sync(() => [...projects.values()].sort((left, right) => compareStrings(left.projectId, right.projectId))),
       )
@@ -42,19 +45,18 @@ export class LocalProjectStore extends Context.Service<
         return items.map((project) => toProjectSummary(project, runsByProject.get(project.projectId)))
       })
 
-      const renameProject = Effect.fn("LocalProjectStore.renameProject")((projectId: string, nextProjectId: string) =>
+      const updateProjectName = Effect.fn("LocalProjectStore.updateProjectName")((projectId: string, name: string | undefined) =>
         Effect.sync(() => {
           const project = projects.get(projectId)
           if (project === undefined) {
             return
           }
 
-          projects.delete(projectId)
           projects.set(
-            nextProjectId,
+            projectId,
             new LocalProject({
               ...project,
-              projectId: ProjectId.make(nextProjectId),
+              name,
               updatedAt: new Date(),
             }),
           )
@@ -67,7 +69,7 @@ export class LocalProjectStore extends Context.Service<
         }),
       )
 
-      return { create, list, listProjects, renameProject, deleteProject }
+      return { create, get, list, listProjects, updateProjectName, deleteProject }
     }),
   )
 
@@ -84,6 +86,7 @@ export class LocalProjectStore extends Context.Service<
             INSERT INTO local_projects (
               project_id,
               provider,
+              name,
               workflow_module_path,
               workspace_path,
               created_at,
@@ -91,6 +94,7 @@ export class LocalProjectStore extends Context.Service<
             ) VALUES (
               ${project.projectId},
               ${project.provider},
+              ${project.name ?? null},
               ${project.workflowModulePath},
               ${project.workspacePath},
               ${project.createdAt},
@@ -100,17 +104,51 @@ export class LocalProjectStore extends Context.Service<
         )
       })
 
-      const list = Effect.fn("LocalProjectStore.list")(function* () {
+      const get = Effect.fn("LocalProjectStore.get")(function* (projectId: string) {
         const rows = yield* catchSql(
-          "list local projects",
+          "get local project",
           sql<{
             readonly project_id: string
+            readonly name: string | null
             readonly workflow_module_path: string
             readonly workspace_path: string
             readonly created_at: Date
             readonly updated_at: Date
           }>`
-            SELECT project_id, workflow_module_path, workspace_path, created_at, updated_at
+            SELECT project_id, name, workflow_module_path, workspace_path, created_at, updated_at
+            FROM local_projects
+            WHERE project_id = ${projectId}
+          `,
+        )
+
+        const row = rows[0]
+        if (row === undefined) {
+          return undefined
+        }
+
+        return new LocalProject({
+          projectId: ProjectId.make(row.project_id),
+          ...(row.name === null ? {} : { name: row.name }),
+          provider: "local",
+          workflowModulePath: row.workflow_module_path,
+          workspacePath: row.workspace_path,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        })
+      })
+
+      const list = Effect.fn("LocalProjectStore.list")(function* () {
+        const rows = yield* catchSql(
+          "list local projects",
+          sql<{
+            readonly project_id: string
+            readonly name: string | null
+            readonly workflow_module_path: string
+            readonly workspace_path: string
+            readonly created_at: Date
+            readonly updated_at: Date
+          }>`
+            SELECT project_id, name, workflow_module_path, workspace_path, created_at, updated_at
             FROM local_projects
             ORDER BY project_id ASC
           `,
@@ -120,6 +158,7 @@ export class LocalProjectStore extends Context.Service<
           (row) =>
             new LocalProject({
               projectId: ProjectId.make(row.project_id),
+              ...(row.name === null ? {} : { name: row.name }),
               provider: "local",
               workflowModulePath: row.workflow_module_path,
               workspacePath: row.workspace_path,
@@ -136,12 +175,12 @@ export class LocalProjectStore extends Context.Service<
         return items.map((project) => toProjectSummary(project, runsByProject.get(project.projectId)))
       })
 
-      const renameProject = Effect.fn("LocalProjectStore.renameProject")(function* (projectId: string, nextProjectId: string) {
+      const updateProjectName = Effect.fn("LocalProjectStore.updateProjectName")(function* (projectId: string, name: string | undefined) {
         yield* catchSql(
-          "rename local project",
+          "update local project name",
           sql`
             UPDATE local_projects
-            SET project_id = ${nextProjectId}, updated_at = NOW()
+            SET name = ${name ?? null}, updated_at = NOW()
             WHERE project_id = ${projectId}
           `,
         )
@@ -151,7 +190,7 @@ export class LocalProjectStore extends Context.Service<
         yield* catchSql("delete local project", sql`DELETE FROM local_projects WHERE project_id = ${projectId}`)
       })
 
-      return { create, list, listProjects, renameProject, deleteProject }
+      return { create, get, list, listProjects, updateProjectName, deleteProject }
     }),
   )
 }
@@ -188,6 +227,7 @@ const summarizeRuns = (runs: ReadonlyArray<WorkflowRunState>) => {
 const toProjectSummary = (project: LocalProject, runSummary: ProjectRunSummary | undefined) =>
   new ProjectSummary({
     projectId: project.projectId,
+    ...(project.name === undefined ? {} : { name: project.name }),
     provider: project.provider,
     bindingCount: 0,
     runCount: runSummary?.runCount ?? 0,

@@ -80,6 +80,72 @@ describe("dashboard UI smoke", () => {
     await expect(api.listRuns("project:demo")).resolves.toEqual([])
   })
 
+  it("API client posts project run requests", async () => {
+    const api = createDashboardApi(async (input, init) => {
+      expect(input).toBe("/api/projects/project%3Ademo/runs")
+      expect(init?.method).toBe("POST")
+      expect(init?.headers).toEqual({ "content-type": "application/json" })
+      expect(init?.body).toBe(JSON.stringify({ inputValues: { release: "1.2.3" } }))
+
+      return Response.json({
+        runId: "run:demo",
+        projectId: "project:demo",
+        planId: "plan:demo",
+        workflowId: "workflow:demo",
+        status: "queued",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        progress: { totalUnits: 1, completedUnits: 0, failedUnits: 0, skippedUnits: 0 },
+      })
+    })
+
+    await expect(api.startProjectRun("project:demo", { inputValues: { release: "1.2.3" } })).resolves.toEqual({
+      runId: "run:demo",
+      projectId: "project:demo",
+      planId: "plan:demo",
+      workflowId: "workflow:demo",
+      status: "queued",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      progress: { totalUnits: 1, completedUnits: 0, failedUnits: 0, skippedUnits: 0 },
+    })
+  })
+
+  it("API client loads project run config", async () => {
+    const api = createDashboardApi(async (input) => {
+      expect(input).toBe("/api/projects/project%3Ademo/runs")
+      return Response.json({ requiredInputs: ["release", "environment"] })
+    })
+
+    await expect(api.getProjectRunConfig("project:demo")).resolves.toEqual({
+      requiredInputs: ["release", "environment"],
+    })
+  })
+
+  it("API client loads GitHub branches and workflow files", async () => {
+    const seen = new Array<string>()
+    const api = createDashboardApi(async (input) => {
+      seen.push(String(input))
+
+      if (input === "/api/github/repositories/branches?installationId=1001&repository=acme%2Fwidgets") {
+        return Response.json(["main", "release"])
+      }
+
+      if (input === "/api/github/repositories/workflows?installationId=1001&repository=acme%2Fwidgets&ref=main") {
+        return Response.json(["workflow.ts", "workflows/build.ts"])
+      }
+
+      return new Response("Not Found", { status: 404 })
+    })
+
+    await expect(api.listGitHubRepositoryBranches(1001, "acme/widgets")).resolves.toEqual(["main", "release"])
+    await expect(api.listGitHubRepositoryWorkflowFiles(1001, "acme/widgets", "main")).resolves.toEqual(["workflow.ts", "workflows/build.ts"])
+    expect(seen).toEqual([
+      "/api/github/repositories/branches?installationId=1001&repository=acme%2Fwidgets",
+      "/api/github/repositories/workflows?installationId=1001&repository=acme%2Fwidgets&ref=main",
+    ])
+  })
+
   it("API client detects binary artifacts", async () => {
     const api = createDashboardApi(async (input) => {
       expect(input).toBe("/api/artifacts/artifact%3Ademo")

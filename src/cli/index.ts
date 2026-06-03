@@ -606,6 +606,7 @@ const renderProjectsList = (projects: ReadonlyArray<ProjectSummary>) => [
     ? ["-"]
     : projects.flatMap((project) => [
         `project: ${project.projectId}`,
+        `name: ${project.name ?? "-"}`,
         `provider: ${project.provider}`,
         `repository: ${project.repositoryOwner ?? "-"}/${project.repositoryName ?? "-"}`,
         `repositoryId: ${project.repositoryId ?? "-"}`,

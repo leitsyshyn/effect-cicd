@@ -28,6 +28,10 @@ export const dashboardProgram = Effect.gen(function* () {
         GET: () => handlers.listProjects(),
         POST: async (request) => handlers.createLocalProject(await request.json().catch(() => ({}))),
       },
+      "/api/projects/:projectId/runs": {
+        GET: (request) => handlers.getProjectRunConfig(request.params.projectId),
+        POST: async (request) => handlers.startProjectRun(request.params.projectId, await request.json().catch(() => undefined)),
+      },
       "/api/projects/:projectId": {
         PATCH: async (request) => handlers.updateProject(request.params.projectId, await request.json().catch(() => ({}))),
         DELETE: (request) => handlers.deleteProject(request.params.projectId),
@@ -40,6 +44,20 @@ export const dashboardProgram = Effect.gen(function* () {
       },
       "/api/bindings/github": {
         POST: async (request) => handlers.createBinding(await request.json().catch(() => ({}))),
+      },
+      "/api/github/installations/:installationId/repositories": {
+        GET: (request) => handlers.listGitHubInstallationRepositories(Number(request.params.installationId)),
+      },
+      "/api/github/repositories/branches": {
+        GET: (request) => handlers.listGitHubRepositoryBranches(new URL(request.url).searchParams.get("installationId"), new URL(request.url).searchParams.get("repository")),
+      },
+      "/api/github/repositories/workflows": {
+        GET: (request) =>
+          handlers.listGitHubRepositoryWorkflowFiles(
+            new URL(request.url).searchParams.get("installationId"),
+            new URL(request.url).searchParams.get("repository"),
+            new URL(request.url).searchParams.get("ref"),
+          ),
       },
       "/api/secrets": {
         GET: (request) => handlers.listSecrets(new URL(request.url).searchParams.get("projectId") ?? ""),

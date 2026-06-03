@@ -43,6 +43,18 @@ export class GitHubApiClient extends Context.Service<
       repositoryName: string,
       commitSha: string,
     ) => Effect.Effect<Uint8Array, GitHubApiFailed>
+    readonly listInstallationRepositories: (installationId: number) => Effect.Effect<ReadonlyArray<GitHubRepositoryRecord>, GitHubApiFailed>
+    readonly listRepositoryBranches: (
+      installationId: number,
+      repositoryOwner: string,
+      repositoryName: string,
+    ) => Effect.Effect<ReadonlyArray<string>, GitHubApiFailed>
+    readonly listRepositoryWorkflowFiles: (
+      installationId: number,
+      repositoryOwner: string,
+      repositoryName: string,
+      ref?: string,
+    ) => Effect.Effect<ReadonlyArray<string>, GitHubApiFailed>
     readonly upsertCheckRun: (request: GitHubCheckRunUpsert) => Effect.Effect<number, GitHubApiFailed>
   }
 >()("@effect-cicd/github/GitHubApiClient") {
@@ -85,6 +97,66 @@ export class GitHubApiClient extends Context.Service<
         },
       )
 
+      const listInstallationRepositories = Effect.fn("GitHubApiClient.listInstallationRepositories")(function* (installationId: number) {
+        const response = yield* requestJson(
+          auth,
+          config.apiBaseUrl,
+          installationId,
+          "list-installation-repositories",
+          "/installation/repositories?per_page=100",
+        )
+
+        return asArray(response.repositories, "repositories").map((repository) => ({
+          id: asInt(repository.id, "repository.id"),
+          owner: asString(repository.owner?.login, "repository.owner.login"),
+          name: asString(repository.name, "repository.name"),
+          fullName: asString(repository.full_name, "repository.full_name"),
+          cloneUrl: asString(repository.clone_url, "repository.clone_url"),
+          defaultBranch: asOptionalString(repository.default_branch),
+        }))
+      })
+
+      const listRepositoryBranches = Effect.fn("GitHubApiClient.listRepositoryBranches")(
+        function* (installationId: number, repositoryOwner: string, repositoryName: string) {
+          const response = yield* requestJson(
+            auth,
+            config.apiBaseUrl,
+            installationId,
+            "list-repository-branches",
+            `/repos/${encode(repositoryOwner)}/${encode(repositoryName)}/branches?per_page=100`,
+          )
+
+          return asArray(response, "branches")
+            .map((branch) => asString(branch.name, "branch.name"))
+            .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+        },
+      )
+
+      const listRepositoryWorkflowFiles = Effect.fn("GitHubApiClient.listRepositoryWorkflowFiles")(
+        function* (installationId: number, repositoryOwner: string, repositoryName: string, ref?: string) {
+          const repository = yield* getRepository(installationId, repositoryOwner, repositoryName)
+          const resolvedRef = ref?.trim().length ? ref.trim() : repository.defaultBranch
+
+          if (resolvedRef === undefined) {
+            return []
+          }
+
+          const response = yield* requestJson(
+            auth,
+            config.apiBaseUrl,
+            installationId,
+            "list-repository-workflow-files",
+            `/repos/${encode(repositoryOwner)}/${encode(repositoryName)}/git/trees/${encode(resolvedRef)}?recursive=1`,
+          )
+
+          return asArray(response.tree, "tree")
+            .filter((entry) => asOptionalString(entry.type) === "blob")
+            .map((entry) => asString(entry.path, "tree.path"))
+            .filter(isWorkflowModulePath)
+            .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+        },
+      )
+
       const upsertCheckRun = Effect.fn("GitHubApiClient.upsertCheckRun")(function* (request: GitHubCheckRunUpsert) {
         const payload = {
           name: request.name,
@@ -117,6 +189,9 @@ export class GitHubApiClient extends Context.Service<
       return {
         getRepository,
         downloadRepositoryArchive,
+        listInstallationRepositories,
+        listRepositoryBranches,
+        listRepositoryWorkflowFiles,
         upsertCheckRun,
       }
     }),
@@ -249,3 +324,17 @@ const asString = (value: unknown, label: string) => {
 }
 
 const asOptionalString = (value: unknown) => (typeof value === "string" && value.length > 0 ? value : undefined)
+
+const asArray = (value: unknown, label: string) => {
+  if (Array.isArray(value)) {
+    return value as ReadonlyArray<Record<string, any>>
+  }
+
+  throw new Error(`GitHub API response missing array ${label}`)
+}
+
+const workflowFileExtensionPattern = /\.(?:ts|tsx|js|jsx|mts|mjs)$/
+
+const isWorkflowModulePath = (path: string) =>
+  workflowFileExtensionPattern.test(path) &&
+  (path.toLowerCase().includes("workflow") || path.startsWith("workflows/"))

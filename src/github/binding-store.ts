@@ -181,6 +181,7 @@ const summarizeProjects = (
 
       return new ProjectSummary({
         projectId: first?.projectId ?? ProjectId.make(projectId),
+        ...(first?.name === undefined ? {} : { name: first.name }),
         provider: first?.provider ?? inferredProjectProvider,
         repositoryOwner: first?.repositoryOwner,
         repositoryName: first?.repositoryName,

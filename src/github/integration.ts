@@ -15,6 +15,7 @@ import {
   GitHubBinding,
   GitHubBindingCreateRequest,
   GitHubBindingSummary,
+  GitHubInstallationRepository,
   GitHubInstallationRepositoriesWebhookPayload,
   GitHubInstallationWebhookPayload,
   GitHubPushWebhookPayload,
@@ -47,6 +48,9 @@ export class GitHubIntegration extends Context.Service<
   {
     readonly addBinding: (request: GitHubBindingCreateRequest) => Effect.Effect<GitHubBindingSummary, DomainError>
     readonly listBindings: () => Effect.Effect<ReadonlyArray<GitHubBindingSummary>, DomainError>
+    readonly listInstallationRepositories: (installationId: number) => Effect.Effect<ReadonlyArray<GitHubInstallationRepository>, DomainError>
+    readonly listRepositoryBranches: (installationId: number, repository: string) => Effect.Effect<ReadonlyArray<string>, DomainError>
+    readonly listRepositoryWorkflowFiles: (installationId: number, repository: string, ref?: string) => Effect.Effect<ReadonlyArray<string>, DomainError>
     readonly listProjects: () => Effect.Effect<ReadonlyArray<ProjectSummary>, DomainError>
     readonly acceptWebhook: (request: GitHubTriggerRequest) => Effect.Effect<GitHubTriggerResponse, DomainError>
     readonly handleWebhook: (request: GitHubTriggerRequest) => Effect.Effect<GitHubTriggerResponse, DomainError>
@@ -86,10 +90,13 @@ export class GitHubIntegration extends Context.Service<
           )
           const now = new Date()
           const projectId = deriveGitHubProjectId(repository.id, repository.owner, repository.name)
+          const existingProjectName = (yield* bindingStore.list()).find((binding) => binding.projectId === projectId)?.name
+          const name = existingProjectName?.trim().length ? existingProjectName.trim() : repository.fullName
 
           const binding = new GitHubBinding({
             bindingId: BindingId.make(`binding:github:${crypto.randomUUID()}`),
             projectId,
+            name,
             provider: "github",
             installationId: request.installationId,
             repositoryId: repository.id,
@@ -114,6 +121,39 @@ export class GitHubIntegration extends Context.Service<
         const bindings = yield* bindingStore.list()
         return bindings.map(toBindingSummary)
       })
+
+      const listInstallationRepositories = Effect.fn("GitHubIntegration.listInstallationRepositories")(function* (installationId: number) {
+        const repositories = yield* gitHubApi.listInstallationRepositories(installationId)
+
+        return repositories
+          .map(
+            (repository) =>
+              new GitHubInstallationRepository({
+                installationId,
+                repositoryId: repository.id,
+                repositoryOwner: repository.owner,
+                repositoryName: repository.name,
+                repository: repository.fullName,
+                cloneUrl: repository.cloneUrl,
+                defaultBranch: repository.defaultBranch,
+              }),
+          )
+          .sort((left, right) => (left.repository < right.repository ? -1 : left.repository > right.repository ? 1 : 0))
+      })
+
+      const listRepositoryBranches = Effect.fn("GitHubIntegration.listRepositoryBranches")(
+        function* (installationId: number, repository: string) {
+          const { repositoryOwner, repositoryName } = yield* parseRepository(repository)
+          return yield* gitHubApi.listRepositoryBranches(installationId, repositoryOwner, repositoryName)
+        },
+      )
+
+      const listRepositoryWorkflowFiles = Effect.fn("GitHubIntegration.listRepositoryWorkflowFiles")(
+        function* (installationId: number, repository: string, ref?: string) {
+          const { repositoryOwner, repositoryName } = yield* parseRepository(repository)
+          return yield* gitHubApi.listRepositoryWorkflowFiles(installationId, repositoryOwner, repositoryName, ref)
+        },
+      )
 
       const listProjects = Effect.fn("GitHubIntegration.listProjects")(() => bindingStore.listProjects())
 
@@ -196,7 +236,17 @@ export class GitHubIntegration extends Context.Service<
 
       const triggerPush = Effect.fn("GitHubIntegration.triggerPush")((request: GitHubTriggerRequest) => handleWebhook(request))
 
-      return { addBinding, listBindings, listProjects, acceptWebhook, handleWebhook, triggerPush }
+      return {
+        addBinding,
+        listBindings,
+        listInstallationRepositories,
+        listRepositoryBranches,
+        listRepositoryWorkflowFiles,
+        listProjects,
+        acceptWebhook,
+        handleWebhook,
+        triggerPush,
+      }
     }),
   )
 }
@@ -536,6 +586,7 @@ const annotateDefinition = (
       project: {
         provider: binding.provider,
         projectId: binding.projectId,
+        ...(binding.name === undefined ? {} : { name: binding.name }),
         repositoryOwner: binding.repositoryOwner,
         repositoryName: binding.repositoryName,
         ...(binding.repositoryId === undefined ? {} : { repositoryId: binding.repositoryId }),
@@ -567,6 +618,7 @@ const toBindingSummary = (binding: GitHubBinding) =>
   new GitHubBindingSummary({
     bindingId: binding.bindingId,
     projectId: binding.projectId,
+    ...(binding.name === undefined ? {} : { name: binding.name }),
     provider: binding.provider,
     installationId: binding.installationId,
     repositoryId: binding.repositoryId,

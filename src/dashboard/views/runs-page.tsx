@@ -8,23 +8,26 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { dashboardQueries } from "../lib/dashboard-query.ts"
 import { formatDateTime, formatDuration } from "../lib/format.ts"
 import { hrefForRun } from "../lib/routing.ts"
+import { useStreamQueryRefresh } from "../lib/use-stream-query-refresh.ts"
 
 export function RunsTab(props: { readonly projectId: string }) {
   const runsQuery = useQuery(dashboardQueries.projectRuns(props.projectId))
   const runs = runsQuery.data ?? []
 
+  useStreamQueryRefresh("/api/runs/stream", dashboardQueries.projectRuns(props.projectId).queryKey, "run-update")
+
   return (
     <section className="grid gap-4">
       {runsQuery.isPending ? <p className="text-sm text-muted-foreground">Loading runs...</p> : null}
-      {runsQuery.error === null ? null : (
+      {runsQuery.error === null || runsQuery.data !== undefined ? null : (
         <Alert variant="destructive">
           <AlertTitle>Failed to load runs</AlertTitle>
           <AlertDescription>{runsQuery.error.message}</AlertDescription>
         </Alert>
       )}
-      {!runsQuery.isPending && runsQuery.error === null && runs.length === 0 ? <p className="text-sm text-muted-foreground">No runs for this project.</p> : null}
+      {!runsQuery.isPending && runsQuery.data !== undefined && runs.length === 0 ? <p className="text-sm text-muted-foreground">No runs for this project.</p> : null}
 
-      {!runsQuery.isPending && runsQuery.error === null && runs.length > 0 ? (
+      {!runsQuery.isPending && runsQuery.data !== undefined && runs.length > 0 ? (
         <Card>
           <CardContent className="p-0">
             <Table>

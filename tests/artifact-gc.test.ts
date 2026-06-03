@@ -58,6 +58,9 @@ describe("artifact GC", () => {
         Layer.succeed(GitHubIntegration, {
           addBinding: () => Effect.die("unused"),
           listBindings: () => Effect.succeed([]),
+          listInstallationRepositories: () => Effect.succeed([]),
+          listRepositoryBranches: () => Effect.succeed([]),
+          listRepositoryWorkflowFiles: () => Effect.succeed([]),
           listProjects: () => Effect.succeed([]),
           acceptWebhook: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),

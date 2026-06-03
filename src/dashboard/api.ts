@@ -4,6 +4,7 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 
 export interface ProjectSummaryDto {
   readonly projectId: string
+  readonly name?: string | null
   readonly provider: string
   readonly repositoryOwner?: string | null
   readonly repositoryName?: string | null
@@ -17,6 +18,7 @@ export interface ProjectSummaryDto {
 export interface GitHubBindingSummaryDto {
   readonly bindingId: string
   readonly projectId: string
+  readonly name?: string | null
   readonly provider: "github"
   readonly installationId?: number
   readonly repositoryId?: number
@@ -54,13 +56,36 @@ export interface SecretSetRequestDto {
 }
 
 export interface ProjectUpdateRequestDto {
-  readonly projectId: string
+  readonly name?: string
 }
 
 export interface LocalProjectCreateRequestDto {
   readonly workflowModulePath: string
   readonly workspacePath?: string
   readonly projectId?: string
+  readonly name?: string
+}
+
+export interface ProjectRunRequestDto {
+  readonly inputValues?: Record<string, unknown>
+}
+
+export interface ProjectRunConfigDto {
+  readonly requiredInputs: ReadonlyArray<string>
+}
+
+export interface GitHubInstallationRepositoryDto {
+  readonly installationId: number
+  readonly repositoryId: number
+  readonly repositoryOwner: string
+  readonly repositoryName: string
+  readonly repository: string
+  readonly cloneUrl: string
+  readonly defaultBranch?: string
+}
+
+export interface GitHubRepositoryBranchDto {
+  readonly name: string
 }
 
 export type ArtifactPayloadDto =
@@ -79,9 +104,26 @@ export const createDashboardApi = (fetcher: FetchLike = fetch) => ({
       body: JSON.stringify(request),
     }),
   deleteProject: (projectId: string) => sendEmpty(fetcher, `/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" }),
+  getProjectRunConfig: (projectId: string) =>
+    getJson<ProjectRunConfigDto>(fetcher, `/api/projects/${encodeURIComponent(projectId)}/runs`),
   listBindings: () => getJson<ReadonlyArray<GitHubBindingSummaryDto>>(fetcher, "/api/bindings"),
   createBinding: (request: GitHubBindingCreateRequestDto) =>
     postJson<GitHubBindingSummaryDto>(fetcher, "/api/bindings/github", request),
+  listGitHubInstallationRepositories: (installationId: number) =>
+    getJson<ReadonlyArray<GitHubInstallationRepositoryDto>>(
+      fetcher,
+      `/api/github/installations/${encodeURIComponent(String(installationId))}/repositories`,
+    ),
+  listGitHubRepositoryBranches: (installationId: number, repository: string) =>
+    getJson<ReadonlyArray<string>>(
+      fetcher,
+      `/api/github/repositories/branches?installationId=${encodeURIComponent(String(installationId))}&repository=${encodeURIComponent(repository)}`,
+    ),
+  listGitHubRepositoryWorkflowFiles: (installationId: number, repository: string, ref?: string) =>
+    getJson<ReadonlyArray<string>>(
+      fetcher,
+      `/api/github/repositories/workflows?installationId=${encodeURIComponent(String(installationId))}&repository=${encodeURIComponent(repository)}${ref === undefined ? "" : `&ref=${encodeURIComponent(ref)}`}`,
+    ),
   listSecrets: (projectId: string) =>
     getJson<ReadonlyArray<SecretSummaryDto>>(fetcher, `/api/secrets?projectId=${encodeURIComponent(projectId)}`),
   setSecret: (request: SecretSetRequestDto) => postEmpty(fetcher, "/api/secrets", request),
@@ -92,6 +134,8 @@ export const createDashboardApi = (fetcher: FetchLike = fetch) => ({
       fetcher,
       projectId === undefined ? "/api/runs" : `/api/runs?projectId=${encodeURIComponent(projectId)}`,
     ),
+  startProjectRun: (projectId: string, request?: ProjectRunRequestDto) =>
+    postJson<RunSummaryDto>(fetcher, `/api/projects/${encodeURIComponent(projectId)}/runs`, request),
   inspectRun: (runId: string) => getJson<RunDetailDto>(fetcher, `/api/runs/${encodeURIComponent(runId)}`),
   cancelRun: (runId: string, reason?: string) => postJson<RunSummaryDto | RunDetailDto["run"]>(fetcher, `/api/runs/${encodeURIComponent(runId)}/cancel`, reason === undefined ? undefined : { reason }),
   retryRun: (runId: string, reason?: string) => postJson<RunSummaryDto>(fetcher, `/api/runs/${encodeURIComponent(runId)}/retry`, reason === undefined ? undefined : { reason }),

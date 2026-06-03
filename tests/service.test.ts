@@ -25,11 +25,13 @@ import { RunUpdate } from "../src/engine/run-updates.ts"
 import { ArtifactStore } from "../src/engine/stores/artifact-store.ts"
 import { ExecutorResult } from "../src/engine/executor.ts"
 import { GitHubIntegration } from "../src/github/integration.ts"
+import { LocalProjectStore } from "../src/projects/local-project-store.ts"
 import { EngineServiceConfig, StorageRuntimeConfig } from "../src/runtime/config.ts"
 import { makeInMemoryServiceEngineLayer } from "../src/runtime/layers.ts"
 import { engineServiceClientLayer } from "../src/service/client.ts"
 import { startServiceServer } from "../src/service/server.ts"
 import { SecretStore } from "../src/secrets/store.ts"
+import { LocalProject } from "../src/domain/project.ts"
 
 describe("service boundary", () => {
   it.live("routes call Engine-backed logic", () =>
@@ -82,6 +84,9 @@ describe("service boundary", () => {
           Layer.succeed(GitHubIntegration, {
             addBinding: () => Effect.die("unused"),
             listBindings: () => Effect.succeed([]),
+            listInstallationRepositories: () => Effect.succeed([]),
+            listRepositoryBranches: () => Effect.succeed([]),
+            listRepositoryWorkflowFiles: () => Effect.succeed([]),
             listProjects: () => Effect.succeed([]),
             acceptWebhook: () => Effect.die("unused"),
             handleWebhook: () => Effect.die("unused"),
@@ -156,9 +161,12 @@ describe("service boundary", () => {
         Layer.succeed(EngineServiceConfig, { baseUrl, port }),
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
-          addBinding: () => Effect.die("unused"),
-          listBindings: () => Effect.succeed([]),
-          listProjects: () => Effect.succeed([]),
+            addBinding: () => Effect.die("unused"),
+            listBindings: () => Effect.succeed([]),
+            listInstallationRepositories: () => Effect.succeed([]),
+            listRepositoryBranches: () => Effect.succeed([]),
+            listRepositoryWorkflowFiles: () => Effect.succeed([]),
+            listProjects: () => Effect.succeed([]),
           acceptWebhook: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
@@ -201,9 +209,12 @@ describe("service boundary", () => {
         Layer.succeed(EngineServiceConfig, { baseUrl, port }),
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
-          addBinding: () => Effect.die("unused"),
-          listBindings: () => Effect.succeed([]),
-          listProjects: () => Effect.succeed([]),
+            addBinding: () => Effect.die("unused"),
+            listBindings: () => Effect.succeed([]),
+            listInstallationRepositories: () => Effect.succeed([]),
+            listRepositoryBranches: () => Effect.succeed([]),
+            listRepositoryWorkflowFiles: () => Effect.succeed([]),
+            listProjects: () => Effect.succeed([]),
           acceptWebhook: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
@@ -241,9 +252,12 @@ describe("service boundary", () => {
         Layer.succeed(EngineServiceConfig, { baseUrl, port }),
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
-          addBinding: () => Effect.die("unused"),
-          listBindings: () => Effect.succeed([]),
-          listProjects: () => Effect.succeed([]),
+            addBinding: () => Effect.die("unused"),
+            listBindings: () => Effect.succeed([]),
+            listInstallationRepositories: () => Effect.succeed([]),
+            listRepositoryBranches: () => Effect.succeed([]),
+            listRepositoryWorkflowFiles: () => Effect.succeed([]),
+            listProjects: () => Effect.succeed([]),
           acceptWebhook: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
@@ -294,9 +308,12 @@ describe("service boundary", () => {
         Layer.succeed(EngineServiceConfig, { baseUrl, port }),
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
-          addBinding: () => Effect.die("unused"),
-          listBindings: () => Effect.succeed([]),
-          listProjects: () => Effect.succeed([]),
+            addBinding: () => Effect.die("unused"),
+            listBindings: () => Effect.succeed([]),
+            listInstallationRepositories: () => Effect.succeed([]),
+            listRepositoryBranches: () => Effect.succeed([]),
+            listRepositoryWorkflowFiles: () => Effect.succeed([]),
+            listProjects: () => Effect.succeed([]),
           acceptWebhook: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
@@ -373,9 +390,12 @@ describe("service boundary", () => {
         Layer.succeed(EngineServiceConfig, { baseUrl, port }),
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
-          addBinding: () => Effect.die("unused"),
-          listBindings: () => Effect.succeed([]),
-          listProjects: () => Effect.succeed([]),
+            addBinding: () => Effect.die("unused"),
+            listBindings: () => Effect.succeed([]),
+            listInstallationRepositories: () => Effect.succeed([]),
+            listRepositoryBranches: () => Effect.succeed([]),
+            listRepositoryWorkflowFiles: () => Effect.succeed([]),
+            listProjects: () => Effect.succeed([]),
           acceptWebhook: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
@@ -407,6 +427,120 @@ describe("service boundary", () => {
     })
   })
 
+  it.live("manual local project runs resolve workflow services inside the server", () =>
+    Effect.gen(function* () {
+      const port = randomPort()
+      const baseUrl = `http://127.0.0.1:${port}`
+      let submittedWorkspace: string | undefined
+      let submittedWorkflowId: string | undefined
+      let submittedInputValues: Readonly<Record<string, unknown>> | undefined
+      const projects = new Map<string, LocalProject>()
+      const now = new Date()
+
+      projects.set(
+        "project:local:demo",
+        new LocalProject({
+          projectId: ProjectId.make("project:local:demo"),
+          name: "demo",
+          provider: "local",
+          workflowModulePath: "./tests/fixtures/workflows/valid-workflow.ts",
+          workspacePath: "tests/fixtures/workflows",
+          createdAt: now,
+          updatedAt: now,
+        }),
+      )
+
+      const serviceLayer = Layer.mergeAll(
+        Layer.succeed(EngineServiceConfig, { baseUrl, port }),
+        Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
+        Layer.succeed(Engine, {
+          validate: () => Effect.die("unused"),
+          plan: () => Effect.die("unused"),
+          startDefinition: () => Effect.die("unused"),
+          submitDefinition: (definition, options) =>
+            Effect.sync(() => {
+              submittedWorkflowId = definition.workflowId
+              submittedWorkspace = options?.workspacePath
+              submittedInputValues = options?.inputValues
+              return sampleRunState()
+            }),
+          startRun: () => Effect.die("unused"),
+          submitRun: () => Effect.die("unused"),
+          cancelRun: () => Effect.die("unused"),
+          retryRun: () => Effect.die("unused"),
+          listRuns: () => Effect.die("unused"),
+          inspectRun: () => Effect.die("unused"),
+          streamRuns: () => Stream.empty,
+          streamRun: () => Stream.empty,
+          readRunEvents: () => Effect.die("unused"),
+          readArtifacts: () => Effect.die("unused"),
+          readArtifactPayload: (_artifactRef: ArtifactRef) => Effect.die("unused"),
+          readLogs: () => Effect.die("unused"),
+          readLogPayload: (_logRef: LogRef) => Effect.die("unused"),
+          deleteArtifact: () => Effect.die("unused"),
+          deleteLog: () => Effect.die("unused"),
+          gcRunArtifacts: () => Effect.die("unused"),
+          version: () => Effect.succeed("0.0.0"),
+        }),
+        Layer.succeed(RunController, {
+          submitRun: () => Effect.die("unused"),
+          cancelRun: () => Effect.die("unused"),
+          retryRun: () => Effect.die("unused"),
+          recoverOnStartup: () => Effect.succeed([]),
+        }),
+        Layer.succeed(GitHubIntegration, {
+          addBinding: () => Effect.die("unused"),
+          listBindings: () => Effect.succeed([]),
+          listInstallationRepositories: () => Effect.succeed([]),
+          listRepositoryBranches: () => Effect.succeed([]),
+          listRepositoryWorkflowFiles: () => Effect.succeed([]),
+          listProjects: () => Effect.succeed([]),
+          acceptWebhook: () => Effect.die("unused"),
+          handleWebhook: () => Effect.die("unused"),
+          triggerPush: () => Effect.die("unused"),
+        }),
+        Layer.succeed(LocalProjectStore, {
+          create: () => Effect.die("unused"),
+          get: (projectId: string) => Effect.succeed(projects.get(projectId)),
+          list: () => Effect.succeed([...projects.values()]),
+          listProjects: () => Effect.succeed([]),
+          updateProjectName: () => Effect.die("unused"),
+          deleteProject: () => Effect.die("unused"),
+        }),
+        ArtifactStore.memoryLayer,
+        SecretStore.memoryLayer,
+      )
+
+      const server = yield* withServer(serviceLayer)
+
+      const configResponse = yield* Effect.promise(() =>
+        fetch(`${baseUrl}/api/projects/${encodeURIComponent("project:local:demo")}/runs`),
+      )
+      const configPayload = yield* Effect.promise(() =>
+        configResponse.json() as Promise<{ readonly requiredInputs: ReadonlyArray<string> }>,
+      )
+
+      const response = yield* Effect.promise(() =>
+        fetch(`${baseUrl}/api/projects/${encodeURIComponent("project:local:demo")}/runs`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ inputValues: { release: "1.2.3", dryRun: true } }),
+        }),
+      )
+      const payload = yield* Effect.promise(() => response.json() as Promise<{ readonly workflowId: string }>)
+
+      expect(configResponse.status).toBe(200)
+      expect(configPayload.requiredInputs).toEqual([])
+      expect(response.status).toBe(201)
+      expect(payload.workflowId).toBe(sampleRunState().workflowId)
+      expect(submittedWorkflowId).toBe("workflow:fixture:valid")
+      expect(submittedWorkspace).toBe(`${process.cwd()}/tests/fixtures/workflows`)
+      expect(submittedInputValues).toEqual({ release: "1.2.3", dryRun: true })
+
+      yield* stopServer(server)
+    }),
+  )
+
   it.live("artifact payload endpoint serves binary bytes and deletion marks persisted metadata missing", () =>
     Effect.gen(function* () {
       const port = randomPort()
@@ -422,9 +556,12 @@ describe("service boundary", () => {
         Layer.succeed(EngineServiceConfig, { baseUrl, port }),
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
-          addBinding: () => Effect.die("unused"),
-          listBindings: () => Effect.succeed([]),
-          listProjects: () => Effect.succeed([]),
+            addBinding: () => Effect.die("unused"),
+            listBindings: () => Effect.succeed([]),
+            listInstallationRepositories: () => Effect.succeed([]),
+            listRepositoryBranches: () => Effect.succeed([]),
+            listRepositoryWorkflowFiles: () => Effect.succeed([]),
+            listProjects: () => Effect.succeed([]),
           acceptWebhook: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),
@@ -470,9 +607,12 @@ describe("service boundary", () => {
         Layer.succeed(EngineServiceConfig, { baseUrl, port }),
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
-          addBinding: () => Effect.die("unused"),
-          listBindings: () => Effect.succeed([]),
-          listProjects: () => Effect.succeed([]),
+            addBinding: () => Effect.die("unused"),
+            listBindings: () => Effect.succeed([]),
+            listInstallationRepositories: () => Effect.succeed([]),
+            listRepositoryBranches: () => Effect.succeed([]),
+            listRepositoryWorkflowFiles: () => Effect.succeed([]),
+            listProjects: () => Effect.succeed([]),
           acceptWebhook: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
           triggerPush: () => Effect.die("unused"),

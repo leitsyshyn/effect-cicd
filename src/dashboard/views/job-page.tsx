@@ -17,6 +17,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs.
 import { dashboardQueries } from "../lib/dashboard-query.ts"
 import { formatAge, formatBytes, formatDateTime, formatDuration, formatSourceLocation, formatValue, truncateMiddle } from "../lib/format.ts"
 import { hrefForProject, hrefForProjects, hrefForRun, parseAttemptNumber, parseJobPageView, type JobPageView } from "../lib/routing.ts"
+import { useStreamQueryRefresh } from "../lib/use-stream-query-refresh.ts"
 import type { PayloadMetadataDto } from "../types.ts"
 
 export function JobPage() {
@@ -37,6 +38,14 @@ export function JobPage() {
   const activeView: JobPageView = parseJobPageView(searchParams.get("view")) ?? "overview"
   const routeAttempt = parseAttemptNumber(searchParams.get("attempt"))
   const detailQuery = useQuery(dashboardQueries.runDetail(runId))
+
+  useStreamQueryRefresh(
+    "/api/runs/stream",
+    dashboardQueries.runDetail(runId).queryKey,
+    "run-update",
+    (event) => eventDataHasRunId(event, runId),
+  )
+
   const detail = detailQuery.data
   const unit = detail?.units.find((entry) => entry.unitId === unitId)
   const attempts = unit === undefined ? [] : [...unit.attempts].sort((left, right) => left.attemptNumber - right.attemptNumber)
@@ -97,7 +106,7 @@ export function JobPage() {
     return <p className="text-sm text-muted-foreground">Loading job...</p>
   }
 
-  if (detailQuery.error !== null) {
+  if (detailQuery.error !== null && detailQuery.data === undefined) {
     return (
       <Alert variant="destructive">
         <AlertTitle>Failed to load job</AlertTitle>
@@ -335,6 +344,15 @@ export function JobPage() {
       </Tabs>
     </section>
   )
+}
+
+const eventDataHasRunId = (event: MessageEvent<string>, runId: string) => {
+  try {
+    const payload = JSON.parse(event.data) as { readonly runId?: unknown }
+    return payload.runId === runId
+  } catch {
+    return false
+  }
 }
 
 function DetailRow(props: { readonly label: string; readonly value: string; readonly monospace?: boolean }) {

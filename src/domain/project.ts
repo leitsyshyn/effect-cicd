@@ -5,6 +5,7 @@ import { WorkflowRunState, WorkflowRunStatus } from "./runtime-state.ts"
 
 export class ProjectSummary extends Schema.Class<ProjectSummary>("ProjectSummary")({
   projectId: ProjectId,
+  name: Schema.optional(Schema.String),
   provider: Schema.String,
   repositoryOwner: Schema.optional(Schema.String),
   repositoryName: Schema.optional(Schema.String),
@@ -17,6 +18,7 @@ export class ProjectSummary extends Schema.Class<ProjectSummary>("ProjectSummary
 
 export class LocalProject extends Schema.Class<LocalProject>("LocalProject")({
   projectId: ProjectId,
+  name: Schema.optional(Schema.String),
   provider: Schema.Literals(["local"]),
   workflowModulePath: Schema.String,
   workspacePath: Schema.String,

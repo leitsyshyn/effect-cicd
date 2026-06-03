@@ -447,6 +447,11 @@ export const storageMigrationLayer = PgMigrator.layer({
 
       yield* sql`CREATE INDEX IF NOT EXISTS local_projects_updated_at_idx ON local_projects (updated_at DESC, project_id ASC)`
     }),
+    "0010_project_names": Effect.gen(function* () {
+      const sql = yield* SqlClient
+
+      yield* sql`ALTER TABLE local_projects ADD COLUMN IF NOT EXISTS name text`
+    }),
   }),
 })
 

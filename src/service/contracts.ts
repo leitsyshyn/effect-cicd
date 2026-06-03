@@ -34,13 +34,22 @@ export class SecretSetRequest extends Schema.Class<SecretSetRequest>("SecretSetR
 }) {}
 
 export class ProjectUpdateRequest extends Schema.Class<ProjectUpdateRequest>("ProjectUpdateRequest")({
-  projectId: Schema.String,
+  name: Schema.optional(Schema.String),
 }) {}
 
 export class LocalProjectCreateRequest extends Schema.Class<LocalProjectCreateRequest>("LocalProjectCreateRequest")({
   workflowModulePath: Schema.String,
   workspacePath: Schema.optional(Schema.String),
   projectId: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
+}) {}
+
+export class ProjectRunRequest extends Schema.Class<ProjectRunRequest>("ProjectRunRequest")({
+  inputValues: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+}) {}
+
+export class ProjectRunConfigResponse extends Schema.Class<ProjectRunConfigResponse>("ProjectRunConfigResponse")({
+  requiredInputs: Schema.Array(Schema.String),
 }) {}
 
 export { SecretSummary }

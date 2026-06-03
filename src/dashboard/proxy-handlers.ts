@@ -28,6 +28,18 @@ export const createDashboardProxyHandlers = (baseUrl: string, fetcher: FetchLike
       method: "DELETE",
     }),
 
+  getProjectRunConfig: (projectId: string) =>
+    proxyPassthrough(fetcher, `${baseUrl}/api/projects/${encodeURIComponent(projectId)}/runs`, {
+      method: "GET",
+    }),
+
+  startProjectRun: (projectId: string, body?: unknown) =>
+    proxyJson(fetcher, `${baseUrl}/api/projects/${encodeURIComponent(projectId)}/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }, mapRawRunSummary),
+
   listBindings: () => proxyPassthrough(fetcher, `${baseUrl}/api/bindings`),
 
   createBinding: (body: unknown) =>
@@ -36,6 +48,21 @@ export const createDashboardProxyHandlers = (baseUrl: string, fetcher: FetchLike
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     }),
+
+  listGitHubInstallationRepositories: (installationId: number) =>
+    proxyPassthrough(fetcher, `${baseUrl}/api/github/installations/${encodeURIComponent(String(installationId))}/repositories`),
+
+  listGitHubRepositoryBranches: (installationId: number | string | null, repository: string | null) =>
+    proxyPassthrough(
+      fetcher,
+      `${baseUrl}/api/github/repositories/branches?installationId=${encodeURIComponent(String(installationId ?? ""))}&repository=${encodeURIComponent(repository ?? "")}`,
+    ),
+
+  listGitHubRepositoryWorkflowFiles: (installationId: number | string | null, repository: string | null, ref?: string | null) =>
+    proxyPassthrough(
+      fetcher,
+      `${baseUrl}/api/github/repositories/workflows?installationId=${encodeURIComponent(String(installationId ?? ""))}&repository=${encodeURIComponent(repository ?? "")}${ref === undefined || ref === null ? "" : `&ref=${encodeURIComponent(ref)}`}`,
+    ),
 
   listSecrets: (projectId: string) =>
     proxyPassthrough(fetcher, `${baseUrl}/api/secrets?projectId=${encodeURIComponent(projectId)}`),

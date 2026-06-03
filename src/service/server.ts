@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, relative } from "node:path"
+import { dirname, isAbsolute, relative, resolve as resolvePath } from "node:path"
 
 import { Effect, Layer, Option, Schema, Stream } from "effect"
 import { Sse } from "effect/unstable/encoding"
@@ -9,7 +9,7 @@ import { ArtifactMetadata, LogMetadata } from "../domain/artifacts.ts"
 import { DomainError, ProjectNotFound, ProjectOperationRejected, StoreUnavailable } from "../domain/errors.ts"
 import { ExecutionPlan } from "../domain/execution-plan.ts"
 import { WorkflowEvent } from "../domain/events.ts"
-import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubTriggerResponse } from "../domain/github.ts"
+import { GitHubBindingCreateRequest, GitHubBindingSummary, GitHubInstallationRepository, GitHubTriggerResponse } from "../domain/github.ts"
 import { ArtifactRef, LogRef, ProjectId, RunId } from "../domain/ids.ts"
 import { LocalProject, ProjectSummary } from "../domain/project.ts"
 import { WorkflowRunState, type WorkflowRunStatus } from "../domain/runtime-state.ts"
@@ -38,7 +38,7 @@ import { SecretStore } from "../secrets/store.ts"
 import { ArtifactGc } from "../engine/stores/artifact-gc.ts"
 import { ArtifactStore } from "../engine/stores/artifact-store.ts"
 import { StateStore } from "../engine/stores/state-store.ts"
-import { LocalProjectCreateRequest, ProjectUpdateRequest, RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse, WorkflowRunSubmissionRequest } from "./contracts.ts"
+import { LocalProjectCreateRequest, ProjectRunConfigResponse, ProjectRunRequest, ProjectUpdateRequest, RunActionRequest, RunSubmissionRequest, SecretSetRequest, ServiceErrorResponse, WorkflowRunSubmissionRequest } from "./contracts.ts"
 import { decodeJson, encodeJson } from "./schema-json.ts"
 
 type EngineService = typeof Engine.Service
@@ -113,8 +113,6 @@ export const startServiceServer = Effect.gen(function* () {
   const artifactStore = yield* ArtifactStore
   const stateStore = yield* Effect.serviceOption(StateStore)
   const localProjectStore = yield* Effect.serviceOption(LocalProjectStore)
-  const workflowLoader = yield* WorkflowModuleLoader
-  const materializer = yield* DslMaterializer
   const sql = yield* Effect.serviceOption(SqlClient)
   const objectStorage = yield* Effect.serviceOption(ObjectStorageClient)
   const metrics = yield* Effect.serviceOption(Metrics)
@@ -219,10 +217,31 @@ export const startServiceServer = Effect.gen(function* () {
       "/api/projects": {
         GET: () => runJsonEffect(listProjects(gitHubIntegration, localProjectStore), { schema: Schema.Array(ProjectSummary) }),
         POST: (request) =>
-          runJsonEffect(createLocalProject(localProjectStore, sql, workflowLoader, materializer, request), { schema: ProjectSummary, status: 201 }),
+          runJsonEffect(
+            createLocalProject(localProjectStore, sql, request).pipe(
+              Effect.provide(Layer.mergeAll(WorkflowModuleLoader.layer, DslMaterializer.layer)),
+            ),
+            { schema: ProjectSummary, status: 201 },
+          ),
+      },
+      "/api/projects/:projectId/runs": {
+        GET: (request) =>
+          runJsonEffect(
+            readLocalProjectRunConfig(localProjectStore, request.params.projectId).pipe(
+              Effect.provide(Layer.mergeAll(WorkflowModuleLoader.layer, DslMaterializer.layer)),
+            ),
+            { schema: ProjectRunConfigResponse },
+          ),
+        POST: (request) =>
+          runJsonEffect(
+            startLocalProjectRun(localProjectStore, engine, request, request.params.projectId).pipe(
+              Effect.provide(Layer.mergeAll(WorkflowModuleLoader.layer, DslMaterializer.layer)),
+            ),
+            { schema: WorkflowRunState, status: 201 },
+          ),
       },
       "/api/projects/:projectId": {
-        PATCH: (request) => runJsonEffect(updateProject(stateStore, localProjectStore, sql, request, request.params.projectId), { noContent: true }),
+        PATCH: (request) => runJsonEffect(updateProject(localProjectStore, sql, request, request.params.projectId), { noContent: true }),
         DELETE: (request) => runJsonEffect(deleteProject(stateStore, localProjectStore, sql, objectStorage, request.params.projectId), { noContent: true }),
       },
       "/api/workflows/files": {
@@ -241,6 +260,18 @@ export const startServiceServer = Effect.gen(function* () {
       },
       "/api/bindings/github": {
         POST: (request) => runJsonEffect(createGitHubBinding(gitHubIntegration, request), { schema: GitHubBindingSummary, status: 201 }),
+      },
+      "/api/github/installations/:installationId/repositories": {
+        GET: (request) =>
+          runJsonEffect(listGitHubInstallationRepositories(gitHubIntegration, request.params.installationId), {
+            schema: Schema.Array(GitHubInstallationRepository),
+          }),
+      },
+      "/api/github/repositories/branches": {
+        GET: (request) => runJsonEffect(listGitHubRepositoryBranches(gitHubIntegration, request), { schema: Schema.Array(Schema.String) }),
+      },
+      "/api/github/repositories/workflows": {
+        GET: (request) => runJsonEffect(listGitHubRepositoryWorkflowFiles(gitHubIntegration, request), { schema: Schema.Array(Schema.String) }),
       },
       "/api/github/webhooks": {
         POST: (request) =>
@@ -429,6 +460,33 @@ const createGitHubBinding = (gitHubIntegration: typeof GitHubIntegration.Service
     return yield* gitHubIntegration.addBinding(binding)
   })
 
+const listGitHubInstallationRepositories = (gitHubIntegration: typeof GitHubIntegration.Service, installationId: string) =>
+  Effect.gen(function* () {
+    const parsedInstallationId = Number(installationId)
+    if (!Number.isInteger(parsedInstallationId) || parsedInstallationId <= 0) {
+      return yield* new RequestBodyInvalid({ message: "installationId must be a positive integer" })
+    }
+
+    return yield* gitHubIntegration.listInstallationRepositories(parsedInstallationId)
+  })
+
+const listGitHubRepositoryBranches = (gitHubIntegration: typeof GitHubIntegration.Service, request: Request) =>
+  Effect.gen(function* () {
+    const url = new URL(request.url)
+    const installationId = yield* parsePositiveInteger(url.searchParams.get("installationId"), "installationId")
+    const repository = yield* parseRequiredQuery(url.searchParams.get("repository"), "repository")
+    return yield* gitHubIntegration.listRepositoryBranches(installationId, repository)
+  })
+
+const listGitHubRepositoryWorkflowFiles = (gitHubIntegration: typeof GitHubIntegration.Service, request: Request) =>
+  Effect.gen(function* () {
+    const url = new URL(request.url)
+    const installationId = yield* parsePositiveInteger(url.searchParams.get("installationId"), "installationId")
+    const repository = yield* parseRequiredQuery(url.searchParams.get("repository"), "repository")
+    const ref = normalizeOptionalQuery(url.searchParams.get("ref"))
+    return yield* gitHubIntegration.listRepositoryWorkflowFiles(installationId, repository, ref)
+  })
+
 const listProjects = (
   gitHubIntegration: typeof GitHubIntegration.Service,
   localProjectStore: Option.Option<typeof LocalProjectStore.Service>,
@@ -448,13 +506,13 @@ const listProjects = (
 const createLocalProject = (
   localProjectStore: Option.Option<typeof LocalProjectStore.Service>,
   sql: Option.Option<typeof SqlClient.Service>,
-  workflowLoader: typeof WorkflowModuleLoader.Service,
-  materializer: typeof DslMaterializer.Service,
   request: Request,
 ) =>
   Effect.gen(function* () {
     const store = yield* requireService(localProjectStore, "local project storage")
     const sqlClient = yield* requireService(sql, "SQL storage")
+    const workflowLoader = yield* WorkflowModuleLoader
+    const materializer = yield* DslMaterializer
     const payload = yield* parseRequestBody(request, LocalProjectCreateRequest)
     const workflowModulePath = payload.workflowModulePath.trim()
 
@@ -467,6 +525,7 @@ const createLocalProject = (
     const resolvedWorkflowModulePath = yield* workflowLoader.resolve(workflowModulePath)
     const projectId = payload.projectId?.trim().length ? payload.projectId.trim() : definition.workflowId
     const workspacePath = payload.workspacePath?.trim().length ? payload.workspacePath.trim() : dirname(resolvedWorkflowModulePath)
+    const projectName = payload.name?.trim().length ? payload.name.trim() : (definition.name.trim().length ? definition.name.trim() : definition.workflowId)
 
     if (yield* projectExists(sqlClient, projectId)) {
       return yield* new ProjectOperationRejected({
@@ -480,6 +539,7 @@ const createLocalProject = (
     yield* store.create(
       new LocalProject({
         projectId: ProjectId.make(projectId),
+        name: projectName,
         provider: "local",
         workflowModulePath: toWorkspaceRelativePath(resolvedWorkflowModulePath),
         workspacePath: toWorkspaceRelativePath(workspacePath),
@@ -490,6 +550,7 @@ const createLocalProject = (
 
     return new ProjectSummary({
       projectId: ProjectId.make(projectId),
+      name: projectName,
       provider: "local",
       bindingCount: 0,
       runCount: 0,
@@ -516,65 +577,111 @@ const listWorkflowFiles = Effect.fn("Service.listWorkflowFiles")(() =>
 )
 
 const updateProject = (
-  stateStore: Option.Option<typeof StateStore.Service>,
   localProjectStore: Option.Option<typeof LocalProjectStore.Service>,
   sql: Option.Option<typeof SqlClient.Service>,
   request: Request,
   currentProjectId: string,
 ) =>
   Effect.gen(function* () {
-    const store = yield* requireService(stateStore, "project state storage")
     const localStore = yield* requireService(localProjectStore, "local project storage")
     const sqlClient = yield* requireService(sql, "SQL storage")
     const payload = yield* parseRequestBody(request, ProjectUpdateRequest)
-    const nextProjectId = payload.projectId.trim()
+    const nextName = payload.name?.trim().length ? payload.name.trim() : undefined
 
-    if (nextProjectId.length === 0) {
-      return yield* new RequestBodyInvalid({ message: "projectId must be non-empty" })
-    }
-
-    yield* assertProjectMutationAllowed(store, sqlClient, currentProjectId, "rename")
-
-    if (nextProjectId === currentProjectId) {
-      return
-    }
-
-    if (yield* projectExists(sqlClient, nextProjectId)) {
-      return yield* new ProjectOperationRejected({
-        projectId: currentProjectId,
-        operation: "rename",
-        message: `Project ${nextProjectId} already exists`,
-      })
+    if (!(yield* projectExists(sqlClient, currentProjectId))) {
+      return yield* new ProjectNotFound({ projectId: currentProjectId })
     }
 
     yield* catchProjectSql(
-      "rename project",
+      "update project",
       sqlClient.withTransaction(
         Effect.gen(function* () {
-          yield* store.renameProject(currentProjectId, nextProjectId)
-          yield* localStore.renameProject(currentProjectId, nextProjectId)
-          yield* sqlClient`
-            UPDATE github_bindings
-            SET project_id = ${nextProjectId},
-                binding_json = jsonb_set(binding_json, '{projectId}', to_jsonb(CAST(${nextProjectId} AS text)), true)
-            WHERE project_id = ${currentProjectId}
-          `
-          yield* sqlClient`
-            UPDATE github_run_links
-            SET project_id = ${nextProjectId},
-                link_json = jsonb_set(link_json, '{projectId}', to_jsonb(CAST(${nextProjectId} AS text)), true)
-            WHERE project_id = ${currentProjectId}
-          `
-          yield* sqlClient`
-            UPDATE github_trigger_deliveries
-            SET project_id = ${nextProjectId},
-                delivery_json = jsonb_set(delivery_json, '{projectId}', to_jsonb(CAST(${nextProjectId} AS text)), true)
-            WHERE project_id = ${currentProjectId}
-          `
-          yield* sqlClient`UPDATE secrets SET project_id = ${nextProjectId} WHERE project_id = ${currentProjectId}`
+          yield* localStore.updateProjectName(currentProjectId, nextName)
+
+          if (nextName === undefined) {
+            yield* sqlClient`
+              UPDATE github_bindings
+              SET binding_json = binding_json - 'name'
+              WHERE project_id = ${currentProjectId}
+            `
+          } else {
+            yield* sqlClient`
+              UPDATE github_bindings
+              SET binding_json = jsonb_set(binding_json, '{name}', to_jsonb(CAST(${nextName} AS text)), true)
+              WHERE project_id = ${currentProjectId}
+            `
+          }
         }),
       ),
     )
+  })
+
+const startLocalProjectRun = (
+  localProjectStore: Option.Option<typeof LocalProjectStore.Service>,
+  engine: EngineService,
+  request: Request,
+  projectId: string,
+) =>
+  Effect.gen(function* () {
+    const localStore = yield* requireService(localProjectStore, "local project storage")
+    const workflowLoader = yield* WorkflowModuleLoader
+    const materializer = yield* DslMaterializer
+    const project = yield* localStore.get(projectId)
+    const payload = yield* parseOptionalRequestBody(request, ProjectRunRequest)
+
+    if (project === undefined) {
+      return yield* new ProjectOperationRejected({
+        projectId,
+        operation: "run",
+        message: `Project ${projectId} is not a local project and cannot be run manually`,
+      })
+    }
+
+    const authored = yield* workflowLoader.load(project.workflowModulePath)
+    const definition = yield* materializer.materialize(authored)
+    const enrichedDefinition = new NormalizedWorkflowDefinition({
+      ...definition,
+      metadata: {
+        ...definition.metadata,
+        projectId: project.projectId,
+        project: {
+          provider: project.provider,
+          projectId: project.projectId,
+          ...(project.name === undefined ? {} : { name: project.name }),
+        },
+      },
+    })
+
+    return yield* engine.submitDefinition(enrichedDefinition, {
+      workspacePath: resolveStoredWorkspacePath(project.workspacePath),
+      ...(payload?.inputValues === undefined ? {} : { inputValues: payload.inputValues }),
+    })
+  })
+
+const readLocalProjectRunConfig = (
+  localProjectStore: Option.Option<typeof LocalProjectStore.Service>,
+  projectId: string,
+) =>
+  Effect.gen(function* () {
+    const localStore = yield* requireService(localProjectStore, "local project storage")
+    const workflowLoader = yield* WorkflowModuleLoader
+    const materializer = yield* DslMaterializer
+    const project = yield* localStore.get(projectId)
+
+    if (project === undefined) {
+      return yield* new ProjectOperationRejected({
+        projectId,
+        operation: "inspect run config",
+        message: `Project ${projectId} is not a local project and cannot be run manually`,
+      })
+    }
+
+    const authored = yield* workflowLoader.load(project.workflowModulePath)
+    const definition = yield* materializer.materialize(authored)
+
+    return new ProjectRunConfigResponse({
+      requiredInputs: definition.inputs.map((input) => input.name),
+    })
   })
 
 const deleteProject = (
@@ -676,6 +783,32 @@ const toWorkspaceRelativePath = (path: string) => {
   return nextPath.length === 0 || nextPath.startsWith("..") ? path : nextPath
 }
 
+const resolveStoredWorkspacePath = (path: string) =>
+  isAbsolute(path) ? path : resolvePath(process.cwd(), path)
+
+const parsePositiveInteger = (value: string | null, label: string) => {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return Effect.fail(new RequestBodyInvalid({ message: `${label} must be a positive integer` }))
+  }
+
+  return Effect.succeed(parsed)
+}
+
+const parseRequiredQuery = (value: string | null, label: string) => {
+  const trimmed = value?.trim()
+  if (trimmed === undefined || trimmed.length === 0) {
+    return Effect.fail(new RequestBodyInvalid({ message: `${label} query parameter is required` }))
+  }
+
+  return Effect.succeed(trimmed)
+}
+
+const normalizeOptionalQuery = (value: string | null) => {
+  const trimmed = value?.trim()
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed
+}
+
 const requireService = <A>(service: Option.Option<A>, name: string) =>
   Option.match(service, {
     onNone: () => Effect.fail(new ServiceUnavailable({ message: `${name} is not configured` })),
@@ -738,6 +871,17 @@ const retryRun = (engine: EngineService, request: Request, runId: RunId) =>
 
 const parseRequestBody = <A, I, RD, RE>(request: Request, schema: Schema.Codec<A, I, RD, RE>) =>
   readRequestText(request).pipe(Effect.flatMap((text) => decodeJsonText(text, schema)))
+
+const parseOptionalRequestBody = <A, I, RD, RE>(request: Request, schema: Schema.Codec<A, I, RD, RE>) =>
+  readRequestText(request).pipe(
+    Effect.flatMap((text) => {
+      if (text.trim().length === 0) {
+        return Effect.succeed(undefined)
+      }
+
+      return decodeJsonText(text, schema)
+    }),
+  )
 
 const readRequestText = (request: Request) =>
   Effect.tryPromise({

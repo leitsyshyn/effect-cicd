@@ -24,6 +24,9 @@ describe("GitHub service routes", () => {
             Layer.succeed(GitHubIntegration, {
               addBinding: () => Effect.die("unused"),
               listBindings: () => Effect.succeed([]),
+              listInstallationRepositories: () => Effect.succeed([]),
+              listRepositoryBranches: () => Effect.succeed([]),
+              listRepositoryWorkflowFiles: () => Effect.succeed([]),
               listProjects: () => Effect.succeed([]),
               acceptWebhook: (request) =>
                 Effect.sync(() => {

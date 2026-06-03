@@ -562,6 +562,9 @@ describe("CLI", () => {
               return sampleBindingSummary()
             }),
           listBindings: () => Effect.die("unused"),
+          listInstallationRepositories: () => Effect.die("unused"),
+          listRepositoryBranches: () => Effect.die("unused"),
+          listRepositoryWorkflowFiles: () => Effect.die("unused"),
           listProjects: () => Effect.die("unused"),
           acceptWebhook: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
@@ -585,6 +588,9 @@ describe("CLI", () => {
         Layer.succeed(GitHubIntegration, {
           addBinding: () => Effect.die("unused"),
           listBindings: () => Effect.succeed([sampleBindingSummary()]),
+          listInstallationRepositories: () => Effect.die("unused"),
+          listRepositoryBranches: () => Effect.die("unused"),
+          listRepositoryWorkflowFiles: () => Effect.die("unused"),
           listProjects: () => Effect.die("unused"),
           acceptWebhook: () => Effect.die("unused"),
           handleWebhook: () => Effect.die("unused"),
