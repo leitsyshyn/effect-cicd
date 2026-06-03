@@ -170,7 +170,7 @@ const summarizeProjects = (
     grouped.set(binding.projectId, items)
   }
 
-  const projectIds = new Set([...grouped.keys(), ...runsByProject.keys()])
+  const projectIds = new Set(grouped.keys())
 
   return [...projectIds]
     .sort(compareStrings)
