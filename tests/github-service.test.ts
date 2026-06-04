@@ -23,6 +23,7 @@ describe("GitHub service routes", () => {
             Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
             Layer.succeed(GitHubIntegration, {
               addBinding: () => Effect.die("unused"),
+              deleteBinding: () => Effect.succeed(undefined),
               listBindings: () => Effect.succeed([]),
               listInstallationRepositories: () => Effect.succeed([]),
               listRepositoryBranches: () => Effect.succeed([]),

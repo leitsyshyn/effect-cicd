@@ -109,6 +109,8 @@ export const createDashboardApi = (fetcher: FetchLike = fetch) => ({
   listBindings: () => getJson<ReadonlyArray<GitHubBindingSummaryDto>>(fetcher, "/api/bindings"),
   createBinding: (request: GitHubBindingCreateRequestDto) =>
     postJson<GitHubBindingSummaryDto>(fetcher, "/api/bindings/github", request),
+  deleteBinding: (bindingId: string) =>
+    sendEmpty(fetcher, `/api/bindings/${encodeURIComponent(bindingId)}`, { method: "DELETE" }),
   listGitHubInstallationRepositories: (installationId: number) =>
     getJson<ReadonlyArray<GitHubInstallationRepositoryDto>>(
       fetcher,

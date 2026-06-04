@@ -261,6 +261,9 @@ export const startServiceServer = Effect.gen(function* () {
       "/api/bindings/github": {
         POST: (request) => runJsonEffect(createGitHubBinding(gitHubIntegration, request), { schema: GitHubBindingSummary, status: 201 }),
       },
+      "/api/bindings/:bindingId": {
+        DELETE: (request) => runJsonEffect(gitHubIntegration.deleteBinding(request.params.bindingId), { noContent: true }),
+      },
       "/api/github/installations/:installationId/repositories": {
         GET: (request) =>
           runJsonEffect(listGitHubInstallationRepositories(gitHubIntegration, request.params.installationId), {

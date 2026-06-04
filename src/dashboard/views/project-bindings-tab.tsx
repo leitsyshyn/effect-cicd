@@ -2,7 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
-import { Plus } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { z } from "zod";
 
 import type { GitHubBindingCreateRequestDto } from "../api.ts";
@@ -131,6 +131,25 @@ export function ProjectBindingsTab(props: { readonly projectId: string }) {
     onSuccess: async () => {
       form.reset();
       setDialogOpen(false);
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: dashboardQueryKeys.bindings,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: dashboardQueryKeys.project(props.projectId),
+        }),
+      ]);
+    },
+  });
+
+  const [deleteConfirmBindingId, setDeleteConfirmBindingId] = useState<string | null>(null);
+
+  const deleteBindingMutation = useMutation({
+    mutationFn: async (bindingId: string) => {
+      await dashboardApi.deleteBinding(bindingId);
+    },
+    onSuccess: async () => {
+      setDeleteConfirmBindingId(null);
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: dashboardQueryKeys.bindings,
@@ -383,6 +402,7 @@ export function ProjectBindingsTab(props: { readonly projectId: string }) {
                   <TableHead>Workspace Subdir</TableHead>
                   <TableHead>Enabled</TableHead>
                   <TableHead>Created</TableHead>
+                  <TableHead className="w-12" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -406,6 +426,16 @@ export function ProjectBindingsTab(props: { readonly projectId: string }) {
                       </Badge>
                     </TableCell>
                     <TableCell>{formatDateTime(binding.createdAt)}</TableCell>
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 text-muted-foreground hover:text-destructive"
+                        onClick={() => setDeleteConfirmBindingId(binding.bindingId)}
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -413,6 +443,48 @@ export function ProjectBindingsTab(props: { readonly projectId: string }) {
           </CardContent>
         </Card>
       ) : null}
+
+      <Dialog
+        open={deleteConfirmBindingId !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteConfirmBindingId(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Binding</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Are you sure you want to delete this binding? This action cannot be undone.
+          </p>
+          {deleteBindingMutation.error === null ? null : (
+            <FieldError>{deleteBindingMutation.error.message}</FieldError>
+          )}
+          <div className="mt-6 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setDeleteConfirmBindingId(null)}
+              disabled={deleteBindingMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (deleteConfirmBindingId !== null) {
+                  deleteBindingMutation.mutate(deleteConfirmBindingId);
+                }
+              }}
+              disabled={deleteBindingMutation.isPending}
+            >
+              {deleteBindingMutation.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

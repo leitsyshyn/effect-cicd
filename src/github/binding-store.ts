@@ -16,6 +16,7 @@ export class GitHubBindingStore extends Context.Service<
   {
     readonly create: (binding: GitHubBinding) => Effect.Effect<void, StoreUnavailable>
     readonly list: () => Effect.Effect<ReadonlyArray<GitHubBinding>, StoreUnavailable>
+    readonly delete: (bindingId: string) => Effect.Effect<void, StoreUnavailable>
     readonly listProjects: () => Effect.Effect<ReadonlyArray<ProjectSummary>, StoreUnavailable>
     readonly listEnabledForPush: (
       installationId: number,
@@ -45,6 +46,11 @@ export class GitHubBindingStore extends Context.Service<
         },
       )
 
+      const delete_ = (bindingId: string) =>
+        Effect.sync(() => {
+          bindings.delete(bindingId)
+        })
+
       const listEnabledForPush = (installationId: number, repositoryId: number, repositoryOwner: string, repositoryName: string) =>
         Effect.sync(() =>
           [...bindings.values()]
@@ -62,7 +68,7 @@ export class GitHubBindingStore extends Context.Service<
             .sort(compareBindings),
         )
 
-      return { create, list, listProjects, listEnabledForPush }
+      return { create, list, delete: delete_, listProjects, listEnabledForPush }
     }),
   )
 
@@ -152,7 +158,14 @@ export class GitHubBindingStore extends Context.Service<
         },
       )
 
-      return { create, list, listProjects, listEnabledForPush }
+      const delete_ = Effect.fn("GitHubBindingStore.delete")(function* (bindingId: string) {
+        yield* catchSql("delete GitHub binding", sql`
+          DELETE FROM github_bindings
+          WHERE binding_id = ${bindingId}
+        `)
+      })
+
+      return { create, list, delete: delete_, listProjects, listEnabledForPush }
     }),
   )
 }

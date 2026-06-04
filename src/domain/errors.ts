@@ -94,6 +94,10 @@ export class SecretBackendUnavailable extends Schema.TaggedErrorClass<SecretBack
   },
 ) {}
 
+export class GitHubBindingNotFound extends Schema.TaggedErrorClass<GitHubBindingNotFound>()("GitHubBindingNotFound", {
+  bindingId: BindingId,
+}) {}
+
 export class GitHubBindingRejected extends Schema.TaggedErrorClass<GitHubBindingRejected>()("GitHubBindingRejected", {
   message: Schema.String,
 }) {}
@@ -150,6 +154,7 @@ export const DomainError = Schema.Union([
   SecretNameInvalid,
   SecretBackendUnavailable,
   GitHubBindingRejected,
+  GitHubBindingNotFound,
   GitHubWebhookUnauthorized,
   GitHubConfigMissing,
   GitHubAuthFailed,

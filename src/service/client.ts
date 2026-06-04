@@ -219,6 +219,10 @@ export const gitHubIntegrationClientLayer = Layer.effect(
       ),
     )
 
+    const deleteBinding = Effect.fn("GitHubIntegrationClient.deleteBinding")((bindingId: string) =>
+      requestJsonNoContent(http, HttpClientRequest.delete(`/api/bindings/${encodeURIComponent(bindingId)}`)),
+    )
+
     const listBindings = Effect.fn("GitHubIntegrationClient.listBindings")(() =>
       requestJson(http, HttpClientRequest.get("/api/bindings"), Schema.Array(GitHubBindingSummary)),
     )
@@ -273,6 +277,7 @@ export const gitHubIntegrationClientLayer = Layer.effect(
 
     return {
       addBinding,
+      deleteBinding,
       listBindings,
       listInstallationRepositories,
       listRepositoryBranches,

@@ -4,6 +4,9 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "effect-cicd": "./bin/effect-cicd.ts"
+  },
   "scripts": {
     "cli": "bun run index.ts",
     "local": "bun run index.local.ts",

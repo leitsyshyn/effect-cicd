@@ -1,4 +1,4 @@
-import { Artifact, Command, Job, Workflow } from "../src/dsl/index.ts"
+import { Artifact, Command, Job, Workflow } from "../src/dsl/index.ts";
 
 export default Workflow.make("workflow:demo:mvp").pipe(
   Workflow.named("demo mvp workflow"),
@@ -30,8 +30,10 @@ export default Workflow.make("workflow:demo:mvp").pipe(
       Job.env({ CI: "true" }),
       Job.workingDirectory("."),
       Job.artifact(
-        Artifact.file("release-manifest", "dist/release.json", { contentType: "application/json" }),
+        Artifact.file("release-manifest", "dist/release.json", {
+          contentType: "application/json",
+        }),
       ),
     ),
   ),
-)
+);

@@ -83,6 +83,7 @@ describe("service boundary", () => {
           }),
           Layer.succeed(GitHubIntegration, {
             addBinding: () => Effect.die("unused"),
+            deleteBinding: () => Effect.succeed(undefined),
             listBindings: () => Effect.succeed([]),
             listInstallationRepositories: () => Effect.succeed([]),
             listRepositoryBranches: () => Effect.succeed([]),
@@ -162,6 +163,7 @@ describe("service boundary", () => {
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
             addBinding: () => Effect.die("unused"),
+            deleteBinding: () => Effect.succeed(undefined),
             listBindings: () => Effect.succeed([]),
             listInstallationRepositories: () => Effect.succeed([]),
             listRepositoryBranches: () => Effect.succeed([]),
@@ -210,6 +212,7 @@ describe("service boundary", () => {
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
             addBinding: () => Effect.die("unused"),
+            deleteBinding: () => Effect.succeed(undefined),
             listBindings: () => Effect.succeed([]),
             listInstallationRepositories: () => Effect.succeed([]),
             listRepositoryBranches: () => Effect.succeed([]),
@@ -253,6 +256,7 @@ describe("service boundary", () => {
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
             addBinding: () => Effect.die("unused"),
+            deleteBinding: () => Effect.succeed(undefined),
             listBindings: () => Effect.succeed([]),
             listInstallationRepositories: () => Effect.succeed([]),
             listRepositoryBranches: () => Effect.succeed([]),
@@ -309,6 +313,7 @@ describe("service boundary", () => {
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
             addBinding: () => Effect.die("unused"),
+            deleteBinding: () => Effect.succeed(undefined),
             listBindings: () => Effect.succeed([]),
             listInstallationRepositories: () => Effect.succeed([]),
             listRepositoryBranches: () => Effect.succeed([]),
@@ -391,6 +396,7 @@ describe("service boundary", () => {
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
             addBinding: () => Effect.die("unused"),
+            deleteBinding: () => Effect.succeed(undefined),
             listBindings: () => Effect.succeed([]),
             listInstallationRepositories: () => Effect.succeed([]),
             listRepositoryBranches: () => Effect.succeed([]),
@@ -490,6 +496,7 @@ describe("service boundary", () => {
         }),
         Layer.succeed(GitHubIntegration, {
           addBinding: () => Effect.die("unused"),
+          deleteBinding: () => Effect.succeed(undefined),
           listBindings: () => Effect.succeed([]),
           listInstallationRepositories: () => Effect.succeed([]),
           listRepositoryBranches: () => Effect.succeed([]),
@@ -557,6 +564,7 @@ describe("service boundary", () => {
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
             addBinding: () => Effect.die("unused"),
+            deleteBinding: () => Effect.succeed(undefined),
             listBindings: () => Effect.succeed([]),
             listInstallationRepositories: () => Effect.succeed([]),
             listRepositoryBranches: () => Effect.succeed([]),
@@ -608,6 +616,7 @@ describe("service boundary", () => {
         Layer.succeed(StorageRuntimeConfig, { runRecoveryOnStartup: false, runStorageTests: false }),
         Layer.succeed(GitHubIntegration, {
             addBinding: () => Effect.die("unused"),
+            deleteBinding: () => Effect.succeed(undefined),
             listBindings: () => Effect.succeed([]),
             listInstallationRepositories: () => Effect.succeed([]),
             listRepositoryBranches: () => Effect.succeed([]),

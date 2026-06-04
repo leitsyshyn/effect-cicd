@@ -6,6 +6,7 @@ import * as Context from "effect/Context"
 
 import {
   DomainError,
+  GitHubBindingNotFound,
   GitHubBindingRejected,
   GitHubConfigMissing,
   GitHubWebhookUnauthorized,
@@ -47,6 +48,7 @@ export class GitHubIntegration extends Context.Service<
   GitHubIntegration,
   {
     readonly addBinding: (request: GitHubBindingCreateRequest) => Effect.Effect<GitHubBindingSummary, DomainError>
+    readonly deleteBinding: (bindingId: string) => Effect.Effect<void, DomainError>
     readonly listBindings: () => Effect.Effect<ReadonlyArray<GitHubBindingSummary>, DomainError>
     readonly listInstallationRepositories: (installationId: number) => Effect.Effect<ReadonlyArray<GitHubInstallationRepository>, DomainError>
     readonly listRepositoryBranches: (installationId: number, repository: string) => Effect.Effect<ReadonlyArray<string>, DomainError>
@@ -116,6 +118,15 @@ export class GitHubIntegration extends Context.Service<
           return toBindingSummary(binding)
         },
       )
+
+      const deleteBinding = Effect.fn("GitHubIntegration.deleteBinding")(function* (bindingId: string) {
+        const bindings = yield* bindingStore.list()
+        const binding = bindings.find((b) => b.bindingId === bindingId)
+        if (binding === undefined) {
+          return yield* new GitHubBindingNotFound({ bindingId: BindingId.make(bindingId) })
+        }
+        yield* bindingStore.delete(bindingId)
+      })
 
       const listBindings = Effect.fn("GitHubIntegration.listBindings")(function* () {
         const bindings = yield* bindingStore.list()
@@ -238,6 +249,7 @@ export class GitHubIntegration extends Context.Service<
 
       return {
         addBinding,
+        deleteBinding,
         listBindings,
         listInstallationRepositories,
         listRepositoryBranches,

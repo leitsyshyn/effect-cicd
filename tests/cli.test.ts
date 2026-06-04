@@ -561,6 +561,7 @@ describe("CLI", () => {
               seenInstallationId = request.installationId
               return sampleBindingSummary()
             }),
+          deleteBinding: () => Effect.succeed(undefined),
           listBindings: () => Effect.die("unused"),
           listInstallationRepositories: () => Effect.die("unused"),
           listRepositoryBranches: () => Effect.die("unused"),
@@ -587,6 +588,7 @@ describe("CLI", () => {
         ["bindings", "list"],
         Layer.succeed(GitHubIntegration, {
           addBinding: () => Effect.die("unused"),
+          deleteBinding: () => Effect.succeed(undefined),
           listBindings: () => Effect.succeed([sampleBindingSummary()]),
           listInstallationRepositories: () => Effect.die("unused"),
           listRepositoryBranches: () => Effect.die("unused"),

@@ -45,6 +45,9 @@ export const dashboardProgram = Effect.gen(function* () {
       "/api/bindings/github": {
         POST: async (request) => handlers.createBinding(await request.json().catch(() => ({}))),
       },
+      "/api/bindings/:bindingId": {
+        DELETE: (request) => handlers.deleteBinding(request.params.bindingId),
+      },
       "/api/github/installations/:installationId/repositories": {
         GET: (request) => handlers.listGitHubInstallationRepositories(Number(request.params.installationId)),
       },

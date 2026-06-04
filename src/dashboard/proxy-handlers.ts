@@ -49,6 +49,11 @@ export const createDashboardProxyHandlers = (baseUrl: string, fetcher: FetchLike
       body: JSON.stringify(body),
     }),
 
+  deleteBinding: (bindingId: string) =>
+    proxyPassthrough(fetcher, `${baseUrl}/api/bindings/${encodeURIComponent(bindingId)}`, {
+      method: "DELETE",
+    }),
+
   listGitHubInstallationRepositories: (installationId: number) =>
     proxyPassthrough(fetcher, `${baseUrl}/api/github/installations/${encodeURIComponent(String(installationId))}/repositories`),
 

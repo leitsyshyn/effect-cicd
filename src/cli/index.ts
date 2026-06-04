@@ -392,9 +392,30 @@ const projectsCommand = Command.make("projects").pipe(
   Command.withSubcommands([projectsListCommand]),
 )
 
+const bindingsDeleteCommand = Command.make(
+  "delete",
+  {
+    bindingId: Argument.string("binding-id"),
+  },
+  ({ bindingId }) =>
+    Effect.gen(function* () {
+      const gitHubIntegration = yield* GitHubIntegration
+      yield* gitHubIntegration.deleteBinding(bindingId).pipe(
+        Effect.catchTag("GitHubBindingNotFound", () =>
+          Effect.fail(
+            new CliInputInvalid({
+              message: `Binding not found: ${bindingId}`,
+            }),
+          ),
+        ),
+      )
+      yield* printLines([`Deleted binding: ${bindingId}`])
+    }),
+).pipe(Command.withDescription("Delete a repository binding"))
+
 const bindingsCommand = Command.make("bindings").pipe(
   Command.withDescription("Manage repository trigger bindings"),
-  Command.withSubcommands([bindingsAddCommand, bindingsListCommand]),
+  Command.withSubcommands([bindingsAddCommand, bindingsDeleteCommand, bindingsListCommand]),
 )
 
 const secretsSetCommand = Command.make(
