@@ -19,6 +19,7 @@ import { FetchHttpClient } from "effect/unstable/http"
 import { EngineServiceConfig } from "../runtime/config.ts"
 import { appVersion } from "../runtime/version.ts"
 import { engineServiceClientLayer, gitHubIntegrationClientLayer, SecretsClient } from "../service/client.ts"
+import { gap, heading, item, kv, none, red, status, success } from "./style.ts"
 
 export const cliVersion = appVersion
 
@@ -131,7 +132,7 @@ const validateCommand = Command.make(
     const definition = yield* loadAndMaterializeWorkflow(workflowModule, Option.getOrUndefined(exportName))
 
     yield* engine.validate(definition)
-    yield* printLines([`workflow ${definition.workflowId} is valid`])
+    yield* printLines([success(`workflow ${definition.workflowId} is valid`)])
   }),
 ).pipe(Command.withDescription("Validate a workflow module (default export or named export `workflow`)"))
 
@@ -269,7 +270,7 @@ const runsLogCommand = Command.make(
       const engine = yield* Engine
       const payload = yield* engine.readLogPayload(LogRef.make(logRef))
 
-      yield* printLines([`log: ${logRef}`, payload])
+      yield* printLines([kv("log", logRef), payload])
     }),
 ).pipe(Command.withDescription("Read persisted log payload content"))
 
@@ -283,7 +284,7 @@ const runsArtifactCommand = Command.make(
       const engine = yield* Engine
       const payload = yield* engine.readArtifactPayload(ArtifactRef.make(artifactRef))
 
-      yield* printLines([`artifact: ${artifactRef}`, payload])
+      yield* printLines([kv("artifact", artifactRef), payload])
     }),
 ).pipe(Command.withDescription("Read persisted artifact payload content"))
 
@@ -296,7 +297,7 @@ const artifactsDeleteCommand = Command.make(
     Effect.gen(function* () {
       const engine = yield* Engine
       yield* engine.deleteArtifact(ArtifactRef.make(artifactRef))
-      yield* printLines([`artifact: ${artifactRef}`, "status: deleted"])
+      yield* printLines([kv("artifact", artifactRef), kv("status", status("deleted"))])
     }),
 ).pipe(Command.withDescription("Delete a persisted artifact payload"))
 
@@ -314,7 +315,7 @@ const logsDeleteCommand = Command.make(
     Effect.gen(function* () {
       const engine = yield* Engine
       yield* engine.deleteLog(LogRef.make(logRef))
-      yield* printLines([`log: ${logRef}`, "status: deleted"])
+      yield* printLines([kv("log", logRef), kv("status", status("deleted"))])
     }),
 ).pipe(Command.withDescription("Delete a persisted log payload"))
 
@@ -409,7 +410,7 @@ const bindingsDeleteCommand = Command.make(
           ),
         ),
       )
-      yield* printLines([`Deleted binding: ${bindingId}`])
+      yield* printLines([success(`Deleted binding: ${bindingId}`)])
     }),
 ).pipe(Command.withDescription("Delete a repository binding"))
 
@@ -431,13 +432,13 @@ const secretsSetCommand = Command.make(
       const value = process.env[fromEnv]
 
       if (value === undefined) {
-        return yield* Console.error(`missing environment variable for --from-env: ${fromEnv}`).pipe(
+        return yield* Console.error(red(`missing environment variable for --from-env: ${fromEnv}`)).pipe(
           Effect.flatMap(() => Effect.fail(new CliInputInvalid({ message: "Secret value source missing" }))),
         )
       }
 
       yield* secrets.setSecret(projectId, key, value)
-      yield* printLines([`project: ${projectId}`, `secret: ${key}`, "status: stored"])
+      yield* printLines([kv("project", projectId), kv("secret", key), kv("status", status("stored"))])
     }),
 ).pipe(Command.withDescription("Store or update a secret from an existing environment variable"))
 
@@ -459,7 +460,7 @@ const secretsDeleteCommand = Command.make(
     Effect.gen(function* () {
       const secrets = yield* SecretsClient
       yield* secrets.deleteSecret(projectId, key)
-      yield* printLines([`project: ${projectId}`, `secret: ${key}`, "status: deleted"])
+      yield* printLines([kv("project", projectId), kv("secret", key), kv("status", status("deleted"))])
     }),
 ).pipe(Command.withDescription("Delete a stored secret"))
 
@@ -477,7 +478,7 @@ export const cliProgram = Command.run(cli, { version: cliVersion })
 
 export const appProgram = cliProgram.pipe(
   Effect.catchTag("EngineUnavailable", (error) =>
-    Console.error(`engine service unavailable: ${error.message}`).pipe(
+    Console.error(red(`engine service unavailable: ${error.message}`)).pipe(
       Effect.flatMap(() => Effect.fail(error)),
     ),
   ),
@@ -522,13 +523,16 @@ const waitForTerminalRun = (
   )
 
 const renderPlanSummary = (plan: ExecutionPlan) => [
-  `workflow: ${plan.workflowId}`,
-  `name: ${plan.workflowName}`,
-  "units:",
-  ...plan.units.map((unit) => `${unit.unitId} deps: ${formatNames(unit.dependencies)}`),
-  "dependencies:",
-  ...plan.dependencies.map((dependency) => `${dependency.from} -> ${dependency.to}`),
-  `diagnostics: ${plan.diagnostics.length}`,
+  kv("workflow", plan.workflowId),
+  kv("name", plan.workflowName),
+  ...gap(),
+  heading("units"),
+  ...plan.units.map((unit) => item(`${unit.unitId} deps: ${formatNames(unit.dependencies)}`)),
+  ...gap(),
+  heading("dependencies"),
+  ...plan.dependencies.map((dependency) => item(`${dependency.from} -> ${dependency.to}`)),
+  ...gap(),
+  kv("diagnostics", String(plan.diagnostics.length)),
 ]
 
 const renderRunSummary = (
@@ -538,128 +542,140 @@ const renderRunSummary = (
   logs: ReadonlyArray<LogMetadata>,
   workspacePath: string,
 ) => [
-  `run: ${run.runId}`,
-  `project: ${run.projectId}`,
-  `status: ${run.status}`,
-  `workspace: ${workspacePath}`,
-  `inputs: ${formatResolvedValues(run.inputs ?? [])}`,
-  `outputs: ${formatOutputValues(run.outputs ?? [])}`,
-  `reports: ${formatReports(run.reports ?? [])}`,
-  "units:",
-  ...run.units.map((unit) => `${unit.unitId} ${unit.status}`),
-  "events:",
-  ...events.map((event) => event._tag),
-  "artifacts:",
+  kv("run", run.runId),
+  kv("project", run.projectId),
+  kv("status", status(run.status)),
+  kv("workspace", workspacePath),
+  kv("inputs", formatResolvedValues(run.inputs ?? [])),
+  kv("outputs", formatOutputValues(run.outputs ?? [])),
+  kv("reports", formatReports(run.reports ?? [])),
+  ...gap(),
+  heading("units"),
+  ...run.units.map((unit) => item(`${unit.unitId} ${status(unit.status)}`)),
+  ...gap(),
+  heading("events"),
+  ...events.map((event) => item(event._tag)),
+  ...gap(),
+  heading("artifacts"),
   ...renderPayloadRefs(artifacts, (artifact) => `${artifact.name} ${artifact.artifactRef}`),
-  "logs:",
+  ...gap(),
+  heading("logs"),
   ...renderPayloadRefs(logs, (log) => `${log.name} ${log.logRef}`),
 ]
 
 const renderRunsList = (runs: ReadonlyArray<WorkflowRunState>) => [
-  "runs:",
+  heading("runs"),
   ...(runs.length === 0
-    ? ["-"]
+    ? [none()]
     : runs.map(
         (run) =>
-          `${run.runId} project=${run.projectId} workflow=${run.workflowId} status=${run.status} updatedAt=${run.updatedAt.toISOString()}`,
+          item(`${run.runId} project=${run.projectId} workflow=${run.workflowId} status=${status(run.status)} updatedAt=${run.updatedAt.toISOString()}`),
       )),
 ]
 
 const renderRunState = (run: WorkflowRunState) => [
-  `run: ${run.runId}`,
-  `project: ${run.projectId}`,
-  `workflow: ${run.workflowId}`,
-  `plan: ${run.planId}`,
-  `status: ${run.status}`,
-  `workspace: ${run.execution.options.workspacePath ?? "-"}`,
-  `createdAt: ${run.createdAt.toISOString()}`,
-  `updatedAt: ${run.updatedAt.toISOString()}`,
-  `startedAt: ${formatDate(run.startedAt)}`,
-  `finishedAt: ${formatDate(run.finishedAt)}`,
-  `progress: ${run.progress.completedUnits}/${run.progress.totalUnits} completed, ${run.progress.failedUnits} failed, ${run.progress.skippedUnits} skipped`,
-  `failure: ${run.failure?.message ?? "-"}`,
-  `cancellation: ${run.cancellationReason ?? "-"}`,
-  `inputs: ${formatResolvedValues(run.inputs ?? [])}`,
-  `outputs: ${formatOutputValues(run.outputs ?? [])}`,
-  `reports: ${formatReports(run.reports ?? [])}`,
+  kv("run", run.runId),
+  kv("project", run.projectId),
+  kv("workflow", run.workflowId),
+  kv("plan", run.planId),
+  kv("status", status(run.status)),
+  kv("workspace", run.execution.options.workspacePath ?? "-"),
+  kv("createdAt", run.createdAt.toISOString()),
+  kv("updatedAt", run.updatedAt.toISOString()),
+  kv("startedAt", formatDate(run.startedAt)),
+  kv("finishedAt", formatDate(run.finishedAt)),
+  kv("progress", `${run.progress.completedUnits}/${run.progress.totalUnits} completed, ${run.progress.failedUnits} failed, ${run.progress.skippedUnits} skipped`),
+  kv("failure", run.failure?.message ?? "-"),
+  kv("cancellation", run.cancellationReason ?? "-"),
+  kv("inputs", formatResolvedValues(run.inputs ?? [])),
+  kv("outputs", formatOutputValues(run.outputs ?? [])),
+  kv("reports", formatReports(run.reports ?? [])),
   ...renderTriggerMetadata(run),
-  "units:",
+  ...gap(),
+  heading("units"),
   ...run.units.map(
     (unit) =>
-      `${unit.unitId} ${unit.status} inputs=${formatResolvedValues(unit.resolvedInputs ?? [])} outputs=${formatOutputValues(unit.outputs ?? [])} reports=${formatReports(unit.reports ?? [])}${unit.skipReason === undefined ? "" : ` skipped=${unit.skipReason}`}${unit.cancellationReason === undefined ? "" : ` canceled=${unit.cancellationReason}`}`,
+      item(`${unit.unitId} ${status(unit.status)} inputs=${formatResolvedValues(unit.resolvedInputs ?? [])} outputs=${formatOutputValues(unit.outputs ?? [])} reports=${formatReports(unit.reports ?? [])}${unit.skipReason === undefined ? "" : ` skipped=${unit.skipReason}`}${unit.cancellationReason === undefined ? "" : ` canceled=${unit.cancellationReason}`}`),
   ),
 ]
 
 const renderBindingsList = (bindings: ReadonlyArray<GitHubBindingSummary>) => [
-  "bindings:",
-  ...(bindings.length === 0 ? ["-"] : bindings.flatMap((binding) => renderBindingSummary(binding))),
+  heading("bindings"),
+  ...(bindings.length === 0
+    ? [none()]
+    : bindings.flatMap((binding, index) => [...(index === 0 ? [] : gap()), ...renderBindingSummary(binding)])),
 ]
 
 const renderSecretsList = (
   projectId: string,
   secrets: ReadonlyArray<{ readonly key: string; readonly createdAt: Date; readonly updatedAt: Date }>,
 ) => [
-  `project: ${projectId}`,
-  "secrets:",
+  kv("project", projectId),
+  ...gap(),
+  heading("secrets"),
   ...(secrets.length === 0
-    ? ["-"]
-    : secrets.map((secret) => `${secret.key} updatedAt=${secret.updatedAt.toISOString()}`)),
+    ? [none()]
+    : secrets.map((secret) => item(`${secret.key} updatedAt=${secret.updatedAt.toISOString()}`))),
 ]
 
 const renderBindingSummary = (binding: GitHubBindingSummary) => [
-  `binding: ${binding.bindingId}`,
-  `project: ${binding.projectId}`,
-  `provider: ${binding.provider}`,
-  `installationId: ${binding.installationId ?? "-"}`,
-  `repositoryId: ${binding.repositoryId ?? "-"}`,
-  `repository: ${binding.repository}`,
-  `cloneUrl: ${binding.cloneUrl}`,
-  `sourceKind: ${binding.sourceKind}`,
-  `branch: ${binding.branch ?? "*"}`,
-  `workflowModulePath: ${binding.workflowModulePath}`,
-  `workspaceSubdir: ${binding.workspaceSubdir ?? "-"}`,
-  `enabled: ${binding.enabled}`,
+  kv("binding", binding.bindingId),
+  kv("project", binding.projectId),
+  kv("provider", binding.provider),
+  kv("installationId", String(binding.installationId ?? "-")),
+  kv("repositoryId", String(binding.repositoryId ?? "-")),
+  kv("repository", binding.repository),
+  kv("cloneUrl", binding.cloneUrl),
+  kv("sourceKind", binding.sourceKind),
+  kv("branch", binding.branch ?? "*"),
+  kv("workflowModulePath", binding.workflowModulePath),
+  kv("workspaceSubdir", binding.workspaceSubdir ?? "-"),
+  kv("enabled", status(String(binding.enabled))),
 ]
 
 const renderProjectsList = (projects: ReadonlyArray<ProjectSummary>) => [
-  "projects:",
+  heading("projects"),
   ...(projects.length === 0
-    ? ["-"]
-    : projects.flatMap((project) => [
-        `project: ${project.projectId}`,
-        `name: ${project.name ?? "-"}`,
-        `provider: ${project.provider}`,
-        `repository: ${project.repositoryOwner ?? "-"}/${project.repositoryName ?? "-"}`,
-        `repositoryId: ${project.repositoryId ?? "-"}`,
-        `bindings: ${project.bindingCount}`,
-        `runs: ${project.runCount}`,
-        `latestRunAt: ${formatDate(project.latestRunAt)}`,
+    ? [none()]
+    : projects.flatMap((project, index) => [
+        ...(index === 0 ? [] : gap()),
+        kv("project", project.projectId),
+        kv("name", project.name ?? "-"),
+        kv("provider", project.provider),
+        kv("repository", `${project.repositoryOwner ?? "-"}/${project.repositoryName ?? "-"}`),
+        kv("repositoryId", String(project.repositoryId ?? "-")),
+        kv("bindings", String(project.bindingCount)),
+        kv("runs", String(project.runCount)),
+        kv("latestRunAt", formatDate(project.latestRunAt)),
       ])),
 ]
 
 const renderEventList = (runId: string, events: ReadonlyArray<{ readonly _tag: string; readonly sequence: number }>) => [
-  `run: ${runId}`,
-  "events:",
-  ...(events.length === 0 ? ["-"] : events.map((event) => `${event.sequence} ${event._tag}`)),
+  kv("run", runId),
+  ...gap(),
+  heading("events"),
+  ...(events.length === 0 ? [none()] : events.map((event) => item(`${event.sequence} ${event._tag}`))),
 ]
 
 const renderArtifacts = (runId: string, artifacts: ReadonlyArray<ArtifactMetadata>) => [
-  `run: ${runId}`,
-  "artifacts:",
+  kv("run", runId),
+  ...gap(),
+  heading("artifacts"),
   ...renderPayloadRefs(
     artifacts,
-    (artifact) => `${artifact.name} ${artifact.artifactRef} status=${artifact.status} expiresAt=${formatDate(artifact.expiresAt)} summary=${artifact.summary ?? "-"}`,
+    (artifact) => `${artifact.name} ${artifact.artifactRef} status=${status(artifact.status)} expiresAt=${formatDate(artifact.expiresAt)} summary=${artifact.summary ?? "-"}`,
   ),
 ]
 
 const renderLogs = (runId: string, logs: ReadonlyArray<LogMetadata>) => [
-  `run: ${runId}`,
-  "logs:",
-  ...renderPayloadRefs(logs, (log) => `${log.name} ${log.logRef} status=${log.status} expiresAt=${formatDate(log.expiresAt)}`),
+  kv("run", runId),
+  ...gap(),
+  heading("logs"),
+  ...renderPayloadRefs(logs, (log) => `${log.name} ${log.logRef} status=${status(log.status)} expiresAt=${formatDate(log.expiresAt)}`),
 ]
 
-const renderPayloadRefs = <A>(items: ReadonlyArray<A>, render: (item: A) => string) =>
-  items.length === 0 ? ["-"] : items.map(render)
+const renderPayloadRefs = <A>(items: ReadonlyArray<A>, render: (value: A) => string) =>
+  items.length === 0 ? [none()] : items.map((value) => item(render(value)))
 
 const formatNames = (names: ReadonlyArray<string>) => (names.length === 0 ? "-" : names.join(", "))
 
@@ -683,11 +699,11 @@ const renderTriggerMetadata = (run: WorkflowRunState) => {
   }
 
   return [
-    `trigger: github`,
-    `repository: ${String(trigger.repository ?? "-")}`,
-    `ref: ${String(trigger.ref ?? "-")}`,
-    `commitSha: ${String(trigger.commitSha ?? "-")}`,
-    `binding: ${String(trigger.bindingId ?? "-")}`,
+    kv("trigger", "github"),
+    kv("repository", String(trigger.repository ?? "-")),
+    kv("ref", String(trigger.ref ?? "-")),
+    kv("commitSha", String(trigger.commitSha ?? "-")),
+    kv("binding", String(trigger.bindingId ?? "-")),
   ]
 }
 
